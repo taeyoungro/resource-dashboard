@@ -1,4 +1,4 @@
-import type { ApprovalDetail, ApprovalSummary, DecisionPayload } from "./types";
+import type { ApprovalDetail, ApprovalSummary, DecisionPayload, ResourceEvent } from "./types";
 
 const BASE = "/api";
 
@@ -40,6 +40,12 @@ export const api = {
         body: JSON.stringify(payload),
       }),
     ),
+
+  listResources: async (): Promise<ResourceEvent[]> =>
+    handle(await fetch(`${BASE}/resources`, { headers: headers() })),
+
+  getResource: async (eventId: string): Promise<ResourceEvent> =>
+    handle(await fetch(`${BASE}/resources/${encodeURIComponent(eventId)}`, { headers: headers() })),
 
   setApiKey: (key: string): void => {
     window.localStorage.setItem("pipeline_api_key", key);

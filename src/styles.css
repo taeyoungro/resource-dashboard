@@ -21,7 +21,17 @@ body {
 }
 code { font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
 
-.app { display: grid; grid-template-columns: 360px 1fr; height: 100vh; }
+.shell { display: flex; flex-direction: column; height: 100vh; }
+.topnav { display: flex; align-items: center; gap: 24px; background: var(--panel); border-bottom: 1px solid var(--border); padding: 8px 16px; }
+.brand { font-weight: 700; }
+.tabs { display: flex; gap: 4px; }
+.tab { background: transparent; border: 1px solid transparent; padding: 6px 14px; color: var(--muted); }
+.tab.active { color: var(--text); border-color: var(--accent); }
+.topbar-key { margin-left: auto; display: flex; gap: 6px; }
+.topbar-key input { width: 220px; }
+.arn-list { list-style: none; padding: 0; margin: 0; }
+.arn-list li { padding: 4px 0; border-bottom: 1px solid var(--border); }
+.app { display: grid; grid-template-columns: 360px 1fr; flex: 1; min-height: 0; }
 
 .sidebar {
   background: var(--panel);

@@ -25,6 +25,21 @@ export interface ApprovalDetail extends ApprovalSummary {
   target_accounts: string[];
 }
 
+export interface ResourceEvent {
+  event_id: string;
+  request_id: string;
+  account_id: string;
+  role_name: string;
+  ps_name: string | null;
+  action: BufferAction;
+  outcome: "applied" | "destroyed";
+  policy_arns: string[];
+  target_accounts: string[];
+  requester_iic_user: string | null;
+  reviewer: string | null;
+  applied_at: string;
+}
+
 export interface DecisionPayload {
   decision: "approve" | "deny";
   reviewer: string;
