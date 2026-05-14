@@ -4,7 +4,7 @@ import type { ApprovalDetail as Detail, ApprovalSummary } from "./types";
 import { ApprovalList } from "./components/ApprovalList";
 import { ApprovalDetail } from "./components/ApprovalDetail";
 
-const POLL_MS = 5000;
+const POLL_MS = 30000; // SSE 백업용 — 정상 시 SSE가 더 빠르게 갱신
 
 export default function App() {
   const [items, setItems] = useState<ApprovalSummary[]>([]);
@@ -12,6 +12,7 @@ export default function App() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [live, setLive] = useState(false);
   const [apiKey, setApiKey] = useState<string>(
     () => window.localStorage.getItem("pipeline_api_key") ?? "",
   );
@@ -46,6 +47,31 @@ export default function App() {
     if (selectedId) refreshDetail(selectedId);
   }, [selectedId, refreshDetail]);
 
+  // SSE: 서버가 register/decide/update_status 시 push.
+  // EventSource는 헤더를 못 보내므로 api_key를 쿼리스트링으로 전달.
+  useEffect(() => {
+    const storedKey = window.localStorage.getItem("pipeline_api_key") ?? "";
+    if (!storedKey) return;
+    const url = `/api/approvals/stream?api_key=${encodeURIComponent(storedKey)}`;
+    const es = new EventSource(url);
+    es.addEventListener("snapshot", (e) => {
+      try {
+        const rows = JSON.parse((e as MessageEvent).data) as ApprovalSummary[];
+        setItems(rows);
+      } catch { /* ignore */ }
+    });
+    es.addEventListener("change", (e) => {
+      try {
+        const ev = JSON.parse((e as MessageEvent).data) as { request_id: string };
+        refreshList();
+        if (selectedId && ev.request_id === selectedId) refreshDetail(selectedId);
+      } catch { /* ignore */ }
+    });
+    es.onopen = () => setLive(true);
+    es.onerror = () => setLive(false); // EventSource는 자동 재연결
+    return () => { es.close(); setLive(false); };
+  }, [apiKey, refreshList, refreshDetail, selectedId]);
+
   const handleDecide = async (decision: "approve" | "deny", reviewer: string, comment: string) => {
     if (!selectedId) return;
     if (!window.confirm(`${decision === "approve" ? "승인" : "거부"} 하시겠습니까?`)) return;
@@ -70,7 +96,7 @@ export default function App() {
     <div className="app">
       <aside className="sidebar">
         <header>
-          <h1>IAM Approvals</h1>
+          <h1>IAM Approvals <span className={`live-dot ${live ? "on" : "off"}`} title={live ? "실시간 연결됨 (SSE)" : "폴링 모드"} /></h1>
           <div className="api-key">
             <input
               type="password"

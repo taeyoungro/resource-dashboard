@@ -29,7 +29,10 @@ code { font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
   overflow-y: auto;
 }
 .sidebar header { padding: 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); z-index: 1; }
-.sidebar h1 { margin: 0 0 12px; font-size: 18px; }
+.sidebar h1 { margin: 0 0 12px; font-size: 18px; display: flex; align-items: center; gap: 8px; }
+.live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.live-dot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.live-dot.off { background: var(--muted); }
 .api-key { display: flex; gap: 6px; margin-bottom: 8px; }
 .api-key input { flex: 1; }
 .refresh { width: 100%; }
