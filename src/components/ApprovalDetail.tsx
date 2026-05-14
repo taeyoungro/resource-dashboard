@@ -56,7 +56,7 @@ export function ApprovalDetail({ detail, onDecide, busy }: Props) {
                 <tr key={arn} className={p.is_necessary ? "" : "row-warn"}>
                   <td><code>{arn}</code></td>
                   <td>{p.is_necessary ? "✅" : "⚠️"}</td>
-                  <td>{(p.confidence * 100).toFixed(0)}%</td>
+                  <td><span className={`conf conf-${String(p.confidence).toLowerCase()}`}>{p.confidence}</span></td>
                   <td>{p.reason}</td>
                 </tr>
               ))}

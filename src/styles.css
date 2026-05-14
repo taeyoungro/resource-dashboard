@@ -99,6 +99,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .policy-table th { color: var(--muted); font-weight: 500; }
 .row-warn { background: rgba(210, 153, 34, 0.08); }
+.conf { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; border: 1px solid var(--border); }
+.conf-high { color: var(--ok); border-color: var(--ok); }
+.conf-medium { color: var(--warn); border-color: var(--warn); }
+.conf-low { color: var(--danger); border-color: var(--danger); }
+.conf-n\/a { color: var(--muted); }
 
 pre.report, pre.plan {
   background: var(--panel);
