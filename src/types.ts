@@ -32,11 +32,12 @@ export interface ResourceEvent {
   role_name: string;
   ps_name: string | null;
   action: BufferAction;
-  outcome: "applied" | "destroyed";
+  outcome: "applied" | "destroyed" | "rag_rejected";
   policy_arns: string[];
   target_accounts: string[];
   requester_iic_user: string | null;
   reviewer: string | null;
+  reason: string | null;
   applied_at: string;
 }
 
