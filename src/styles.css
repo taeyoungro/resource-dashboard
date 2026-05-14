@@ -3,8 +3,8 @@
   --panel: #f6f8fa;
   --panel-2: #eef1f5;
   --border: #d0d7de;
-  --text: #1f2328;
-  --muted: #656d76;
+  --text: #0a0c10;
+  --muted: #3a4048;
   --ok: #1a7f37;
   --warn: #9a6700;
   --danger: #cf222e;
@@ -96,9 +96,27 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .muted { color: var(--muted); }
 .error { background: #ffebe9; color: #82071e; border: 1px solid #ff818266; padding: 8px 12px; margin: 8px; border-radius: 6px; font-size: 12px; }
 
+.detail { display: flex; flex-direction: column; gap: 16px; }
+.detail > header,
+.detail > section {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
 .detail header h2 { margin: 0 0 8px; }
-.detail section { margin-top: 24px; }
-.detail section h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.detail section { margin-top: 0; }
+.detail section h3 {
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+}
 
 .policy-table { width: 100%; border-collapse: collapse; }
 .policy-table th, .policy-table td {
