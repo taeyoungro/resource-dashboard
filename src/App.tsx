@@ -19,7 +19,9 @@ export default function App() {
 
   const refreshList = useCallback(async () => {
     try {
-      const rows = await api.listApprovals();
+      const rows = (await api.listApprovals()).filter(
+        (r) => r && r.request_id && r.role_name,
+      );
       setItems(rows);
       setError(null);
       if (!selectedId && rows.length > 0) setSelectedId(rows[0].request_id);
@@ -56,7 +58,9 @@ export default function App() {
     const es = new EventSource(url);
     es.addEventListener("snapshot", (e) => {
       try {
-        const rows = JSON.parse((e as MessageEvent).data) as ApprovalSummary[];
+        const rows = (JSON.parse((e as MessageEvent).data) as ApprovalSummary[]).filter(
+          (r) => r && r.request_id && r.role_name,
+        );
         setItems(rows);
       } catch { /* ignore */ }
     });
