@@ -2,7 +2,7 @@ export type BufferAction = "ATTACH" | "REFRESH" | "DELETE";
 
 export interface PolicyDetail {
   is_necessary: boolean;
-  confidence: number;
+  confidence: "high" | "medium" | "low" | "n/a" | string;
   reason: string;
 }
 
