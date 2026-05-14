@@ -10,8 +10,12 @@ const actionBadge = (a: ResourceEvent["action"]) => {
 };
 
 const outcomeBadge = (o: ResourceEvent["outcome"]) => {
-  const cls = o === "destroyed" ? "badge status-denied" : "badge status-applied";
-  return <span className={cls}>{o}</span>;
+  const cls =
+    o === "destroyed" ? "badge status-denied"
+    : o === "rag_rejected" ? "badge status-failed"
+    : "badge status-applied";
+  const label = o === "rag_rejected" ? "RAG REJECTED" : o;
+  return <span className={cls}>{label}</span>;
 };
 
 export function ResourcePage({ apiKey }: { apiKey: string }) {
@@ -104,6 +108,12 @@ export function ResourcePage({ apiKey }: { apiKey: string }) {
                 <span>applied_at: {new Date(selected.applied_at).toLocaleString()}</span>
               </div>
             </header>
+            {selected.outcome === "rag_rejected" && (
+              <section>
+                <h3>RAG 거부 사유</h3>
+                <div className="report">{selected.reason ?? "(no reason recorded)"}</div>
+              </section>
+            )}
             <section>
               <h3>대상 계정</h3>
               <div className="meta">
@@ -111,9 +121,9 @@ export function ResourcePage({ apiKey }: { apiKey: string }) {
               </div>
             </section>
             <section>
-              <h3>정책 ARN ({selected.policy_arns.length})</h3>
+              <h3>{selected.outcome === "rag_rejected" ? "RAG 거부된 정책" : "정책 ARN"} ({selected.policy_arns.length})</h3>
               {selected.policy_arns.length === 0 ? (
-                <div className="empty small">정책 없음 (DELETE).</div>
+                <div className="empty small">정책 없음.</div>
               ) : (
                 <ul className="arn-list">
                   {selected.policy_arns.map((arn) => (
