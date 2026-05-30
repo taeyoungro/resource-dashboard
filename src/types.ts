@@ -1,4 +1,9 @@
-export type BufferAction = "ATTACH" | "REFRESH" | "DELETE";
+export type BufferAction =
+  | "ATTACH"
+  | "REFRESH"
+  | "DELETE"
+  | "SERVICE_ROLE_SYNC"
+  | "SERVICE_ROLE_DELETE";
 
 export interface PolicyDetail {
   is_necessary: boolean;
