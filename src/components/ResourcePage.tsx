@@ -5,7 +5,11 @@ import type { ResourceEvent } from "../types";
 const POLL_MS = 30000;
 
 const actionBadge = (a: ResourceEvent["action"]) => {
-  const cls = a === "DELETE" ? "badge badge-danger" : a === "REFRESH" ? "badge badge-warn" : "badge badge-ok";
+  const cls =
+    a === "DELETE" || a === "SERVICE_ROLE_DELETE" ? "badge badge-danger"
+    : a === "REFRESH" ? "badge badge-warn"
+    : a === "SERVICE_ROLE_SYNC" ? "badge badge-svc"
+    : "badge badge-ok";
   return <span className={cls}>{a}</span>;
 };
 

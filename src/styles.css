@@ -86,6 +86,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .badge-ok { color: var(--ok); border-color: var(--ok); }
 .badge-warn { color: var(--warn); border-color: var(--warn); }
 .badge-danger { color: var(--danger); border-color: var(--danger); }
+.badge-svc { color: var(--accent); border-color: var(--accent); }
 .status-pending { color: var(--warn); border-color: var(--warn); }
 .status-approved, .status-applied { color: var(--ok); border-color: var(--ok); }
 .status-denied, .status-failed { color: var(--danger); border-color: var(--danger); }
