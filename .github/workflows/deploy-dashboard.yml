@@ -1,0 +1,244 @@
+# opt-SolutionDashboard -> EC2
+#
+# The page is built here and shipped built. The instance runs Node and the AWS SDK and nothing
+# else - no TypeScript compiler, no devDependencies - because the machine that serves the approval
+# screen should carry as little software as the job needs.
+#
+# Blast radius of a failed deploy: nobody can approve anything while it is down, and nothing else
+# stops. The listener keeps buffering, the inspector keeps planning, and the plans wait in the
+# state bucket. A bad deploy delays decisions; it does not lose work, and it cannot apply
+# anything, because this host holds no ecs:RunTask.
+#
+# Mirrors event_pipeline/.github/workflows/deploy-listener.yml. The differences are all here:
+# a build step, an npm cache, and an artifact that is dist/ plus server/ rather than a Python
+# package.
+
+name: deploy dashboard
+
+# A hand-run deploy is the one with no commit behind it explaining why it happened, so the reason
+# is carried into the run title.
+run-name: >-
+  deploy dashboard${{ github.event_name == 'workflow_dispatch'
+    && format(' — by hand: {0} (@{1})', inputs.reason, github.actor) || '' }}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'server/**'
+      - 'deploy/**'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vite.config.ts'
+      # Changing how it deploys is a change to the deployment.
+      - '.github/workflows/deploy-dashboard.yml'
+
+  # Actions -> "deploy dashboard" -> Run workflow. Use it to redeploy unchanged code: after
+  # rotating OPT_DASHBOARD_API_KEY, after filling in the host's env file, or to put a known commit
+  # back on the host by picking its branch.
+  #
+  # The button only appears once this file is on the default branch - that is where GitHub reads
+  # the trigger list from, whatever branch you then choose to run.
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why this is being deployed by hand'
+        required: true
+        default: 'redeploy unchanged code'
+        type: string
+
+# Read-only. This workflow reaches the instance over SSH with a key, not with a GitHub token, so it
+# has no reason to hold write scope on the repository.
+permissions:
+  contents: read
+
+# Two deploys to one host will interleave a half-copied tree with a service restart. Queue them
+# instead, and do not cancel one that is already touching the host.
+concurrency:
+  group: deploy-dashboard
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # npm ci and not npm install: the lock file is the version record, and a deploy that
+      # resolves its own dependency tree ships something no commit describes.
+      - name: install
+        run: npm ci
+
+      # The server's own tests. No AWS - the sweep runs against a fake client - so they cannot
+      # pass or fail for reasons unrelated to the code.
+      - name: server tests
+        run: npm run check
+
+      # tsc -b is part of `npm run build`, so a type error fails here rather than producing a
+      # dist/ that does not match the types the server answers with.
+      - name: build
+        run: npm run build
+
+      # Exactly what the instance needs, and nothing else. node_modules is not in here: the
+      # installer runs `npm ci --omit=dev` on the host, so the runtime tree is resolved from the
+      # same lock file against the host's own architecture.
+      - name: package
+        run: |
+          set -euo pipefail
+          test -d dist || { echo "no dist/ after build" >&2; exit 1; }
+          tar -czf /tmp/dashboard.tar.gz \
+            dist server deploy package.json package-lock.json
+          echo "package: $(du -h /tmp/dashboard.tar.gz | cut -f1)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard
+          path: /tmp/dashboard.tar.gz
+          retention-days: 5
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+
+    # A GitHub Environment, so the secrets below are scoped to it rather than visible to every
+    # workflow in the repository, and so a required reviewer can be added without touching this
+    # file. The build job above declares no environment and therefore cannot reach these secrets.
+    environment: dashboard
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dashboard
+          path: /tmp
+
+      # Secrets go through env, never through ${{ }} inside a shell body. An expression is
+      # substituted into the script text before bash sees it, so a secret containing a backtick or
+      # $( ) would be executed rather than assigned - and the value never appears in a log either
+      # way, which is what makes that class of mistake hard to notice.
+      - name: prepare ssh
+        env:
+          SSH_KEY: ${{ secrets.DASHBOARD_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DASHBOARD_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # Required, and deliberately not optional. The alternative in reach is
+          # StrictHostKeyChecking=no, which accepts whatever answers on that address - on a job
+          # that then hands over a key with sudo rights on the host.
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          if ! grep -q '[^[:space:]]' ~/.ssh/known_hosts; then
+            echo "DASHBOARD_SSH_KNOWN_HOSTS is empty or whitespace." >&2
+            echo "Generate it on a trusted machine, not from this runner:" >&2
+            echo "  ssh-keyscan -p <port> -H <host>" >&2
+            exit 1
+          fi
+
+      - name: transfer
+        env:
+          HOST: ${{ secrets.DASHBOARD_SSH_HOST }}
+          USER_NAME: ${{ secrets.DASHBOARD_SSH_USER }}
+          PORT: ${{ secrets.DASHBOARD_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          scp -P "${PORT:-22}" \
+              -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o ConnectTimeout=15 \
+              /tmp/dashboard.tar.gz "${USER_NAME}@${HOST}:/tmp/dashboard-${GITHUB_SHA}.tar.gz"
+
+      - name: install and restart
+        env:
+          HOST: ${{ secrets.DASHBOARD_SSH_HOST }}
+          USER_NAME: ${{ secrets.DASHBOARD_SSH_USER }}
+          PORT: ${{ secrets.DASHBOARD_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          # The remote script is fed on stdin with a quoted heredoc, so nothing in it is expanded
+          # locally. The one value it needs is the commit, passed as an argument - github.sha is a
+          # 40 character hex string, and the script checks that before using it.
+          ssh -p "${PORT:-22}" \
+              -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o ConnectTimeout=15 \
+              "${USER_NAME}@${HOST}" "bash -s -- ${GITHUB_SHA}" <<'REMOTE'
+          set -euo pipefail
+
+          RELEASE="${1:-}"
+          case "$RELEASE" in
+            [0-9a-f]*) : ;;
+            *) echo "bad release id" >&2; exit 1 ;;
+          esac
+
+          STAGE="/tmp/opt-dashboard-${RELEASE}"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          tar -xzf "/tmp/dashboard-${RELEASE}.tar.gz" -C "$STAGE"
+
+          # Count restarts before and after. A unit that starts, crashes, and is restarted by
+          # systemd reports active while it is failing, so is-active alone would call a
+          # crash-looping deploy a success. This one crash-loops for a reason worth catching:
+          # a missing or short OPT_DASHBOARD_API_KEY exits 2 on every start.
+          BEFORE="$(systemctl show -p NRestarts --value opt-dashboard 2>/dev/null || echo 0)"
+
+          sudo OPT_RELEASE="$RELEASE" "$STAGE/deploy/install.sh"
+          sudo systemctl restart opt-dashboard
+
+          # Long enough to cover RestartSec=5 twice over, so a unit that fails on startup has been
+          # restarted at least once by the time this looks.
+          sleep 12
+
+          AFTER="$(systemctl show -p NRestarts --value opt-dashboard 2>/dev/null || echo 0)"
+          ACTIVE="$(systemctl is-active opt-dashboard || true)"
+
+          echo "--- last 30 log lines"
+          sudo journalctl -u opt-dashboard -n 30 --no-pager || true
+          echo "--- state: ${ACTIVE}   restarts: ${BEFORE} -> ${AFTER}"
+
+          rm -rf "$STAGE" "/tmp/dashboard-${RELEASE}.tar.gz"
+
+          if [ "$ACTIVE" != "active" ]; then
+            echo "dashboard is not active after deploy" >&2
+            exit 1
+          fi
+          if [ "$AFTER" -gt "$BEFORE" ]; then
+            echo "dashboard restarted $((AFTER - BEFORE)) time(s) since the deploy - it is not staying up" >&2
+            exit 1
+          fi
+
+          # Health is checked over loopback on the host rather than from the runner. The server
+          # binds to 127.0.0.1 by default and the runner has no route to it, so a check from
+          # outside would be testing the network path and not the deploy.
+          PORT_IN_USE="$(sudo grep -oP '^OPT_PORT=\K[0-9]+' /etc/opt-dashboard/dashboard.env 2>/dev/null || echo 8080)"
+          if ! curl -sf --max-time 5 "http://127.0.0.1:${PORT_IN_USE}/api/health" > /tmp/health.json; then
+            echo "the dashboard is running but /api/health did not answer on port ${PORT_IN_USE}" >&2
+            exit 1
+          fi
+          echo "--- health: $(cat /tmp/health.json)"
+          rm -f /tmp/health.json
+
+          echo "deployed ${RELEASE}"
+          REMOTE
+
+      # Runs even when a step above failed, so a job that dies mid-deploy does not leave the
+      # private key on the runner's disk for whatever reuses it.
+      - name: remove the key
+        if: always()
+        run: shred -u ~/.ssh/deploy_key 2>/dev/null || rm -f ~/.ssh/deploy_key

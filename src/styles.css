@@ -151,3 +151,61 @@ pre.report, pre.plan {
 .actions { display: flex; gap: 12px; }
 .btn-approve { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 600; padding: 10px 18px; }
 .btn-deny { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; padding: 10px 18px; }
+
+/* ---- added with the server-backed rewrite ------------------------------------------------ */
+
+.sweep-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.4rem 1rem;
+  border-bottom: 1px solid #26304a;
+  font-size: 0.8rem;
+  color: #9aa7c7;
+}
+.sweep-bar .refresh { margin-left: auto; }
+
+.app.single { display: block; }
+.app.single main { padding: 1rem 1.25rem; }
+
+.page-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+.page-head h1 { margin: 0; font-size: 1.1rem; }
+
+/* terraform plan output. Monospace and scrollable in its own box: it is the thing being
+   approved, so it must be readable in full rather than wrapped into ambiguity. */
+pre.plan {
+  background: #0f1420;
+  border: 1px solid #26304a;
+  border-radius: 6px;
+  padding: 0.75rem;
+  overflow-x: auto;
+  max-height: 28rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.detail details { margin: 0.75rem 0; }
+.detail details summary { cursor: pointer; color: #9aa7c7; font-size: 0.85rem; }
+
+.decision textarea {
+  width: 100%;
+  min-height: 4rem;
+  margin-top: 0.5rem;
+  background: #0f1420;
+  color: #e6ebf5;
+  border: 1px solid #26304a;
+  border-radius: 6px;
+  padding: 0.5rem;
+  font: inherit;
+}
+
+.error ul { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+.error li { font-size: 0.78rem; }
+
+code { font-size: 0.78rem; }

@@ -1,16 +1,23 @@
 {
   "name": "resource-dashboard",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Admin approval dashboard for the IAM event_pipeline (AttachRolePolicy / DeleteRolePolicy / DeleteRole).",
+  "description": "opt-SolutionDashboard - approval and failure dashboard for the IAM governance pipeline. Runs on EC2 under the instance profile; the browser never sees an AWS credential.",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "tsc -b --noEmit"
+    "lint": "tsc -b --noEmit",
+    "server": "node server/index.js",
+    "start": "node server/index.js",
+    "check": "node --test server/*.test.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.700.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
