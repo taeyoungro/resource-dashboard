@@ -40,9 +40,9 @@ function makeStore(s3, config) {
       try {
         state = await sweep(s3, config);
         log.info(
-          'sweep reason="%s" failed=%d running=%d awaiting=%d errors=%d took=%dms',
+          'sweep reason="%s" failed=%d running=%d awaiting=%d errors=%d skipped=%d took=%dms',
           reason, state.counts.failed, state.counts.running, state.counts.awaiting_decision,
-          state.errors.length, Date.now() - started,
+          state.errors.length, state.skipped_keys ?? 0, Date.now() - started,
         );
         for (const problem of state.errors) log.warn('sweep problem: %s', problem);
       } catch (err) {

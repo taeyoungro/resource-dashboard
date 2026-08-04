@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { changesFromPlan, identityFromConfig, sweep } from './sweep.js';
+import { changesFromPlan, identityFromConfig, requestIdFromMarkerKey, sweep } from './sweep.js';
 
 const CONFIG = {
   region: 'us-east-1',
@@ -170,4 +170,99 @@ test('an empty bucket is an empty answer and not an error', async () => {
   const state = await sweep(fakeS3({}), CONFIG, { now: NOW });
   assert.deepEqual(state.counts, { failed: 0, running: 0, awaiting_decision: 0 });
   assert.deepEqual(state.errors, []);
+});
+
+// ---- what is and is not a marker ---------------------------------------------------------------
+//
+// Creating inspector/ or applier/ as a folder in the S3 console leaves a zero byte object whose
+// key IS the prefix, and a listing returns it like any other object. Reading it as JSON failed
+// with "Unexpected end of JSON input" and the page reported two things the sweep could not read -
+// on a bucket where nothing was wrong.
+
+test('a folder placeholder is not a marker', () => {
+  assert.equal(requestIdFromMarkerKey('inspector/', 'inspector/'), null);
+  assert.equal(requestIdFromMarkerKey('applier/', 'applier/'), null);
+});
+
+test('a key nested deeper than the prefix is not a marker either', () => {
+  assert.equal(requestIdFromMarkerKey('inspector/sub/644701781058-aaaa.json', 'inspector/'), null);
+});
+
+test('a real marker key yields its request id', () => {
+  assert.equal(
+    requestIdFromMarkerKey('inspector/644701781058-a1b2c3d4e5f60718.json', 'inspector/'),
+    '644701781058-a1b2c3d4e5f60718',
+  );
+});
+
+test('a folder placeholder is never read, so it produces no error', async () => {
+  // The bug exactly: the listing went to the body reader unfiltered, so the reader tried to parse
+  // an object the describer would have skipped. Both prefixes, which is why there were two.
+  const s3 = fakeS3(
+    { 'opt-solution-markers': [
+      { key: 'inspector/', size: 0, lastModified: ago(86400) },
+      { key: 'applier/', size: 0, lastModified: ago(86400) },
+      { key: 'inspector/644701781058-a1b2c3d4e5f60718.json', lastModified: ago(7200) },
+    ] },
+    { 'opt-solution-markers/inspector/644701781058-a1b2c3d4e5f60718.json':
+        { account_id: '644701781058', resource: 'cmp-SolutionTest', kind: 'spec_policy' } },
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  assert.deepEqual(state.errors, [], 'a folder placeholder must not read as a failure');
+  assert.equal(state.markers.length, 1);
+  assert.equal(state.markers[0].resource, 'cmp-SolutionTest');
+  assert.equal(state.skipped_keys, 2, 'both placeholders counted, neither reported');
+});
+
+test('two accounts with the same policy name stay separate', async () => {
+  // What the operator actually did: cmp-SolutionTest in 718100330247 and in 644701781058. The
+  // request id carries the account, so the two markers cannot collide.
+  const s3 = fakeS3(
+    { 'opt-solution-markers': [
+      { key: 'inspector/', size: 0, lastModified: ago(86400) },
+      { key: 'inspector/718100330247-1111111111111111.json', lastModified: ago(7200) },
+      { key: 'inspector/644701781058-2222222222222222.json', lastModified: ago(7200) },
+    ] },
+    { 'opt-solution-markers/inspector/718100330247-1111111111111111.json':
+        { account_id: '718100330247', resource: 'cmp-SolutionTest', kind: 'spec_policy' },
+      'opt-solution-markers/inspector/644701781058-2222222222222222.json':
+        { account_id: '644701781058', resource: 'cmp-SolutionTest', kind: 'spec_policy' } },
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  assert.deepEqual(state.errors, []);
+  assert.equal(state.markers.length, 2);
+  assert.deepEqual(
+    state.markers.map((m) => m.account_id).sort(),
+    ['644701781058', '718100330247'],
+  );
+});
+
+test('a plan prefix folder placeholder does not become an empty artifact', async () => {
+  const s3 = fakeS3(
+    { 'opt-org-policy-terraform-state': [
+      { key: 'plans/644701781058-6666666666666666/', size: 0, lastModified: ago(600) },
+      { key: 'plans/644701781058-6666666666666666/tfplan', lastModified: ago(600) },
+      { key: 'plans/644701781058-6666666666666666/main.tf.json', lastModified: ago(600) },
+    ] },
+    { 'opt-org-policy-terraform-state/plans/644701781058-6666666666666666/main.tf.json': MAIN_TF },
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  assert.deepEqual(state.errors, []);
+  assert.equal(state.plans.length, 1);
+  assert.deepEqual(state.plans[0].artifacts, ['main.tf.json', 'tfplan']);
+});
+
+test('a marker whose body is genuinely unreadable is still an error', async () => {
+  // The fix must not swallow the case it was meant to report: the key looks like a marker and the
+  // object will not parse.
+  const s3 = fakeS3(
+    { 'opt-solution-markers': [
+      { key: 'inspector/644701781058-7777777777777777.json', lastModified: ago(7200) },
+    ] },
+    { 'opt-solution-markers/inspector/644701781058-7777777777777777.json': 'not json at all' },
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  assert.equal(state.errors.length, 1);
+  assert.match(state.errors[0], /is not JSON/);
+  assert.equal(state.markers.length, 1, 'and the marker is still reported as present');
 });

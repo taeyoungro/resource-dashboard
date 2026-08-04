@@ -87,6 +87,12 @@ export interface SweepState {
   plans: PlanSummary[];
   /** Partial failures during the sweep. Shown, because a quiet half-sweep looks like calm. */
   errors: string[];
+  /**
+   * Keys under a marker prefix that are not markers - a folder placeholder left by the S3 console,
+   * most often. Counted rather than reported as an error: it is a normal thing to find in a bucket
+   * somebody made by hand, and calling it a failure teaches everyone to ignore the banner.
+   */
+  skipped_keys?: number;
   counts: {
     failed: number;
     running: number;

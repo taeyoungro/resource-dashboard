@@ -27,9 +27,22 @@ const MARKER_SUFFIX = '.json';
 const CONFIG_ARTIFACT = 'main.tf.json';
 const PLAN_ARTIFACT = 'tfplan';
 
-function requestIdFromMarkerKey(key, prefix) {
+/** The request id in a marker key, or null when the key is not a marker at all.
+ *
+ * Not everything under a prefix is a marker. Creating inspector/ or applier/ as a folder in the S3
+ * console leaves a zero byte object whose key IS the prefix, and a listing returns it like any
+ * other object. Reading that as JSON fails with "Unexpected end of JSON input", which is what it
+ * did - twice, once per prefix, reported on the page as two things the sweep could not read.
+ *
+ * So the shape is decided here and only here: the prefix, then a non-empty name with no slash in
+ * it, then .json. The folder placeholder has an empty name and is skipped; anything nested deeper
+ * is not a marker either.
+ */
+export function requestIdFromMarkerKey(key, prefix) {
   if (!key.startsWith(prefix) || !key.endsWith(MARKER_SUFFIX)) return null;
-  return key.slice(prefix.length, -MARKER_SUFFIX.length);
+  const name = key.slice(prefix.length, -MARKER_SUFFIX.length);
+  if (!name || name.includes('/')) return null;
+  return name;
 }
 
 function requestIdFromPlanKey(key, prefix) {
@@ -132,6 +145,10 @@ async function collectPlans(s3, config, decidedRequestIds, errors) {
     const requestId = requestIdFromPlanKey(object.key, config.planPrefix);
     if (!requestId) continue;
     const name = object.key.slice(config.planPrefix.length + requestId.length + 1);
+    // The same folder-placeholder problem as the marker prefixes: a key ending at the directory
+    // has no artifact name. Without this it lands in the map as "", and the incomplete-prefix
+    // message then lists an empty artifact.
+    if (!name) continue;
     const entry = byRequest.get(requestId) ?? { requestId, artifacts: new Map() };
     entry.artifacts.set(name, object);
     byRequest.set(requestId, entry);
@@ -179,10 +196,21 @@ async function collectPlans(s3, config, decidedRequestIds, errors) {
 export async function sweep(s3, config, { now = Date.now() } = {}) {
   const errors = [];
 
-  const [inspectorMarkers, applierMarkers] = await Promise.all([
+  const [inspectorListing, applierListing] = await Promise.all([
     listPrefix(s3, config.markerBucket, config.inspectorPrefix),
     listPrefix(s3, config.markerBucket, config.applierPrefix),
   ]);
+
+  // Decide what is a marker once, before anything reads a body. Filtering in describeMarkers and
+  // not here is what let a folder placeholder through to getJson: the listing was passed to the
+  // reader raw, so the reader tried to parse an object the describer would have skipped.
+  const isMarker = (prefix) => (o) => requestIdFromMarkerKey(o.key, prefix) !== null;
+  const inspectorMarkers = inspectorListing.filter(isMarker(config.inspectorPrefix));
+  const applierMarkers = applierListing.filter(isMarker(config.applierPrefix));
+
+  const skipped =
+    (inspectorListing.length - inspectorMarkers.length) +
+    (applierListing.length - applierMarkers.length);
 
   const bodies = await readMarkerBodies(
     s3, config, [...inspectorMarkers, ...applierMarkers], errors,
@@ -210,7 +238,12 @@ export async function sweep(s3, config, { now = Date.now() } = {}) {
     plans,
     // Not hidden. A sweep that half worked and reports nothing is indistinguishable from a
     // system with nothing wrong, which is the failure this whole mechanism exists to avoid.
+    //
+    // Keys that are not markers are not in here. A folder placeholder is a normal thing to find
+    // in a bucket somebody made through the console, and calling it an error trains everyone to
+    // ignore the banner. It is counted instead, and the count goes to the log.
     errors,
+    skipped_keys: skipped,
     counts: {
       failed: markers.filter((m) => m.state === 'failed').length,
       running: markers.filter((m) => m.state === 'running').length,
