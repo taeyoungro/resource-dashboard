@@ -27,6 +27,11 @@ const MARKER_SUFFIX = '.json';
 const CONFIG_ARTIFACT = 'main.tf.json';
 const PLAN_ARTIFACT = 'tfplan';
 
+// Written last by the inspector, and therefore what says the prefix holds a finished plan rather
+// than an upload in progress. It also carries the request id, which stopped being part of the key
+// when plans moved to one-per-governed-resource.
+const MANIFEST_ARTIFACT = 'request.json';
+
 // The inspector's reduction of what the plan will DO, written beside the plan. See event_pipeline
 // code/inspector/generator/digest.py.
 //
@@ -63,10 +68,37 @@ export function requestIdFromMarkerKey(key, prefix) {
   return name;
 }
 
-function requestIdFromPlanKey(key, prefix) {
-  const rest = key.slice(prefix.length);
-  const slash = rest.indexOf('/');
-  return slash === -1 ? null : rest.slice(0, slash);
+// <account id>/<resource>/plan/<artifact>. Everything terraform produces for one governed resource
+// lives under <account id>/<resource>/, so this listing also returns terraform.tfstate and anything
+// else that ends up there; the pattern is what decides which keys are plan artifacts.
+//
+// The resource is an IAM policy name, whose character set is [\w+=,.@-]. That excludes / and :,
+// which is what makes both the split below and the : in a plan id unambiguous.
+const PLAN_KEY = /^(\d{12})\/([\w+=,.@-]{1,96})\/plan\/([^/]+)$/;
+
+/** A plan id and an artifact name, or null when the key is not a plan artifact.
+ *
+ * The plan id is <account id>:<resource>, not the request id. Plans are keyed by the governed
+ * resource now - one resource, one state, one plan - so the request id is no longer in the key at
+ * all. It is read from request.json, because the approval marker is still named by it.
+ *
+ * A colon rather than a slash because this value travels in a URL path segment, and the router
+ * splits those on /. A colon is a legal path character and cannot occur in an IAM policy name.
+ */
+export function planIdFromKey(key) {
+  const match = PLAN_KEY.exec(key);
+  if (!match) return null;
+  return { planId: `${match[1]}:${match[2]}`, artifact: match[3] };
+}
+
+/** The prefix a plan id points at, or null if it is not a plan id. */
+export function planPrefixFromId(planId) {
+  const colon = String(planId ?? '').indexOf(':');
+  if (colon !== 12) return null;
+  const prefix = `${planId.slice(0, colon)}/${planId.slice(colon + 1)}/plan/`;
+  // Built and then checked against the same pattern that reads keys, so the two cannot drift and
+  // a crafted id cannot produce a key shape the reader would never have accepted.
+  return planIdFromKey(`${prefix}tfplan`) ? prefix : null;
 }
 
 /** The backend key is <account id>/<resource>/terraform.tfstate - see generator/twin.py.
@@ -156,32 +188,38 @@ function describeMarkers(markers, bodies, kind, prefix, nowMs, graceSeconds) {
 }
 
 async function collectPlans(s3, config, decidedRequestIds, errors) {
-  const objects = await listPrefix(s3, config.stateBucket, config.planPrefix);
+  // No prefix. Plans are keyed by the governed resource, so they are spread across one prefix per
+  // account rather than gathered under one - there is nothing narrower to ask for. The listing
+  // returns state files too and the pattern in planIdFromKey drops them.
+  const objects = await listPrefix(s3, config.stateBucket, '');
 
-  const byRequest = new Map();
+  const byPlan = new Map();
   for (const object of objects) {
-    const requestId = requestIdFromPlanKey(object.key, config.planPrefix);
-    if (!requestId) continue;
-    const name = object.key.slice(config.planPrefix.length + requestId.length + 1);
-    // The same folder-placeholder problem as the marker prefixes: a key ending at the directory
-    // has no artifact name. Without this it lands in the map as "", and the incomplete-prefix
-    // message then lists an empty artifact.
-    if (!name) continue;
-    const entry = byRequest.get(requestId) ?? { requestId, artifacts: new Map() };
-    entry.artifacts.set(name, object);
-    byRequest.set(requestId, entry);
+    const parsed = planIdFromKey(object.key);
+    // Not a plan artifact: terraform.tfstate, its lock file, a folder placeholder made in the
+    // console, anything nested deeper. Skipped silently - these are normal contents of this
+    // bucket, and calling them errors would train everyone to ignore the banner.
+    if (!parsed) continue;
+    const entry = byPlan.get(parsed.planId) ?? { planId: parsed.planId, artifacts: new Map() };
+    entry.artifacts.set(parsed.artifact, object);
+    byPlan.set(parsed.planId, entry);
   }
 
   const plans = [];
-  for (const { requestId, artifacts } of byRequest.values()) {
+  for (const { planId, artifacts } of byPlan.values()) {
+    const prefix = planPrefixFromId(planId);
     const plan = artifacts.get(PLAN_ARTIFACT);
     const configObject = artifacts.get(CONFIG_ARTIFACT);
-    if (!plan || !configObject) {
-      // A prefix with only some of its artifacts is an upload that did not finish. Reported
-      // rather than dropped: a half-written plan that nobody can see is worse than a noisy row.
+    const manifestObject = artifacts.get(MANIFEST_ARTIFACT);
+
+    // request.json is written last, so a prefix without it is an upload in progress rather than a
+    // plan. That distinction matters more now than it did: the prefix is overwritten in place by
+    // every new inspection, so "incomplete" is a state a healthy system passes through, and only
+    // one that persists is a fault. It is still reported - a half-written plan nobody can see is
+    // worse than a noisy row - and it resolves itself on the next sweep.
+    if (!plan || !configObject || !manifestObject) {
       errors.push(
-        `${config.planPrefix}${requestId}/ is incomplete (` +
-          `${[...artifacts.keys()].join(', ') || 'empty'})`,
+        `${prefix} is incomplete (${[...artifacts.keys()].sort().join(', ') || 'empty'})`,
       );
       continue;
     }
@@ -193,22 +231,47 @@ async function collectPlans(s3, config, decidedRequestIds, errors) {
       errors.push(`${configObject.key}: ${err.message}`);
     }
 
+    let manifest = null;
+    try {
+      manifest = await getJson(s3, config.stateBucket, manifestObject.key);
+    } catch (err) {
+      errors.push(`${manifestObject.key}: ${err.message}`);
+    }
+
+    const requestId = typeof manifest?.request_id === 'string' ? manifest.request_id : null;
+
     plans.push({
+      plan_id: planId,
+      // Which inspection produced this plan. Not part of the key any more, but still what the
+      // approval marker is named by, and still what ties a plan back to a task in the logs.
       request_id: requestId,
       account_id: identity.accountId,
       resource: identity.resource,
-      planned_at: plan.lastModified,
+      planned_at: manifest?.planned_at ?? plan.lastModified,
       plan_etag: plan.etag,
       plan_bytes: plan.size,
       artifacts: [...artifacts.keys()].sort(),
-      // Decided means an approval marker is sitting in applier/. It disappears again when the
-      // applier finishes, which is the hole described at the top of this file.
-      state: decidedRequestIds.has(requestId) ? 'decided' : 'awaiting_decision',
+      state: planState(manifest, requestId, decidedRequestIds),
     });
   }
 
   plans.sort((a, b) => (b.planned_at ?? '').localeCompare(a.planned_at ?? ''));
   return plans;
+}
+
+/** What this plan is waiting for, if anything.
+ *
+ * no_changes is not a decision anybody has to make: the twin already matches the spec. The
+ * inspector stores such a plan anyway, because the prefix holds exactly one plan per resource and
+ * skipping the write would leave the PREVIOUS plan standing - one that does have changes and is
+ * approvable, describing an edit the administrator may since have reverted.
+ */
+function planState(manifest, requestId, decidedRequestIds) {
+  if (manifest?.has_changes === false) return 'no_changes';
+  // Decided means an approval marker is sitting in applier/. It disappears again when the applier
+  // finishes, which is the hole described at the top of this file.
+  if (requestId && decidedRequestIds.has(requestId)) return 'decided';
+  return 'awaiting_decision';
 }
 
 export async function sweep(s3, config, { now = Date.now() } = {}) {
@@ -271,15 +334,16 @@ export async function sweep(s3, config, { now = Date.now() } = {}) {
 }
 
 /** Everything needed to show one plan, read live rather than from the sweep. */
-export async function readPlan(s3, config, requestId) {
-  const prefix = `${config.planPrefix}${requestId}/`;
+export async function readPlan(s3, config, planId) {
+  const prefix = planPrefixFromId(planId);
+  if (!prefix) return null;
   const objects = await listPrefix(s3, config.stateBucket, prefix);
   if (objects.length === 0) return null;
 
   const byName = new Map(objects.map((o) => [o.key.slice(prefix.length), o]));
   const planObject = byName.get(PLAN_ARTIFACT);
 
-  const [planText, configJson, planJson, planBytes, digestText] = await Promise.all([
+  const [planText, configJson, planJson, planBytes, digestText, manifest] = await Promise.all([
     byName.has('plan.txt')
       ? getBytes(s3, config.stateBucket, `${prefix}plan.txt`).then((b) => b.toString('utf-8'))
       : Promise.resolve(''),
@@ -296,14 +360,24 @@ export async function readPlan(s3, config, requestId) {
       ? getBytes(s3, config.stateBucket, `${prefix}${DIGEST_ARTIFACT}`).then((b) =>
           b.toString('utf-8').trim())
       : Promise.resolve(null),
+    byName.has(MANIFEST_ARTIFACT)
+      ? getJson(s3, config.stateBucket, `${prefix}${MANIFEST_ARTIFACT}`)
+      : Promise.resolve(null),
   ]);
 
   const identity = identityFromConfig(configJson);
   return {
-    request_id: requestId,
+    plan_id: planId,
+    // From request.json, not from the key. A plan is keyed by the governed resource; the request
+    // id says which inspection produced the one currently stored, and it is what the approval
+    // marker gets named by.
+    request_id: typeof manifest?.request_id === 'string' ? manifest.request_id : null,
+    // The inspector's own word on whether there is anything to do. A plan with none is stored so
+    // that it replaces the previous one, not because it is waiting for somebody.
+    has_changes: manifest?.has_changes !== false,
     account_id: identity.accountId,
     resource: identity.resource,
-    planned_at: planObject?.lastModified ?? null,
+    planned_at: manifest?.planned_at ?? planObject?.lastModified ?? null,
     plan_etag: planObject?.etag ?? null,
     plan_bytes: planObject?.size ?? null,
 

@@ -49,12 +49,12 @@ export const api = {
   sweep: async (): Promise<SweepState> =>
     handle(await fetch(`${BASE}/sweep`, { method: "POST", headers: headers() })),
 
-  plan: async (requestId: string): Promise<PlanDetail> =>
-    handle(await fetch(`${BASE}/plans/${encodeURIComponent(requestId)}`, { headers: headers() })),
+  plan: async (planId: string): Promise<PlanDetail> =>
+    handle(await fetch(`${BASE}/plans/${encodeURIComponent(planId)}`, { headers: headers() })),
 
-  decide: async (requestId: string, payload: DecisionPayload): Promise<DecisionResult> =>
+  decide: async (planId: string, payload: DecisionPayload): Promise<DecisionResult> =>
     handle(
-      await fetch(`${BASE}/plans/${encodeURIComponent(requestId)}/decision`, {
+      await fetch(`${BASE}/plans/${encodeURIComponent(planId)}/decision`, {
         method: "POST",
         headers: headers(),
         body: JSON.stringify(payload),

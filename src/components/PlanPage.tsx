@@ -17,14 +17,14 @@ export function PlanPage({ state, error, onRefresh }: Props) {
   const [busy, setBusy] = useState(false);
 
   const plans = state?.plans ?? [];
-  const selected = plans.find((p) => p.request_id === selectedId) ?? null;
+  const selected = plans.find((p) => p.plan_id === selectedId) ?? null;
 
   useEffect(() => {
-    if (!selectedId && plans.length > 0) setSelectedId(plans[0].request_id);
-    if (selectedId && !plans.some((p) => p.request_id === selectedId)) {
+    if (!selectedId && plans.length > 0) setSelectedId(plans[0].plan_id);
+    if (selectedId && !plans.some((p) => p.plan_id === selectedId)) {
       // The plan went away between sweeps. Better to fall back to the top of the list than to
       // keep showing a detail panel for something that is no longer there.
-      setSelectedId(plans[0]?.request_id ?? null);
+      setSelectedId(plans[0]?.plan_id ?? null);
       setDetail(null);
     }
   }, [plans, selectedId]);
@@ -44,11 +44,19 @@ export function PlanPage({ state, error, onRefresh }: Props) {
   }, [selectedId, load]);
 
   const decide = async (decision: "approve" | "deny", reviewer: string, comment: string) => {
-    if (!selectedId) return;
+    if (!selectedId || !detail) return;
     setBusy(true);
     setDetailError(null);
     try {
-      const result = await api.decide(selectedId, { decision, reviewer, comment });
+      // The digest of the plan that is on screen right now, sent back so the server can refuse if
+      // the stored plan is no longer it. The prefix holds one plan per governed resource and a new
+      // inspection overwrites it, so the plan can change under a page that is sitting open.
+      const result = await api.decide(selectedId, {
+        decision,
+        reviewer,
+        comment,
+        expected_changes_sha256: detail.changes_sha256 ?? "",
+      });
       window.alert(`기록했습니다.\n${result.written}`);
       onRefresh();
     } catch (e) {

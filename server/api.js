@@ -13,10 +13,19 @@
 import { timingSafeEqual } from 'node:crypto';
 
 import { putJson } from './s3.js';
-import { readPlan } from './sweep.js';
+import { planPrefixFromId, readPlan } from './sweep.js';
 
-// The request id shape the listener produces: <12 digit account>-<16 hex>. Checked because it
-// reaches this process from a URL and is then used to build an S3 key.
+// A plan is identified by the governed resource it belongs to, not by the request that produced
+// it: <12 digit account>:<resource>. One resource has one state and one plan, and a second edit
+// replaces the first rather than adding a second thing to decide about.
+//
+// The resource part is an IAM policy name, whose character set is [\w+=,.@-]. Checked because this
+// value reaches the process from a URL and is then used to build an S3 key - none of those
+// characters is / or ., so no traversal can be spelled with them.
+const PLAN_ID = /^\d{12}:[\w+=,.@-]{1,96}$/;
+
+// The request id shape the listener produces: <12 digit account>-<16 hex>. It is no longer in any
+// key, but the approval marker is still named by it, so it is checked before being made into one.
 const REQUEST_ID = /^\d{12}-[0-9a-f]{16}$/;
 
 const MAX_BODY_BYTES = 16 * 1024;
@@ -55,18 +64,19 @@ async function readBody(req) {
   }
 }
 
-function requestId(raw) {
+function planId(raw) {
   const value = decodeURIComponent(raw ?? '');
-  if (!REQUEST_ID.test(value)) {
-    throw new HttpError(400, `not a request id: ${value.slice(0, 64)}`);
+  if (!PLAN_ID.test(value)) {
+    throw new HttpError(400, `not a plan id: ${value.slice(0, 64)}`);
   }
   return value;
 }
 
-function decisionMarker({ config, plan, payload, now }) {
+function decisionMarker({ config, plan, prefix, payload, now }) {
   return {
     // What the applier is being asked to do, and to what.
     request_id: plan.request_id,
+    plan_id: plan.plan_id,
     account_id: plan.account_id,
     resource: plan.resource,
     decision: payload.decision,
@@ -91,14 +101,14 @@ function decisionMarker({ config, plan, payload, now }) {
     // approver would have read a true-looking description of something else. The applier checks it
     // by running terraform show -json on the plan it holds.
     //
-    // changes_sha256 is copied from plans/<id>/changes.sha256, which the inspector wrote. It is
+    // changes_sha256 is copied from the prefix's changes.sha256, which the inspector wrote. It is
     // never computed here: the dashboard is the component that is not trusted, so it must not be
     // the author of a value that authorises its own approval.
     changes_sha256: plan.changes_sha256,
 
     plan: {
       bucket: config.stateBucket,
-      prefix: `${config.planPrefix}${plan.request_id}/`,
+      prefix,
       tfplan_sha256: plan.plan_file_sha256,
       tfplan_etag: plan.plan_etag,
       tfplan_bytes: plan.plan_bytes,
@@ -136,14 +146,14 @@ export function routes({ config, s3, store, log }) {
     },
 
     'GET /api/plans/:id': async ({ params }) => {
-      const id = requestId(params.id);
+      const id = planId(params.id);
       const plan = await readPlan(s3, config, id);
       if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
       return plan;
     },
 
     'POST /api/plans/:id/decision': async ({ params, body }) => {
-      const id = requestId(params.id);
+      const id = planId(params.id);
 
       if (body.decision !== 'approve' && body.decision !== 'deny') {
         throw new HttpError(400, 'decision must be "approve" or "deny"');
@@ -159,13 +169,19 @@ export function routes({ config, s3, store, log }) {
         throw new HttpError(400, 'a denial needs a reason');
       }
 
-      // Read the plan again rather than trusting what the page was showing. The digest recorded
-      // in the marker has to be of the bytes that are in the bucket at the moment of the
+      // Read the plan again rather than trusting what the page was showing. The digests recorded
+      // in the marker have to be of the bytes that are in the bucket at the moment of the
       // decision, not of whatever was there when the page last loaded.
       const plan = await readPlan(s3, config, id);
       if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
       if (!plan.plan_file_sha256) {
         throw new HttpError(409, `${id} has no tfplan; there is nothing to approve`);
+      }
+      if (!plan.has_changes) {
+        // The twin already matches the spec. The plan is stored so that it replaces the previous
+        // one, not because anybody has to decide about it, and approving it would ask the applier
+        // to run a plan that does nothing.
+        throw new HttpError(409, `${id} has no changes; there is nothing to decide`);
       }
       // Refused rather than approved without one. The plan file hash establishes that the applier
       // runs the approved file; it does not establish that the plan.txt the approver just read
@@ -181,14 +197,51 @@ export function routes({ config, s3, store, log }) {
         );
       }
 
-      const marker = decisionMarker({ config, plan, payload: { ...body, reviewer, comment },
-                                      now: Date.now() });
-      const key = `${config.applierPrefix}${id}.json`;
+      // A decision is about the plan the reviewer read, and only that one.
+      //
+      // This became necessary when plans moved to one-per-governed-resource. The prefix is now
+      // overwritten in place by every new inspection, so between the page rendering plan.txt and
+      // this request arriving, an edit to the same resource can have replaced the plan entirely.
+      // Without this check the server would read the NEW plan, record its digests, and file an
+      // approval for something the reviewer never saw - and every downstream check would pass,
+      // because the marker and the bucket would agree perfectly with each other.
+      //
+      // The page sends back the digest it displayed. Different value, no decision.
+      const expected = String(body.expected_changes_sha256 ?? '').trim();
+      if (!expected) {
+        throw new HttpError(400, 'expected_changes_sha256 is required: a decision names the plan '
+                                 + 'it was made about');
+      }
+      if (expected !== plan.changes_sha256) {
+        throw new HttpError(
+          409,
+          `${id} was re-planned since it was shown. The stored plan is now ${plan.changes_sha256}`
+          + `, not ${expected}. Reload and read the current plan before deciding.`,
+        );
+      }
+
+      // The marker is named by the inspection that produced this plan, not by the resource: the
+      // name has to fit ECS startedBy, which is 36 characters of [A-Za-z0-9/_-] and would not hold
+      // a resource name. Checked rather than trusted - it arrives from an object in a bucket.
+      const requestId = String(plan.request_id ?? '');
+      if (!REQUEST_ID.test(requestId)) {
+        throw new HttpError(
+          409,
+          `${id} has no usable request id in request.json (${requestId.slice(0, 64) || 'absent'}), `
+          + 'so the approval marker cannot be named. Change the resource again to get a fresh plan.',
+        );
+      }
+
+      const marker = decisionMarker({
+        config, plan, prefix: planPrefixFromId(id),
+        payload: { ...body, reviewer, comment }, now: Date.now(),
+      });
+      const key = `${config.applierPrefix}${requestId}.json`;
       const bytes = await putJson(s3, config.markerBucket, key, marker);
 
       log.info(
-        'decision request=%s decision=%s reviewer=%s key=s3://%s/%s bytes=%d changes=%s',
-        id, marker.decision, reviewer, config.markerBucket, key, bytes,
+        'decision plan=%s request=%s decision=%s reviewer=%s key=s3://%s/%s bytes=%d changes=%s',
+        id, requestId, marker.decision, reviewer, config.markerBucket, key, bytes,
         plan.changes_sha256.slice(0, 16),
       );
 
