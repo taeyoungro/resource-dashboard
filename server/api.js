@@ -76,13 +76,30 @@ function decisionMarker({ config, plan, payload, now }) {
     comment: payload.comment ?? '',
     decided_at: new Date(now).toISOString(),
 
-    // Which plan was looked at. The applier's first job is to establish that the plan in the
-    // bucket is still this one: a digest that no longer matches means the artifact was replaced
-    // between the decision and the run, and no approval covers what it now contains.
+    // What was approved, in two values that answer two different questions.
+    //
+    // The generated document names no role - it names a profile, and each container decides what
+    // that profile means in a file that never enters the plan. So the saved plan is portable: the
+    // applier runs the very file the inspector produced and a person approved. The binding is
+    // therefore the file itself.
+    //
+    //   tfplan_sha256    the binary the applier is about to run is the binary that was approved
+    //   changes_sha256   the plan.txt and plan.json that person read describe that binary
+    //
+    // The second is not implied by the first. The prefix holds five separate objects, and a
+    // partial overwrite could leave a tfplan from one plan beside a plan.txt from another - the
+    // approver would have read a true-looking description of something else. The applier checks it
+    // by running terraform show -json on the plan it holds.
+    //
+    // changes_sha256 is copied from plans/<id>/changes.sha256, which the inspector wrote. It is
+    // never computed here: the dashboard is the component that is not trusted, so it must not be
+    // the author of a value that authorises its own approval.
+    changes_sha256: plan.changes_sha256,
+
     plan: {
       bucket: config.stateBucket,
       prefix: `${config.planPrefix}${plan.request_id}/`,
-      tfplan_sha256: plan.plan_sha256,
+      tfplan_sha256: plan.plan_file_sha256,
       tfplan_etag: plan.plan_etag,
       tfplan_bytes: plan.plan_bytes,
       planned_at: plan.planned_at,
@@ -147,8 +164,21 @@ export function routes({ config, s3, store, log }) {
       // decision, not of whatever was there when the page last loaded.
       const plan = await readPlan(s3, config, id);
       if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
-      if (!plan.plan_sha256) {
+      if (!plan.plan_file_sha256) {
         throw new HttpError(409, `${id} has no tfplan; there is nothing to approve`);
+      }
+      // Refused rather than approved without one. The plan file hash establishes that the applier
+      // runs the approved file; it does not establish that the plan.txt the approver just read
+      // describes that file, and a prefix is five separate objects. Plans written before the
+      // inspector produced this artifact land here; re-inspecting produces one that can be
+      // approved.
+      if (!plan.changes_sha256) {
+        throw new HttpError(
+          409,
+          `${id} has no changes.sha256, so nothing would establish that the plan shown describes `
+          + 'the file that would be applied. It was planned by an inspector that did not write '
+          + 'one - change the resource again to get a fresh plan.',
+        );
       }
 
       const marker = decisionMarker({ config, plan, payload: { ...body, reviewer, comment },
@@ -157,9 +187,9 @@ export function routes({ config, s3, store, log }) {
       const bytes = await putJson(s3, config.markerBucket, key, marker);
 
       log.info(
-        'decision request=%s decision=%s reviewer=%s key=s3://%s/%s bytes=%d sha256=%s',
+        'decision request=%s decision=%s reviewer=%s key=s3://%s/%s bytes=%d changes=%s',
         id, marker.decision, reviewer, config.markerBucket, key, bytes,
-        plan.plan_sha256.slice(0, 16),
+        plan.changes_sha256.slice(0, 16),
       );
 
       // The marker is now the applier's unfinished work. Refresh so the page shows that rather

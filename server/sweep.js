@@ -27,6 +27,24 @@ const MARKER_SUFFIX = '.json';
 const CONFIG_ARTIFACT = 'main.tf.json';
 const PLAN_ARTIFACT = 'tfplan';
 
+// The inspector's reduction of what the plan will DO, written beside the plan. See event_pipeline
+// code/inspector/generator/digest.py.
+//
+// An approval carries two values, and they answer two different questions:
+//
+//   tfplan_sha256    the binary the applier runs is the binary that was approved
+//   changes_sha256   the plan.txt and plan.json a person read describe that binary
+//
+// The applier runs the inspector's saved plan file unchanged - the generated document names a
+// profile rather than a role, so the plan is portable between the two containers - which is what
+// makes the first value the binding. The second is not implied by it: a plan prefix is five
+// separate objects, and a partial overwrite could leave a tfplan from one plan beside a plan.txt
+// from another. The approver would then have read a true-looking description of something else.
+//
+// This value is COPIED here, never computed. The dashboard is the component that is not trusted,
+// so it must not author the value that authorises its own approval - it carries the inspector's.
+const DIGEST_ARTIFACT = 'changes.sha256';
+
 /** The request id in a marker key, or null when the key is not a marker at all.
  *
  * Not everything under a prefix is a marker. Creating inspector/ or applier/ as a folder in the S3
@@ -261,7 +279,7 @@ export async function readPlan(s3, config, requestId) {
   const byName = new Map(objects.map((o) => [o.key.slice(prefix.length), o]));
   const planObject = byName.get(PLAN_ARTIFACT);
 
-  const [planText, configJson, planJson, planBytes] = await Promise.all([
+  const [planText, configJson, planJson, planBytes, digestText] = await Promise.all([
     byName.has('plan.txt')
       ? getBytes(s3, config.stateBucket, `${prefix}plan.txt`).then((b) => b.toString('utf-8'))
       : Promise.resolve(''),
@@ -274,6 +292,10 @@ export async function readPlan(s3, config, requestId) {
     planObject
       ? getBytes(s3, config.stateBucket, `${prefix}${PLAN_ARTIFACT}`)
       : Promise.resolve(null),
+    byName.has(DIGEST_ARTIFACT)
+      ? getBytes(s3, config.stateBucket, `${prefix}${DIGEST_ARTIFACT}`).then((b) =>
+          b.toString('utf-8').trim())
+      : Promise.resolve(null),
   ]);
 
   const identity = identityFromConfig(configJson);
@@ -284,14 +306,30 @@ export async function readPlan(s3, config, requestId) {
     planned_at: planObject?.lastModified ?? null,
     plan_etag: planObject?.etag ?? null,
     plan_bytes: planObject?.size ?? null,
-    // Computed here and recorded in the approval, so the applier can establish that the plan it
-    // is about to run is the plan somebody looked at. The ETag would not do: it is an MD5 and
-    // this is the one place in the system where the question is whether a file was replaced on
-    // purpose.
-    plan_sha256: planBytes ? digest(planBytes) : null,
+
+    // Read from the bucket, not computed. Null when the plan predates the inspector writing it,
+    // and such a plan cannot be approved: nothing would establish that the plan.txt shown on this
+    // page describes the file the applier is about to run.
+    changes_sha256: isDigest(digestText) ? digestText : null,
+
+    // The hash of the saved plan file - the file the applier runs, unchanged. This is what the
+    // approval binds to. The ETag would not do: it is an MD5, and this is the one place in the
+    // system where the question is whether a file was replaced on purpose.
+    plan_file_sha256: planBytes ? digest(planBytes) : null,
+
     plan_text: planText,
     config_json: configJson ? JSON.stringify(configJson, null, 2) : '',
     changes: changesFromPlan(planJson),
     artifacts: [...byName.keys()].sort(),
   };
+}
+
+/** 64 lowercase hex characters and nothing else.
+ *
+ * The file is read from a bucket and its contents end up in an approval marker that a container
+ * with write access to member accounts acts on. Checking the shape here costs nothing and means a
+ * truncated or half-written object cannot become an approval that matches nothing.
+ */
+export function isDigest(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 }

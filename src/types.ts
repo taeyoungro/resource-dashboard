@@ -71,8 +71,22 @@ export interface PlanDetail {
   planned_at: string | null;
   plan_etag: string | null;
   plan_bytes: number | null;
-  /** Recorded in the approval so the applier can tell whether the plan was replaced since. */
-  plan_sha256: string | null;
+  /**
+   * The inspector's digest of what the plan will DO, read from plans/<id>/changes.sha256. The
+   * applier recomputes it with terraform show -json on the plan file it holds, and refuses unless
+   * the two agree - which is how it establishes that the plan.txt shown here describes that file.
+   *
+   * Null on a plan written before the inspector produced the artifact. Such a plan cannot be
+   * approved: a prefix is five separate objects, and without this nothing rules out a tfplan from
+   * one plan sitting beside a plan.txt from another.
+   */
+  changes_sha256: string | null;
+  /**
+   * The saved plan file's own hash. This is what the approval binds to - the applier runs the
+   * inspector's file unchanged, because the generated document names a profile rather than a role
+   * and is therefore identical whichever container produced it.
+   */
+  plan_file_sha256: string | null;
   /** terraform show, as a person reads it. This is the thing being approved. */
   plan_text: string;
   /** The generated configuration the plan came from. */

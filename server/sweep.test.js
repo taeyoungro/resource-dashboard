@@ -9,7 +9,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { changesFromPlan, identityFromConfig, requestIdFromMarkerKey, sweep } from './sweep.js';
+import {
+  changesFromPlan, identityFromConfig, isDigest, readPlan, requestIdFromMarkerKey, sweep,
+} from './sweep.js';
 
 const CONFIG = {
   region: 'us-east-1',
@@ -265,4 +267,59 @@ test('a marker whose body is genuinely unreadable is still an error', async () =
   assert.equal(state.errors.length, 1);
   assert.match(state.errors[0], /is not JSON/);
   assert.equal(state.markers.length, 1, 'and the marker is still reported as present');
+});
+
+// ---- the two values an approval carries --------------------------------------------------------
+//
+//   tfplan_sha256    the binary the applier runs is the binary that was approved
+//   changes_sha256   the plan.txt and plan.json a person read describe that binary
+//
+// The first is computed here, from bytes this process read. The second is the inspector's, copied
+// and never computed: the dashboard is the component that is not trusted, so it must not author a
+// value that authorises its own approval.
+
+test('the digest is read from the bucket, not computed here', async () => {
+  const DIGEST = 'a'.repeat(64);
+  const s3 = fakeS3(
+    { 'opt-org-policy-terraform-state': [
+      { key: 'plans/644701781058-8888888888888888/tfplan', lastModified: ago(600) },
+      { key: 'plans/644701781058-8888888888888888/main.tf.json', lastModified: ago(600) },
+      { key: 'plans/644701781058-8888888888888888/changes.sha256', lastModified: ago(600) },
+    ] },
+    { 'opt-org-policy-terraform-state/plans/644701781058-8888888888888888/main.tf.json': MAIN_TF,
+      'opt-org-policy-terraform-state/plans/644701781058-8888888888888888/tfplan': 'binary plan',
+      'opt-org-policy-terraform-state/plans/644701781058-8888888888888888/changes.sha256':
+        `${DIGEST}\n` },
+  );
+  const plan = await readPlan(s3, CONFIG, '644701781058-8888888888888888');
+  assert.equal(plan.changes_sha256, DIGEST, 'the trailing newline must be trimmed');
+  // The two values are separate and answer separate questions - one may not stand in for the
+  // other. This one is the hash of the plan file itself, computed from the bytes just read.
+  assert.notEqual(plan.plan_file_sha256, DIGEST);
+});
+
+test('a plan with no digest cannot be approved', async () => {
+  // Plans written before the inspector produced the artifact. Approving one would leave nothing
+  // establishing that the plan.txt the approver read describes the file the applier will run.
+  const s3 = fakeS3(
+    { 'opt-org-policy-terraform-state': [
+      { key: 'plans/644701781058-9999999999999999/tfplan', lastModified: ago(600) },
+      { key: 'plans/644701781058-9999999999999999/main.tf.json', lastModified: ago(600) },
+    ] },
+    { 'opt-org-policy-terraform-state/plans/644701781058-9999999999999999/main.tf.json': MAIN_TF,
+      'opt-org-policy-terraform-state/plans/644701781058-9999999999999999/tfplan': 'binary plan' },
+  );
+  const plan = await readPlan(s3, CONFIG, '644701781058-9999999999999999');
+  assert.equal(plan.changes_sha256, null);
+});
+
+test('a truncated or malformed digest is treated as absent', () => {
+  assert.equal(isDigest('a'.repeat(64)), true);
+  assert.equal(isDigest('a'.repeat(63)), false);
+  assert.equal(isDigest('a'.repeat(65)), false);
+  assert.equal(isDigest('A'.repeat(64)), false, 'uppercase is not what python hexdigest writes');
+  assert.equal(isDigest('g'.repeat(64)), false);
+  assert.equal(isDigest(''), false);
+  assert.equal(isDigest(null), false);
+  assert.equal(isDigest(undefined), false);
 });
