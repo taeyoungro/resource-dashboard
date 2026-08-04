@@ -38,7 +38,14 @@ export interface Marker {
 
 /** A plan stored by the inspector. */
 export interface PlanSummary {
-  request_id: string;
+  /**
+   * <account id>:<resource> - the governed resource this plan belongs to, and what identifies it
+   * everywhere. One resource has one state and one plan; a new inspection replaces the stored plan
+   * rather than adding a second one to decide about.
+   */
+  plan_id: string;
+  /** Which inspection produced the stored plan. Read from request.json, not from the key. */
+  request_id: string | null;
   account_id: string | null;
   resource: string | null;
   planned_at: string | null;
@@ -49,12 +56,13 @@ export interface PlanSummary {
   /**
    * awaiting_decision  no approval marker beside it
    * decided            an approval marker exists, so the applier has it
+   * no_changes         the twin already matches the spec; nothing to decide
    *
-   * These cannot distinguish a plan nobody has looked at from one already applied: the applier
-   * deletes its marker when it finishes and nothing is written in its place. Known, and shown on
-   * the page rather than hidden behind a filter.
+   * The first two cannot distinguish a plan nobody has looked at from one already applied: the
+   * applier deletes its marker when it finishes and nothing is written in its place. Known, and
+   * shown on the page rather than hidden behind a filter.
    */
-  state: "awaiting_decision" | "decided";
+  state: "awaiting_decision" | "decided" | "no_changes";
 }
 
 export interface PlanChange {
@@ -65,19 +73,28 @@ export interface PlanChange {
 }
 
 export interface PlanDetail {
-  request_id: string;
+  plan_id: string;
+  /** Which inspection produced this plan, and what the approval marker gets named by. */
+  request_id: string | null;
+  /** False when the twin already matches the spec. Such a plan cannot be approved. */
+  has_changes: boolean;
   account_id: string | null;
   resource: string | null;
   planned_at: string | null;
   plan_etag: string | null;
   plan_bytes: number | null;
   /**
-   * The inspector's digest of what the plan will DO, read from plans/<id>/changes.sha256. The
+   * The inspector's digest of what the plan will DO, read from the prefix's changes.sha256. The
    * applier recomputes it with terraform show -json on the plan file it holds, and refuses unless
    * the two agree - which is how it establishes that the plan.txt shown here describes that file.
    *
+   * It is also what a decision names: the value the page displayed is sent back with the decision,
+   * and the server refuses if the stored plan is no longer that one. The prefix is overwritten in
+   * place by every new inspection, so without that check a decision could be filed against a plan
+   * the reviewer never saw.
+   *
    * Null on a plan written before the inspector produced the artifact. Such a plan cannot be
-   * approved: a prefix is five separate objects, and without this nothing rules out a tfplan from
+   * approved: a prefix is six separate objects, and without this nothing rules out a tfplan from
    * one plan sitting beside a plan.txt from another.
    */
   changes_sha256: string | null;
@@ -119,6 +136,16 @@ export interface DecisionPayload {
   decision: "approve" | "deny";
   reviewer: string;
   comment?: string;
+  /**
+   * The digest of the plan this decision was made about - whatever the page was displaying. The
+   * server refuses the decision if the stored plan is no longer that one.
+   *
+   * Required, because the plan prefix is keyed by the governed resource and is overwritten in
+   * place: between this page rendering and the decision arriving, another edit to the same
+   * resource can have replaced the plan entirely. Without this the server would happily file an
+   * approval for a plan the reviewer never read, and every later check would pass.
+   */
+  expected_changes_sha256: string;
 }
 
 export interface DecisionResult {

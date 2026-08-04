@@ -10,7 +10,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  changesFromPlan, identityFromConfig, isDigest, readPlan, requestIdFromMarkerKey, sweep,
+  changesFromPlan, identityFromConfig, isDigest, planIdFromKey, planPrefixFromId, readPlan,
+  requestIdFromMarkerKey, sweep,
 } from './sweep.js';
 
 const CONFIG = {
@@ -19,7 +20,7 @@ const CONFIG = {
   stateBucket: 'opt-org-policy-terraform-state',
   inspectorPrefix: 'inspector/',
   applierPrefix: 'applier/',
-  planPrefix: 'plans/',
+  planSuffix: 'plan/',
   markerGraceSeconds: 900,
   maxBodiesPerSweep: 200,
 };
@@ -63,6 +64,35 @@ const MAIN_TF = {
                      key: '644701781058/cmp-WebHosting/terraform.tfstate' } },
   },
 };
+
+const BUCKET = 'opt-org-policy-terraform-state';
+
+/** The six artifacts the inspector writes, as a listing and a body map.
+ *
+ * Keyed by <account>/<resource>/plan/, which is the whole point: two edits to one resource are one
+ * prefix, not two. Every test that used to spell out plans/<request id>/ was spelling out the bug.
+ */
+function planFixture(account, resource, { at, requestId, hasChanges = true, digest } = {}) {
+  const prefix = `${account}/${resource}/plan/`;
+  const names = ['tfplan', 'main.tf.json', 'plan.json', 'plan.txt', 'changes.sha256',
+                 'request.json'];
+  const objects = names.map((n) => ({ key: `${prefix}${n}`, lastModified: at }));
+  const bodies = {
+    [`${BUCKET}/${prefix}main.tf.json`]: {
+      terraform: { backend: { s3: { bucket: BUCKET,
+                                    key: `${account}/${resource}/terraform.tfstate` } } },
+    },
+    [`${BUCKET}/${prefix}tfplan`]: 'binary plan',
+    [`${BUCKET}/${prefix}plan.txt`]: 'terraform will do things',
+    [`${BUCKET}/${prefix}plan.json`]: { resource_changes: [] },
+    [`${BUCKET}/${prefix}changes.sha256`]: `${digest ?? 'd'.repeat(64)}\n`,
+    [`${BUCKET}/${prefix}request.json`]: {
+      schema: 1, request_id: requestId, account_id: account, resource, has_changes: hasChanges,
+      planned_at: at,
+    },
+  };
+  return { objects, bodies, prefix };
+}
 
 test('the account and resource come from the backend key, not the request id', () => {
   assert.deepEqual(identityFromConfig(MAIN_TF),
@@ -119,34 +149,90 @@ test('a marker whose body will not read is still reported, and the failure is re
 });
 
 test('a plan with an approval beside it is decided, one without is awaiting a decision', async () => {
+  const a = planFixture('644701781058', 'cmp-WebHosting',
+                        { at: ago(600), requestId: '644701781058-1111111111111111' });
+  const b = planFixture('644701781058', 'cmp-Other',
+                        { at: ago(300), requestId: '644701781058-2222222222222222' });
   const s3 = fakeS3(
     { 'opt-solution-markers': [
         { key: 'applier/644701781058-1111111111111111.json', lastModified: ago(30) },
       ],
-      'opt-org-policy-terraform-state': [
-        { key: 'plans/644701781058-1111111111111111/tfplan', lastModified: ago(600) },
-        { key: 'plans/644701781058-1111111111111111/main.tf.json', lastModified: ago(600) },
-        { key: 'plans/644701781058-2222222222222222/tfplan', lastModified: ago(300) },
-        { key: 'plans/644701781058-2222222222222222/main.tf.json', lastModified: ago(300) },
-      ] },
+      [BUCKET]: [...a.objects, ...b.objects] },
     { 'opt-solution-markers/applier/644701781058-1111111111111111.json':
         { request_id: '644701781058-1111111111111111', decision: 'approve', reviewer: 'kim' },
-      'opt-org-policy-terraform-state/plans/644701781058-1111111111111111/main.tf.json': MAIN_TF,
-      'opt-org-policy-terraform-state/plans/644701781058-2222222222222222/main.tf.json': MAIN_TF },
+      ...a.bodies, ...b.bodies },
   );
   const state = await sweep(s3, CONFIG, { now: NOW });
-  const byId = Object.fromEntries(state.plans.map((p) => [p.request_id, p]));
-  assert.equal(byId['644701781058-1111111111111111'].state, 'decided');
-  assert.equal(byId['644701781058-2222222222222222'].state, 'awaiting_decision');
+  const byId = Object.fromEntries(state.plans.map((p) => [p.plan_id, p]));
+  assert.equal(byId['644701781058:cmp-WebHosting'].state, 'decided');
+  assert.equal(byId['644701781058:cmp-Other'].state, 'awaiting_decision');
   assert.equal(state.counts.awaiting_decision, 1);
-  assert.equal(byId['644701781058-2222222222222222'].resource, 'cmp-WebHosting');
+  assert.equal(byId['644701781058:cmp-Other'].resource, 'cmp-Other');
+  // The request id is no longer in the key, so it has to come from request.json - and it is what
+  // the approval marker is named by, so it has to survive the trip.
+  assert.equal(byId['644701781058:cmp-Other'].request_id, '644701781058-2222222222222222');
 });
 
-test('an incomplete plan prefix is reported rather than silently dropped', async () => {
+test('two edits to one resource are one plan, not two', async () => {
+  // The bug this layout exists to fix. Keyed by the request, the bucket held a folder per edit and
+  // every one of them stayed approvable - so an administrator could approve an edit that a later
+  // one had already superseded. The second inspection now overwrites the first.
+  const first = planFixture('644701781058', 'cmp-TestLimitPolicyByte',
+                            { at: ago(900), requestId: '644701781058-1111111111111111' });
+  const second = planFixture('644701781058', 'cmp-TestLimitPolicyByte',
+                             { at: ago(60), requestId: '644701781058-2222222222222222' });
+  assert.equal(first.prefix, second.prefix, 'the fixture itself must land on one prefix');
+
+  const s3 = fakeS3({ [BUCKET]: second.objects }, second.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  assert.equal(state.plans.length, 1, 'one governed resource, one plan');
+  assert.equal(state.plans[0].plan_id, '644701781058:cmp-TestLimitPolicyByte');
+  assert.equal(state.plans[0].request_id, '644701781058-2222222222222222',
+               'the stored plan is the latest inspection');
+});
+
+test('a plan with nothing to do is not awaiting a decision', async () => {
+  // The inspector stores it anyway, so that it replaces the previous plan. That previous plan does
+  // have changes and would otherwise stay approvable - an instruction to make an edit the
+  // administrator has since reverted.
+  const none = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-3333333333333333',
+                             hasChanges: false });
+  const s3 = fakeS3({ [BUCKET]: none.objects }, none.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  assert.equal(state.plans.length, 1, 'it is still shown - a resource that matches is worth seeing');
+  assert.equal(state.plans[0].state, 'no_changes');
+  assert.equal(state.counts.awaiting_decision, 0);
+});
+
+test('the state file is not mistaken for a plan artifact', async () => {
+  // The listing has no prefix to narrow it, so terraform.tfstate comes back with everything else.
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-4444444444444444' });
   const s3 = fakeS3(
-    { 'opt-org-policy-terraform-state': [
-      { key: 'plans/644701781058-3333333333333333/plan.txt', lastModified: ago(60) },
+    { [BUCKET]: [
+      ...plan.objects,
+      { key: '644701781058/cmp-WebHosting/terraform.tfstate', lastModified: ago(30) },
+      { key: '644701781058/cmp-WebHosting/', lastModified: ago(30) },
+      { key: '644701781058/', lastModified: ago(30) },
     ] },
+    plan.bodies,
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  assert.equal(state.plans.length, 1);
+  assert.deepEqual(state.errors, [], 'state files and folder placeholders are normal, not errors');
+});
+
+test('a prefix without request.json is an upload in progress, and is reported', async () => {
+  // request.json is written last. Without it the prefix is mid-overwrite, which is a state a
+  // healthy system passes through - so it is reported rather than dropped, and clears itself.
+  const partial = planFixture('644701781058', 'cmp-WebHosting',
+                              { at: ago(60), requestId: '644701781058-5555555555555555' });
+  const s3 = fakeS3(
+    { [BUCKET]: partial.objects.filter((o) => !o.key.endsWith('request.json')) },
+    partial.bodies,
   );
   const state = await sweep(s3, CONFIG, { now: NOW });
   assert.equal(state.plans.length, 0);
@@ -154,24 +240,60 @@ test('an incomplete plan prefix is reported rather than silently dropped', async
 });
 
 test('newest plan first', async () => {
-  const s3 = fakeS3(
-    { 'opt-org-policy-terraform-state': [
-      { key: 'plans/644701781058-4444444444444444/tfplan', lastModified: ago(9000) },
-      { key: 'plans/644701781058-4444444444444444/main.tf.json', lastModified: ago(9000) },
-      { key: 'plans/644701781058-5555555555555555/tfplan', lastModified: ago(60) },
-      { key: 'plans/644701781058-5555555555555555/main.tf.json', lastModified: ago(60) },
-    ] },
-    { 'opt-org-policy-terraform-state/plans/644701781058-4444444444444444/main.tf.json': MAIN_TF,
-      'opt-org-policy-terraform-state/plans/644701781058-5555555555555555/main.tf.json': MAIN_TF },
-  );
+  const older = planFixture('644701781058', 'cmp-Older',
+                            { at: ago(9000), requestId: '644701781058-6666666666666666' });
+  const newer = planFixture('644701781058', 'cmp-Newer',
+                            { at: ago(60), requestId: '644701781058-7777777777777777' });
+  const s3 = fakeS3({ [BUCKET]: [...older.objects, ...newer.objects] },
+                    { ...older.bodies, ...newer.bodies });
   const state = await sweep(s3, CONFIG, { now: NOW });
-  assert.equal(state.plans[0].request_id, '644701781058-5555555555555555');
+  assert.equal(state.plans[0].plan_id, '644701781058:cmp-Newer');
 });
 
 test('an empty bucket is an empty answer and not an error', async () => {
   const state = await sweep(fakeS3({}), CONFIG, { now: NOW });
   assert.deepEqual(state.counts, { failed: 0, running: 0, awaiting_decision: 0 });
   assert.deepEqual(state.errors, []);
+});
+
+// ---- what is and is not a plan key --------------------------------------------------------------
+
+test('a plan id is the governed resource, and it round trips', () => {
+  assert.deepEqual(planIdFromKey('644701781058/cmp-WebHosting/plan/tfplan'),
+                   { planId: '644701781058:cmp-WebHosting', artifact: 'tfplan' });
+  assert.equal(planPrefixFromId('644701781058:cmp-WebHosting'),
+               '644701781058/cmp-WebHosting/plan/');
+});
+
+test('a key that is not a plan artifact is not one', () => {
+  for (const key of [
+    '644701781058/cmp-WebHosting/terraform.tfstate',   // the state, in the same prefix
+    '644701781058/cmp-WebHosting/plan/',               // folder placeholder
+    '644701781058/cmp-WebHosting/plan/a/b',            // nested deeper
+    '644701781058/cmp-WebHosting/',
+    '644701781058/',
+    'plans/644701781058-1111111111111111/tfplan',      // the layout this replaced
+    '64470178105/cmp-WebHosting/plan/tfplan',          // 11 digits
+  ]) {
+    assert.equal(planIdFromKey(key), null, key);
+  }
+});
+
+test('a plan id that could steer a key is refused', () => {
+  // The id arrives in a URL and becomes an S3 key. The IAM policy name character set has no / and
+  // no ., so nothing that could traverse is spellable - and the check is here rather than assumed.
+  for (const bad of [
+    '644701781058:../../etc',
+    '644701781058:cmp/WebHosting',
+    '644701781058:',
+    '64470178105:cmp-X',
+    '644701781058-1111111111111111',                   // a request id is not a plan id
+    '',
+    null,
+    undefined,
+  ]) {
+    assert.equal(planPrefixFromId(bad), null, String(bad));
+  }
 });
 
 // ---- what is and is not a marker ---------------------------------------------------------------
@@ -239,21 +361,6 @@ test('two accounts with the same policy name stay separate', async () => {
   );
 });
 
-test('a plan prefix folder placeholder does not become an empty artifact', async () => {
-  const s3 = fakeS3(
-    { 'opt-org-policy-terraform-state': [
-      { key: 'plans/644701781058-6666666666666666/', size: 0, lastModified: ago(600) },
-      { key: 'plans/644701781058-6666666666666666/tfplan', lastModified: ago(600) },
-      { key: 'plans/644701781058-6666666666666666/main.tf.json', lastModified: ago(600) },
-    ] },
-    { 'opt-org-policy-terraform-state/plans/644701781058-6666666666666666/main.tf.json': MAIN_TF },
-  );
-  const state = await sweep(s3, CONFIG, { now: NOW });
-  assert.deepEqual(state.errors, []);
-  assert.equal(state.plans.length, 1);
-  assert.deepEqual(state.plans[0].artifacts, ['main.tf.json', 'tfplan']);
-});
-
 test('a marker whose body is genuinely unreadable is still an error', async () => {
   // The fix must not swallow the case it was meant to report: the key looks like a marker and the
   // object will not parse.
@@ -280,37 +387,47 @@ test('a marker whose body is genuinely unreadable is still an error', async () =
 
 test('the digest is read from the bucket, not computed here', async () => {
   const DIGEST = 'a'.repeat(64);
-  const s3 = fakeS3(
-    { 'opt-org-policy-terraform-state': [
-      { key: 'plans/644701781058-8888888888888888/tfplan', lastModified: ago(600) },
-      { key: 'plans/644701781058-8888888888888888/main.tf.json', lastModified: ago(600) },
-      { key: 'plans/644701781058-8888888888888888/changes.sha256', lastModified: ago(600) },
-    ] },
-    { 'opt-org-policy-terraform-state/plans/644701781058-8888888888888888/main.tf.json': MAIN_TF,
-      'opt-org-policy-terraform-state/plans/644701781058-8888888888888888/tfplan': 'binary plan',
-      'opt-org-policy-terraform-state/plans/644701781058-8888888888888888/changes.sha256':
-        `${DIGEST}\n` },
-  );
-  const plan = await readPlan(s3, CONFIG, '644701781058-8888888888888888');
-  assert.equal(plan.changes_sha256, DIGEST, 'the trailing newline must be trimmed');
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(600), requestId: '644701781058-8888888888888888',
+                             digest: DIGEST });
+  const s3 = fakeS3({ [BUCKET]: plan.objects }, plan.bodies);
+
+  const detail = await readPlan(s3, CONFIG, '644701781058:cmp-WebHosting');
+  assert.equal(detail.changes_sha256, DIGEST, 'the trailing newline must be trimmed');
   // The two values are separate and answer separate questions - one may not stand in for the
   // other. This one is the hash of the plan file itself, computed from the bytes just read.
-  assert.notEqual(plan.plan_file_sha256, DIGEST);
+  assert.notEqual(detail.plan_file_sha256, DIGEST);
+  // And the request id comes from request.json, since it is no longer in the key.
+  assert.equal(detail.request_id, '644701781058-8888888888888888');
+  assert.equal(detail.has_changes, true);
 });
 
 test('a plan with no digest cannot be approved', async () => {
   // Plans written before the inspector produced the artifact. Approving one would leave nothing
   // establishing that the plan.txt the approver read describes the file the applier will run.
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(600), requestId: '644701781058-9999999999999999' });
   const s3 = fakeS3(
-    { 'opt-org-policy-terraform-state': [
-      { key: 'plans/644701781058-9999999999999999/tfplan', lastModified: ago(600) },
-      { key: 'plans/644701781058-9999999999999999/main.tf.json', lastModified: ago(600) },
-    ] },
-    { 'opt-org-policy-terraform-state/plans/644701781058-9999999999999999/main.tf.json': MAIN_TF,
-      'opt-org-policy-terraform-state/plans/644701781058-9999999999999999/tfplan': 'binary plan' },
+    { [BUCKET]: plan.objects.filter((o) => !o.key.endsWith('changes.sha256')) },
+    plan.bodies,
   );
-  const plan = await readPlan(s3, CONFIG, '644701781058-9999999999999999');
-  assert.equal(plan.changes_sha256, null);
+  const detail = await readPlan(s3, CONFIG, '644701781058:cmp-WebHosting');
+  assert.equal(detail.changes_sha256, null);
+});
+
+test('a plan whose manifest says there is nothing to do says so', async () => {
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa1',
+                             hasChanges: false });
+  const s3 = fakeS3({ [BUCKET]: plan.objects }, plan.bodies);
+  const detail = await readPlan(s3, CONFIG, '644701781058:cmp-WebHosting');
+  assert.equal(detail.has_changes, false);
+});
+
+test('a plan id that is not one reads as no plan at all', async () => {
+  const s3 = fakeS3({});
+  assert.equal(await readPlan(s3, CONFIG, '../../etc'), null);
+  assert.equal(await readPlan(s3, CONFIG, '644701781058-1111111111111111'), null);
 });
 
 test('a truncated or malformed digest is treated as absent', () => {

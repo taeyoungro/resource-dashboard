@@ -49,7 +49,10 @@ test('prefixes are not configurable', () => {
   const config = withEnv({ ...GOOD, OPT_INSPECTOR_PREFIX: 'somewhere/' }, load);
   assert.equal(config.inspectorPrefix, 'inspector/');
   assert.equal(config.applierPrefix, 'applier/');
-  assert.equal(config.planPrefix, 'plans/');
+  // The state bucket has no plan prefix. Plans are keyed by the governed resource, so they live at
+  // <account id>/<resource>/plan/ - one per resource, beside its state.
+  assert.equal(config.planPrefix, undefined);
+  assert.equal(config.planSuffix, 'plan/');
 });
 
 test('loopback is the default bind address', () => {

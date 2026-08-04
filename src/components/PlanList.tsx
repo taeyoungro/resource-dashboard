@@ -6,12 +6,14 @@ interface Props {
   onSelect: (id: string) => void;
 }
 
-const stateBadge = (s: PlanSummary["state"]) =>
-  s === "awaiting_decision" ? (
-    <span className="badge badge-warn">결정 대기</span>
-  ) : (
-    <span className="badge badge-ok">적용기로 넘어감</span>
-  );
+const stateBadge = (s: PlanSummary["state"]) => {
+  if (s === "awaiting_decision") return <span className="badge badge-warn">결정 대기</span>;
+  if (s === "decided") return <span className="badge badge-ok">적용기로 넘어감</span>;
+  // Stored so that it replaces the previous plan, not because anybody has to decide about it.
+  // Shown rather than filtered out: "the twin already matches the spec" is worth being able to
+  // see, and its absence from the list would be indistinguishable from never having been planned.
+  return <span className="badge">변경 없음</span>;
+};
 
 export function PlanList({ items, selectedId, onSelect }: Props) {
   if (items.length === 0) {
@@ -21,14 +23,14 @@ export function PlanList({ items, selectedId, onSelect }: Props) {
     <ul className="approval-list">
       {items.map((it) => (
         <li
-          key={it.request_id}
-          className={it.request_id === selectedId ? "selected" : ""}
-          onClick={() => onSelect(it.request_id)}
+          key={it.plan_id}
+          className={it.plan_id === selectedId ? "selected" : ""}
+          onClick={() => onSelect(it.plan_id)}
         >
           <div className="row">{stateBadge(it.state)}</div>
-          {/* The resource, not the request id. The id stopped carrying the name when it had to
-              fit in 36 characters of startedBy, so it is the account and a digest and nothing a
-              person recognises. */}
+          {/* The resource. It is also what the plan is keyed by now - one governed resource has
+              one state and one plan, and a new inspection replaces the old one rather than adding
+              another row for the same thing. */}
           <div className="role-name">{it.resource ?? "(이름을 읽지 못함)"}</div>
           <div className="meta">
             <span>계정: {it.account_id ?? "—"}</span>

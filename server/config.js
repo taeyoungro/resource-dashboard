@@ -77,7 +77,12 @@ export function load() {
     // AccessDenied on write and a silently empty list on read.
     inspectorPrefix: 'inspector/',
     applierPrefix: 'applier/',
-    planPrefix: 'plans/',
+
+    // The state bucket has no plan prefix any more. Everything terraform produces for one governed
+    // resource lives under <account id>/<resource>/, and the plan artifacts are the plan/ subfolder
+    // of that - see event_pipeline generator/twin.py. There is therefore no single prefix to list,
+    // which is why the instance role's s3:ListBucket on this bucket carries no s3:prefix condition.
+    planSuffix: 'plan/',
 
     // Loopback by default. This server speaks plain HTTP and holds no certificate, so binding it
     // to a routable address would put the API key on the wire in clear. Put nginx or a load

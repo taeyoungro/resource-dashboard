@@ -27,17 +27,19 @@ export function PlanDetail({ detail, decided, busy, onDecide }: Props) {
       window.alert("거부에는 사유가 필요합니다. 변경을 요청한 사람이 읽을 것은 이것뿐입니다.");
       return;
     }
-    const what = detail.resource ?? detail.request_id;
+    const what = detail.resource ?? detail.plan_id;
     if (!window.confirm(`${what} 를 ${decision === "approve" ? "승인" : "거부"}합니다.`)) return;
     onDecide(decision, reviewer.trim(), comment.trim());
   };
 
   return (
     <div className="detail">
-      <h2>{detail.resource ?? detail.request_id}</h2>
+      <h2>{detail.resource ?? detail.plan_id}</h2>
       <div className="meta">
         <span>계정: {detail.account_id ?? "—"}</span>
-        <span>요청: {detail.request_id}</span>
+        {/* Which inspection produced the plan currently stored. Not part of the key - the key is
+            the governed resource - but it is what the approval marker gets named by. */}
+        <span>요청: {detail.request_id ?? "—"}</span>
         <span>
           계획 시각: {detail.planned_at ? new Date(detail.planned_at).toLocaleString() : "—"}
         </span>
@@ -45,7 +47,11 @@ export function PlanDetail({ detail, decided, busy, onDecide }: Props) {
 
       <h3>바뀌는 것</h3>
       {detail.changes.length === 0 ? (
-        <div className="empty">변경 없음. 승인할 것이 없습니다.</div>
+        <div className="empty">
+          변경 없음. 트윈이 이미 spec과 일치하므로 결정할 것이 없습니다. 이 계획이 저장된 이유는
+          앞의 계획을 덮기 위해서입니다 — 건너뛰었다면 이미 되돌린 수정을 승인할 수 있는 계획이
+          그대로 남았을 것입니다.
+        </div>
       ) : (
         <table className="policy-table">
           <thead>
@@ -119,12 +125,13 @@ export function PlanDetail({ detail, decided, busy, onDecide }: Props) {
           onChange={(e) => setComment(e.target.value)}
         />
         <div className="actions">
-          {/* Approving is disabled without a digest because the server refuses it. Offering a
-              button that always fails is worse than not offering one. Denying stays available -
-              a plan nobody can approve is exactly one somebody may want to refuse. */}
+          {/* Approving is disabled when the server would refuse it - no digest to bind the
+              decision to, or nothing for the applier to do. Offering a button that always fails is
+              worse than not offering one. Denying stays available: a plan nobody can approve is
+              exactly one somebody may want to refuse. */}
           <button
             className="btn-approve"
-            disabled={busy || !detail.changes_sha256}
+            disabled={busy || !detail.changes_sha256 || !detail.has_changes}
             onClick={() => submit("approve")}
           >
             승인
