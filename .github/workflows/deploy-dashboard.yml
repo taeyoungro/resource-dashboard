@@ -15,39 +15,25 @@
 
 name: deploy dashboard
 
-# A hand-run deploy is the one with no commit behind it explaining why it happened, so the reason
-# is carried into the run title.
-run-name: >-
-  deploy dashboard${{ github.event_name == 'workflow_dispatch'
-    && format(' — by hand: {0} (@{1})', inputs.reason, github.actor) || '' }}
+run-name: 'deploy dashboard — ${{ inputs.reason }} (@${{ github.actor }})'
 
+# Deploys are manual, and only manual. There is no push trigger: a merge to main does not put
+# anything on a machine. Actions -> "deploy dashboard" -> Run workflow, pick the branch, give a
+# reason.
+#
+# The reason is required because every run is now a decision somebody made rather than a
+# consequence of a merge, and the run list should say whose decision and why. It is carried into
+# the run title.
+#
+# The button only appears once this file is on the default branch - that is where GitHub reads the
+# trigger list from, whatever branch you then choose to run.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'server/**'
-      - 'deploy/**'
-      - 'index.html'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig.json'
-      - 'vite.config.ts'
-      # Changing how it deploys is a change to the deployment.
-      - '.github/workflows/deploy-dashboard.yml'
-
-  # Actions -> "deploy dashboard" -> Run workflow. Use it to redeploy unchanged code: after
-  # rotating OPT_DASHBOARD_API_KEY, after filling in the host's env file, or to put a known commit
-  # back on the host by picking its branch.
-  #
-  # The button only appears once this file is on the default branch - that is where GitHub reads
-  # the trigger list from, whatever branch you then choose to run.
   workflow_dispatch:
     inputs:
       reason:
-        description: 'Why this is being deployed by hand'
+        description: 'Why this is being deployed'
         required: true
-        default: 'redeploy unchanged code'
+        default: 'deploy the current commit'
         type: string
 
 # Read-only. This workflow reaches the instance over SSH with a key, not with a GitHub token, so it

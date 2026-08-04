@@ -154,18 +154,25 @@ pre.report, pre.plan {
 
 /* ---- added with the server-backed rewrite ------------------------------------------------ */
 
+   Every colour here comes from the variables at the top of this file. The first version of this
+   block hard-coded values from a dark palette against a stylesheet whose theme is light, so
+   pre.plan rendered near-black text on a near-black background - the plan was loaded and correct
+   and simply could not be seen, which is the worst way for a bug like this to present. Nothing
+   below sets a literal colour. */
+
 .sweep-bar {
   display: flex;
   align-items: center;
   gap: 1rem;
   padding: 0.4rem 1rem;
-  border-bottom: 1px solid #26304a;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
   font-size: 0.8rem;
-  color: #9aa7c7;
+  color: var(--muted);
 }
 .sweep-bar .refresh { margin-left: auto; }
 
-.app.single { display: block; }
+.app.single { display: block; overflow-y: auto; }
 .app.single main { padding: 1rem 1.25rem; }
 
 .page-head {
@@ -177,35 +184,42 @@ pre.report, pre.plan {
 .page-head h1 { margin: 0; font-size: 1.1rem; }
 
 /* terraform plan output. Monospace and scrollable in its own box: it is the thing being
-   approved, so it must be readable in full rather than wrapped into ambiguity. */
+   approved, so it has to be readable in full rather than wrapped into ambiguity. */
 pre.plan {
-  background: #0f1420;
-  border: 1px solid #26304a;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.75rem;
+  margin: 0.5rem 0;
   overflow-x: auto;
   max-height: 28rem;
-  font-size: 0.78rem;
-  line-height: 1.45;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
   white-space: pre;
+  tab-size: 2;
 }
 
 .detail details { margin: 0.75rem 0; }
-.detail details summary { cursor: pointer; color: #9aa7c7; font-size: 0.85rem; }
+.detail details summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+.detail details[open] summary { margin-bottom: 0.25rem; }
 
 .decision textarea {
   width: 100%;
   min-height: 4rem;
   margin-top: 0.5rem;
-  background: #0f1420;
-  color: #e6ebf5;
-  border: 1px solid #26304a;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.5rem;
-  font: inherit;
+  font-family: inherit;
+  font-size: 14px;
 }
+.decision textarea:focus, .decision input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.row-warn { padding: 8px 12px; margin: 8px; border-radius: 6px; font-size: 12px; color: var(--text); }
 
 .error ul { margin: 0.4rem 0 0; padding-left: 1.1rem; }
 .error li { font-size: 0.78rem; }
-
-code { font-size: 0.78rem; }
