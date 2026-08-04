@@ -80,3 +80,14 @@ test('a length mismatch answers false instead of throwing', () => {
   // key reads as the server being broken rather than as the key being wrong.
   assert.doesNotThrow(() => authorised({ apiKey: 'abc' }, 'a much longer value'));
 });
+
+test('the release is read from the file the installer writes, not only from the environment', () => {
+  // Every approval marker records issued_by.release. It read "unknown" on the live host because
+  // install.sh writes the commit to /opt/opt-dashboard/RELEASE and nothing puts it in the
+  // environment - the environment file is written by hand and a deploy must not rewrite it.
+  const config = withEnv({ ...GOOD, OPT_RELEASE: 'abc1234' }, load);
+  assert.equal(config.release, 'abc1234');
+
+  // No env var and no file beside a checkout: 'unknown' is then the accurate answer, not a bug.
+  assert.equal(withEnv(GOOD, load).release, 'unknown');
+});
