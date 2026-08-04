@@ -104,7 +104,26 @@ export function PlanDetail({ detail, decided, busy, onDecide }: Props) {
         </div>
       )}
 
-      {decided ? (
+      {detail.outcome ? (
+        <div className="row-warn">
+          {/* Terminal. The applier has finished with this plan and outcome.json records what it
+              did - which is also the surviving copy of the decision, since the approval marker is
+              deleted once this is written. */}
+          <strong>
+            {detail.outcome.applied ? "적용 완료" : "적용하지 않고 종료"}
+          </strong>
+          {" — "}
+          {detail.outcome.reviewer ?? "검토자 미상"}
+          {detail.outcome.decision === "deny" ? " 이(가) 거부했습니다." : " 의 승인."}
+          {detail.outcome.finished_at
+            ? ` (${new Date(detail.outcome.finished_at).toLocaleString()})`
+            : ""}
+          {detail.outcome.detail ? <pre className="plan">{detail.outcome.detail}</pre> : null}
+          다시 결정하려면 자원을 변경해 새 계획을 받으십시오.
+        </div>
+      ) : null}
+
+      {decided && !detail.outcome ? (
         <div className="row-warn">
           이 요청에는 이미 결정이 기록되어 있고 적용기가 아직 끝내지 않았습니다. 다시 결정하면
           기록을 덮어씁니다.
@@ -131,12 +150,16 @@ export function PlanDetail({ detail, decided, busy, onDecide }: Props) {
               exactly one somebody may want to refuse. */}
           <button
             className="btn-approve"
-            disabled={busy || !detail.changes_sha256 || !detail.has_changes}
+            disabled={busy || !detail.changes_sha256 || !detail.has_changes || !!detail.outcome}
             onClick={() => submit("approve")}
           >
             승인
           </button>
-          <button className="btn-deny" disabled={busy} onClick={() => submit("deny")}>
+          <button
+            className="btn-deny"
+            disabled={busy || !!detail.outcome}
+            onClick={() => submit("deny")}
+          >
             거부
           </button>
         </div>

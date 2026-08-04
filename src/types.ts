@@ -54,15 +54,32 @@ export interface PlanSummary {
   artifacts: string[];
 
   /**
-   * awaiting_decision  no approval marker beside it
-   * decided            an approval marker exists, so the applier has it
+   * awaiting_decision  no approval marker beside it and no outcome
+   * decided            an approval marker exists, so the applier has it and has not finished
+   * applied            the applier applied it and recorded outcome.json
+   * closed             the applier finished with it without applying - a denial
    * no_changes         the twin already matches the spec; nothing to decide
-   *
-   * The first two cannot distinguish a plan nobody has looked at from one already applied: the
-   * applier deletes its marker when it finishes and nothing is written in its place. Known, and
-   * shown on the page rather than hidden behind a filter.
    */
-  state: "awaiting_decision" | "decided" | "no_changes";
+  state: "awaiting_decision" | "decided" | "applied" | "closed" | "no_changes";
+
+  /** The applier's record, once it has finished with this plan. Null until then. */
+  outcome: PlanOutcome | null;
+}
+
+/** What the applier did, read from outcome.json in the plan prefix.
+ *
+ * This is the surviving copy of the decision. The applier deletes the approval marker when it
+ * finishes, and CloudTrail records that the object went rather than what was in it - so the
+ * reviewer and the decision are carried here first, and this is what anybody reads afterwards.
+ */
+export interface PlanOutcome {
+  decision: "approve" | "deny" | null;
+  reviewer: string | null;
+  /** False on a denial, and false on an approval the applier refused. Both are outcomes. */
+  applied: boolean;
+  /** terraform's own summary line, or why it was not applied. */
+  detail: string;
+  finished_at: string | null;
 }
 
 export interface PlanChange {
@@ -78,6 +95,8 @@ export interface PlanDetail {
   request_id: string | null;
   /** False when the twin already matches the spec. Such a plan cannot be approved. */
   has_changes: boolean;
+  /** What the applier did, once it has finished. A plan with one is not awaiting anything. */
+  outcome: PlanOutcome | null;
   account_id: string | null;
   resource: string | null;
   planned_at: string | null;

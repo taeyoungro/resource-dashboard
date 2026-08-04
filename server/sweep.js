@@ -10,13 +10,13 @@
 //                           image, had no route out, was killed, or was stopped before it started
 //                           writes no log and chooses no exit code. The marker is the only thing
 //                           it leaves, so the marker is the only way to see it.
-//   what awaits a decision  a plan prefix in the state bucket with no approval marker beside it.
+//   what awaits a decision  a plan prefix in the state bucket with no approval marker beside it
+//                           and no outcome.json in it.
 //
-// The second one has a known hole, and it is not papered over here: the applier deletes its
-// marker when it finishes, so an applied plan becomes indistinguishable from one nobody has
-// looked at yet. The state is reported as it is and the page says so. The fix belongs in the
-// applier - a terminal object written into the plan prefix - and is recorded in event_pipeline
-// under code/README.md.
+// The second one used to have a hole: the applier deletes its marker when it finishes, so an
+// applied plan was indistinguishable from one nobody had looked at. That is closed. The applier
+// writes outcome.json into the plan prefix before it deletes the marker, and one record replaces
+// the other - so a plan that has been dealt with says so, and says by whom.
 
 import { digest, getBytes, getJson, listPrefix } from './s3.js';
 
@@ -32,6 +32,17 @@ const PLAN_ARTIFACT = 'tfplan';
 // when plans moved to one-per-governed-resource.
 const MANIFEST_ARTIFACT = 'request.json';
 
+// Written by the applier when a decision is finished with - applied, or denied. This is what
+// closes the hole described at the top of this file: the applier deletes its marker when it
+// finishes, so without a terminal object an applied plan looked exactly like one nobody had
+// looked at. It is also the surviving copy of the decision, because deleting the approval marker
+// destroys the only other one - CloudTrail records that the object went, not what was in it.
+//
+// Compared against the manifest's request id, not just read. The plan prefix is overwritten in
+// place by every new inspection, so an outcome left over from a previous plan would otherwise
+// make a fresh plan look already decided.
+const OUTCOME_ARTIFACT = 'outcome.json';
+
 // The inspector's reduction of what the plan will DO, written beside the plan. See event_pipeline
 // code/inspector/generator/digest.py.
 //
@@ -42,9 +53,10 @@ const MANIFEST_ARTIFACT = 'request.json';
 //
 // The applier runs the inspector's saved plan file unchanged - the generated document names a
 // profile rather than a role, so the plan is portable between the two containers - which is what
-// makes the first value the binding. The second is not implied by it: a plan prefix is five
-// separate objects, and a partial overwrite could leave a tfplan from one plan beside a plan.txt
-// from another. The approver would then have read a true-looking description of something else.
+// makes the first value the binding. The second is not implied by it: a plan prefix is six
+// separate objects and a new inspection overwrites them in place, so a partial overwrite could
+// leave a tfplan from one plan beside a plan.txt from another. The approver would then have read
+// a true-looking description of something else.
 //
 // This value is COPIED here, never computed. The dashboard is the component that is not trusted,
 // so it must not author the value that authorises its own approval - it carries the inspector's.
@@ -240,6 +252,16 @@ async function collectPlans(s3, config, decidedRequestIds, errors) {
 
     const requestId = typeof manifest?.request_id === 'string' ? manifest.request_id : null;
 
+    let outcome = null;
+    const outcomeObject = artifacts.get(OUTCOME_ARTIFACT);
+    if (outcomeObject) {
+      try {
+        outcome = await getJson(s3, config.stateBucket, outcomeObject.key);
+      } catch (err) {
+        errors.push(`${outcomeObject.key}: ${err.message}`);
+      }
+    }
+
     plans.push({
       plan_id: planId,
       // Which inspection produced this plan. Not part of the key any more, but still what the
@@ -251,7 +273,8 @@ async function collectPlans(s3, config, decidedRequestIds, errors) {
       plan_etag: plan.etag,
       plan_bytes: plan.size,
       artifacts: [...artifacts.keys()].sort(),
-      state: planState(manifest, requestId, decidedRequestIds),
+      state: planState(manifest, outcome, requestId, decidedRequestIds),
+      outcome: outcomeFor(outcome, requestId),
     });
   }
 
@@ -259,17 +282,39 @@ async function collectPlans(s3, config, decidedRequestIds, errors) {
   return plans;
 }
 
+/** The applier's record for THIS plan, or null.
+ *
+ * An outcome whose request id is not the stored plan's belongs to a plan this one replaced. It is
+ * left in the bucket - the applier writes one per apply and overwrites - but it says nothing about
+ * what is there now, so it is not shown.
+ */
+function outcomeFor(outcome, requestId) {
+  if (!outcome || !requestId || outcome.request_id !== requestId) return null;
+  return {
+    decision: outcome.decision ?? null,
+    reviewer: outcome.reviewer ?? null,
+    applied: outcome.applied === true,
+    detail: typeof outcome.detail === 'string' ? outcome.detail : '',
+    finished_at: outcome.finished_at ?? null,
+  };
+}
+
 /** What this plan is waiting for, if anything.
+ *
+ * The order matters. An outcome is terminal and is checked first: once the applier has finished
+ * with a decision there is nothing left to wait for, and the approval marker it consumed is gone.
  *
  * no_changes is not a decision anybody has to make: the twin already matches the spec. The
  * inspector stores such a plan anyway, because the prefix holds exactly one plan per resource and
  * skipping the write would leave the PREVIOUS plan standing - one that does have changes and is
  * approvable, describing an edit the administrator may since have reverted.
  */
-function planState(manifest, requestId, decidedRequestIds) {
+function planState(manifest, outcome, requestId, decidedRequestIds) {
+  const mine = outcomeFor(outcome, requestId);
+  if (mine) return mine.applied ? 'applied' : 'closed';
   if (manifest?.has_changes === false) return 'no_changes';
-  // Decided means an approval marker is sitting in applier/. It disappears again when the applier
-  // finishes, which is the hole described at the top of this file.
+  // Decided means an approval marker is sitting in applier/ and the applier has not finished with
+  // it yet. It disappears when the applier does, and outcome.json takes its place.
   if (requestId && decidedRequestIds.has(requestId)) return 'decided';
   return 'awaiting_decision';
 }
@@ -343,7 +388,8 @@ export async function readPlan(s3, config, planId) {
   const byName = new Map(objects.map((o) => [o.key.slice(prefix.length), o]));
   const planObject = byName.get(PLAN_ARTIFACT);
 
-  const [planText, configJson, planJson, planBytes, digestText, manifest] = await Promise.all([
+  const [planText, configJson, planJson, planBytes, digestText, manifest, outcome] =
+    await Promise.all([
     byName.has('plan.txt')
       ? getBytes(s3, config.stateBucket, `${prefix}plan.txt`).then((b) => b.toString('utf-8'))
       : Promise.resolve(''),
@@ -363,6 +409,9 @@ export async function readPlan(s3, config, planId) {
     byName.has(MANIFEST_ARTIFACT)
       ? getJson(s3, config.stateBucket, `${prefix}${MANIFEST_ARTIFACT}`)
       : Promise.resolve(null),
+    byName.has(OUTCOME_ARTIFACT)
+      ? getJson(s3, config.stateBucket, `${prefix}${OUTCOME_ARTIFACT}`)
+      : Promise.resolve(null),
   ]);
 
   const identity = identityFromConfig(configJson);
@@ -375,6 +424,11 @@ export async function readPlan(s3, config, planId) {
     // The inspector's own word on whether there is anything to do. A plan with none is stored so
     // that it replaces the previous one, not because it is waiting for somebody.
     has_changes: manifest?.has_changes !== false,
+
+    // What the applier did, if it has finished with this plan. Terminal: a plan with an outcome
+    // has been dealt with and is not awaiting anything.
+    outcome: outcomeFor(outcome, typeof manifest?.request_id === 'string'
+      ? manifest.request_id : null),
     account_id: identity.accountId,
     resource: identity.resource,
     planned_at: manifest?.planned_at ?? planObject?.lastModified ?? null,

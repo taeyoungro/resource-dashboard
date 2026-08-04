@@ -9,6 +9,8 @@ interface Props {
 const stateBadge = (s: PlanSummary["state"]) => {
   if (s === "awaiting_decision") return <span className="badge badge-warn">결정 대기</span>;
   if (s === "decided") return <span className="badge badge-ok">적용기로 넘어감</span>;
+  if (s === "applied") return <span className="badge badge-ok">적용됨</span>;
+  if (s === "closed") return <span className="badge">거부됨</span>;
   // Stored so that it replaces the previous plan, not because anybody has to decide about it.
   // Shown rather than filtered out: "the twin already matches the spec" is worth being able to
   // see, and its absence from the list would be indistinguishable from never having been planned.

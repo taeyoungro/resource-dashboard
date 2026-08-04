@@ -72,10 +72,12 @@ const BUCKET = 'opt-org-policy-terraform-state';
  * Keyed by <account>/<resource>/plan/, which is the whole point: two edits to one resource are one
  * prefix, not two. Every test that used to spell out plans/<request id>/ was spelling out the bug.
  */
-function planFixture(account, resource, { at, requestId, hasChanges = true, digest } = {}) {
+function planFixture(account, resource,
+                     { at, requestId, hasChanges = true, digest, outcome } = {}) {
   const prefix = `${account}/${resource}/plan/`;
   const names = ['tfplan', 'main.tf.json', 'plan.json', 'plan.txt', 'changes.sha256',
                  'request.json'];
+  if (outcome) names.push('outcome.json');
   const objects = names.map((n) => ({ key: `${prefix}${n}`, lastModified: at }));
   const bodies = {
     [`${BUCKET}/${prefix}main.tf.json`]: {
@@ -91,6 +93,14 @@ function planFixture(account, resource, { at, requestId, hasChanges = true, dige
       planned_at: at,
     },
   };
+  if (outcome) {
+    bodies[`${BUCKET}/${prefix}outcome.json`] = {
+      schema: 1, request_id: requestId, account_id: account, resource,
+      decision: 'approve', reviewer: 'kim', comment: '', applied: true,
+      detail: 'Apply complete! Resources: 1 added, 0 changed, 0 destroyed.',
+      finished_at: at, ...outcome,
+    };
+  }
   return { objects, bodies, prefix };
 }
 
@@ -254,6 +264,72 @@ test('an empty bucket is an empty answer and not an error', async () => {
   const state = await sweep(fakeS3({}), CONFIG, { now: NOW });
   assert.deepEqual(state.counts, { failed: 0, running: 0, awaiting_decision: 0 });
   assert.deepEqual(state.errors, []);
+});
+
+// ---- the applier's record ----------------------------------------------------------------------
+//
+// The hole this closes: the applier deletes its approval marker when it finishes, so an applied
+// plan used to be indistinguishable from one nobody had looked at. It matters more now that the
+// prefix is per resource and does not go away either - every applied resource would have read as
+// forever awaiting a decision.
+
+test('a plan the applier finished with is not awaiting a decision', async () => {
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa2',
+                             outcome: {} });
+  const s3 = fakeS3({ [BUCKET]: plan.objects }, plan.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  assert.equal(state.plans[0].state, 'applied');
+  assert.equal(state.counts.awaiting_decision, 0);
+  // The surviving copy of the decision. The marker that carried it has been deleted.
+  assert.equal(state.plans[0].outcome.reviewer, 'kim');
+  assert.equal(state.plans[0].outcome.applied, true);
+});
+
+test('a denial the applier closed is shown as closed, not as applied', async () => {
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa3',
+                             outcome: { decision: 'deny', applied: false,
+                                        detail: 'denied by kim: too broad' } });
+  const s3 = fakeS3({ [BUCKET]: plan.objects }, plan.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  assert.equal(state.plans[0].state, 'closed');
+  assert.equal(state.plans[0].outcome.applied, false);
+});
+
+test('an outcome from a plan this one replaced is ignored', async () => {
+  // The prefix is overwritten in place, and the applier writes one outcome per apply. A fresh
+  // plan sitting beside a previous plan's outcome must not read as already decided - that would
+  // hide a plan somebody has to look at.
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa4',
+                             outcome: { request_id: '644701781058-0000000000000000' } });
+  const s3 = fakeS3({ [BUCKET]: plan.objects }, plan.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  assert.equal(state.plans[0].state, 'awaiting_decision');
+  assert.equal(state.plans[0].outcome, null);
+  assert.equal(state.counts.awaiting_decision, 1);
+});
+
+test('an outcome beats an approval marker that is still sitting there', async () => {
+  // Ordering. Between the applier writing the outcome and deleting the marker, both exist - and
+  // the outcome is the newer fact.
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa5',
+                             outcome: {} });
+  const s3 = fakeS3(
+    { 'opt-solution-markers': [
+        { key: 'applier/644701781058-aaaaaaaaaaaaaaa5.json', lastModified: ago(90) },
+      ],
+      [BUCKET]: plan.objects },
+    { 'opt-solution-markers/applier/644701781058-aaaaaaaaaaaaaaa5.json':
+        { request_id: '644701781058-aaaaaaaaaaaaaaa5', decision: 'approve', reviewer: 'kim' },
+      ...plan.bodies },
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  assert.equal(state.plans[0].state, 'applied');
 });
 
 // ---- what is and is not a plan key --------------------------------------------------------------

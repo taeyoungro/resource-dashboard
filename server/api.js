@@ -183,6 +183,17 @@ export function routes({ config, s3, store, log }) {
         // to run a plan that does nothing.
         throw new HttpError(409, `${id} has no changes; there is nothing to decide`);
       }
+      if (plan.outcome) {
+        // The applier has finished with this plan and outcome.json records what it did. A second
+        // decision would write a marker for a plan whose state has already moved, and the applier
+        // would refuse it at the point of apply - terraform will not run a saved plan against
+        // state that changed under it. Refused here instead, where the reason can be read.
+        throw new HttpError(
+          409,
+          `${id} was already ${plan.outcome.applied ? 'applied' : 'closed'} by `
+          + `${plan.outcome.reviewer ?? 'somebody'}. Change the resource again to get a fresh plan.`,
+        );
+      }
       // Refused rather than approved without one. The plan file hash establishes that the applier
       // runs the approved file; it does not establish that the plan.txt the approver just read
       // describes that file, and a prefix is five separate objects. Plans written before the
