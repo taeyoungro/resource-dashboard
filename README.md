@@ -146,9 +146,12 @@ sudo chmod 0640 /etc/opt-dashboard/dashboard.env
 
 ### 2. 깃허브 액션
 
-`.github/workflows/deploy-dashboard.yml`. `main`에 밀면 `src/`·`server/`·`deploy/`·빌드 설정이
-바뀐 경우에만 돈다. Actions → **deploy dashboard** → Run workflow로 직접 돌릴 수도 있다(사유 입력
-필수 — 커밋이 설명해 주지 않는 배포이므로 실행 제목에 남는다).
+`.github/workflows/deploy-dashboard.yml`. **자동 실행이 없다** — `main`에 밀어도 아무 기계에도
+올라가지 않는다. Actions → **deploy dashboard** → Run workflow에서 브랜치를 고르고 사유를 적어
+직접 실행한다.
+
+사유가 필수인 이유는, 이제 모든 실행이 병합의 결과가 아니라 **누군가의 결정**이기 때문이다. 실행
+목록에 누가 왜 배포했는지가 제목으로 남는다.
 
 두 작업으로 나뉜다.
 
