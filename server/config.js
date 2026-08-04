@@ -5,7 +5,34 @@
 // A dashboard that starts against the wrong bucket does not fail: it shows an empty list, which
 // reads exactly like "nothing is wrong".
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 const REQUIRED = ['OPT_MARKER_BUCKET', 'OPT_STATE_BUCKET', 'OPT_DASHBOARD_API_KEY'];
+
+/** Which commit is running, for the issued_by field on every approval marker.
+ *
+ * install.sh writes this to a file beside the code; the deploy workflow passes the commit to it.
+ * Nothing puts it in the environment - the environment file is written by hand on the host and a
+ * deploy must not rewrite it - so reading only OPT_RELEASE meant every approval marker recorded
+ * "unknown" and could not be traced to a build. That was the one thing issued_by was for.
+ *
+ * Resolved from the module's own location rather than the working directory, so it does not depend
+ * on where the process was started from.
+ */
+function release() {
+  const fromEnv = (process.env.OPT_RELEASE ?? '').trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const value = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'RELEASE'),
+                               'utf-8').trim();
+    if (value) return value;
+  } catch {
+    // Not installed - running from a checkout. 'unknown' is then accurate.
+  }
+  return 'unknown';
+}
 
 export class ConfigError extends Error {}
 
@@ -79,6 +106,6 @@ export function load() {
     // bucket that has accumulated failures does not turn one sweep into thousands of calls.
     maxBodiesPerSweep: integer('OPT_MAX_BODIES_PER_SWEEP', 200),
 
-    release: (process.env.OPT_RELEASE ?? 'unknown').trim(),
+    release: release(),
   };
 }
