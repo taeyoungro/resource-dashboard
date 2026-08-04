@@ -128,7 +128,6 @@ jobs:
       - name: prepare ssh
         env:
           SSH_KEY: ${{ secrets.DASHBOARD_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.DASHBOARD_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -137,17 +136,33 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-          # Required, and deliberately not optional. The alternative in reach is
-          # StrictHostKeyChecking=no, which accepts whatever answers on that address - on a job
-          # that then hands over a key with sudo rights on the host.
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # No pinned host key. It was a stored secret that went stale on every instance
+          # replacement and on every address change, because known_hosts is keyed by address -
+          # so the deploy broke for a reason that had nothing to do with the deploy.
+          #
+          # accept-new against a known_hosts that starts empty each run: the first connection
+          # records the key, and every connection after it in the same run is verified against
+          # that record. So a host swapped between scp and ssh is still caught; a host that was
+          # already wrong at the first connection is not.
+          #
+          # What that costs, stated accurately. Public key authentication never transmits the
+          # private key - it signs a challenge - so a hostile host does not learn the deploy key.
+          # What it gets is the tarball, which is the built page and the server, and the remote
+          # script, which carries only a commit hash. What we lose is the guarantee that the deploy
+          # reached the intended machine, and that is the real cost: a deploy that silently went
+          # elsewhere while reporting success. The identity check in the install step below is what
+          # closes that, and it closes it against a wrong address rather than against a hostile one.
+          #
+          # Nothing secret rides along either way. OPT_DASHBOARD_API_KEY lives in the host's
+          # environment file, which this workflow deliberately never writes.
+          #
+          # If the deploy must be safe against an address a stranger controls - an Elastic IP that
+          # was released and reallocated, a hijacked DNS name - the answer is not a pinned host
+          # key. It is to stop using an address at all: reach the instance by instance id over
+          # Systems Manager, with the runner authenticating to AWS through GitHub's OIDC provider.
+          # That removes this secret and the deploy key together.
+          : > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
-          if ! grep -q '[^[:space:]]' ~/.ssh/known_hosts; then
-            echo "DASHBOARD_SSH_KNOWN_HOSTS is empty or whitespace." >&2
-            echo "Generate it on a trusted machine, not from this runner:" >&2
-            echo "  ssh-keyscan -p <port> -H <host>" >&2
-            exit 1
-          fi
 
       - name: transfer
         env:
@@ -158,7 +173,7 @@ jobs:
           set -euo pipefail
           scp -P "${PORT:-22}" \
               -i ~/.ssh/deploy_key \
-              -o StrictHostKeyChecking=yes \
+              -o StrictHostKeyChecking=accept-new \
               -o UserKnownHostsFile=~/.ssh/known_hosts \
               -o ConnectTimeout=15 \
               /tmp/dashboard.tar.gz "${USER_NAME}@${HOST}:/tmp/dashboard-${GITHUB_SHA}.tar.gz"
@@ -175,7 +190,7 @@ jobs:
           # 40 character hex string, and the script checks that before using it.
           ssh -p "${PORT:-22}" \
               -i ~/.ssh/deploy_key \
-              -o StrictHostKeyChecking=yes \
+              -o StrictHostKeyChecking=accept-new \
               -o UserKnownHostsFile=~/.ssh/known_hosts \
               -o ConnectTimeout=15 \
               "${USER_NAME}@${HOST}" "bash -s -- ${GITHUB_SHA}" <<'REMOTE'
@@ -185,6 +200,40 @@ jobs:
           case "$RELEASE" in
             [0-9a-f]*) : ;;
             *) echo "bad release id" >&2; exit 1 ;;
+          esac
+
+          # Am I the machine this deploy was meant for?
+          #
+          # This replaces what the pinned host key used to do, and it does a different job, so it
+          # is worth being clear about which. A host key answers "is this the same machine as last
+          # time"; the instance profile answers "is this a machine that holds the dashboard's
+          # role". The second survives instance replacement and address changes, which is exactly
+          # why the first kept going stale.
+          #
+          # It catches a wrong address - a stale secret, a recycled Elastic IP, an instance rebuilt
+          # under a different role - and it does not catch a hostile host, which could answer
+          # anything it likes. Deploying the dashboard onto the listener host now fails here
+          # instead of succeeding quietly, which matters more here than anywhere else: the two are
+          # the only EC2 instances in the solution and their addresses sit in adjacent secrets.
+          EXPECTED_ROLE="opt-SolutionDashboard"
+          TOKEN="$(curl -sS -X PUT --max-time 5 \
+                     -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+                     http://169.254.169.254/latest/api/token || true)"
+          PROFILE=""
+          if [ -n "$TOKEN" ]; then
+            PROFILE="$(curl -sS --max-time 5 -H "X-aws-ec2-metadata-token: $TOKEN" \
+                        http://169.254.169.254/latest/meta-data/iam/info 2>/dev/null || true)"
+          fi
+          case "$PROFILE" in
+            *"instance-profile/${EXPECTED_ROLE}"*)
+              echo "identity: ${EXPECTED_ROLE}" ;;
+            "")
+              echo "no instance metadata answered - this is not an EC2 instance, or IMDSv2 is off" >&2
+              exit 1 ;;
+            *)
+              echo "wrong host: expected instance profile ${EXPECTED_ROLE}, got:" >&2
+              echo "$PROFILE" >&2
+              exit 1 ;;
           esac
 
           STAGE="/tmp/opt-dashboard-${RELEASE}"
