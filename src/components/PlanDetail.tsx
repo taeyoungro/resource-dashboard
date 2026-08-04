@@ -77,12 +77,26 @@ export function PlanDetail({ detail, decided, busy, onDecide }: Props) {
         <pre className="plan">{detail.config_json || "main.tf.json 이 없습니다."}</pre>
       </details>
 
-      {/* The digest is what the applier checks the plan against, so it is worth being able to
-          read it here - if a decision is ever disputed, this is the value in the marker. */}
+      {/* Both values go into the marker and both are checked before anything is applied. Worth
+          being able to read them here: if a decision is ever disputed, these are what the applier
+          compared against. The first is the file itself, the second is what it will do. */}
       <div className="meta small">
-        tfplan sha256: <code>{detail.plan_sha256 ?? "계산할 수 없음"}</code>
+        tfplan sha256: <code>{detail.plan_file_sha256 ?? "계산할 수 없음"}</code>
         {detail.plan_bytes !== null ? ` · ${detail.plan_bytes} bytes` : ""}
       </div>
+      <div className="meta small">
+        변경 다이제스트: <code>{detail.changes_sha256 ?? "없음"}</code>
+      </div>
+
+      {detail.changes_sha256 ? null : (
+        <div className="row-warn">
+          이 계획에는 <code>changes.sha256</code>이 없어 <strong>승인할 수 없습니다.</strong> 그
+          값을 쓰지 않던 검사기가 만든 계획입니다. 계획 접두사는 객체 다섯 개이고, 일부만 덮어써지면
+          한 계획의 <code>tfplan</code> 옆에 다른 계획의 <code>plan.txt</code>가 남을 수 있습니다.
+          그 다이제스트가 있어야 적용기가 <code>terraform show</code>로 위에 보이는 설명이 실제
+          적용할 파일을 설명하는지 확인합니다. 자원을 다시 변경해 새 계획을 받으면 됩니다.
+        </div>
+      )}
 
       {decided ? (
         <div className="row-warn">
@@ -105,7 +119,14 @@ export function PlanDetail({ detail, decided, busy, onDecide }: Props) {
           onChange={(e) => setComment(e.target.value)}
         />
         <div className="actions">
-          <button className="btn-approve" disabled={busy} onClick={() => submit("approve")}>
+          {/* Approving is disabled without a digest because the server refuses it. Offering a
+              button that always fails is worse than not offering one. Denying stays available -
+              a plan nobody can approve is exactly one somebody may want to refuse. */}
+          <button
+            className="btn-approve"
+            disabled={busy || !detail.changes_sha256}
+            onClick={() => submit("approve")}
+          >
             승인
           </button>
           <button className="btn-deny" disabled={busy} onClick={() => submit("deny")}>
