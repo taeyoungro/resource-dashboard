@@ -12,6 +12,7 @@
 
 import { timingSafeEqual } from 'node:crypto';
 
+import { NotificationError, parse as parseNotification } from './notifications.js';
 import { putJson } from './s3.js';
 import { planPrefixFromId, readPlan } from './sweep.js';
 
@@ -39,14 +40,33 @@ export class HttpError extends Error {
   }
 }
 
-export function authorised(config, headerValue) {
-  const given = Buffer.from(String(headerValue ?? ''), 'utf-8');
-  const expected = Buffer.from(config.apiKey, 'utf-8');
+function sameKey(given, expected) {
+  const a = Buffer.from(String(given ?? ''), 'utf-8');
+  const b = Buffer.from(String(expected ?? ''), 'utf-8');
   // Lengths differing is itself the answer, and timingSafeEqual throws rather than returning
   // false when they do, so it is checked first.
-  if (given.length !== expected.length) return false;
-  return timingSafeEqual(given, expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
+
+export function authorised(config, headerValue) {
+  return sameKey(headerValue, config.apiKey);
+}
+
+/** The ingest key, and only the ingest key.
+ *
+ * Deliberately not "the API key also works". The two keys mark two different callers - a person
+ * at a browser who may approve IAM changes, and a machine that may say a task started - and a
+ * route that accepted both would make the distinction advisory. An unset ingest key authorises
+ * nothing, which is why the route reports itself as off rather than open.
+ */
+export function authorisedToAnnounce(config, headerValue) {
+  if (!config.ingestKey) return false;
+  return sameKey(headerValue, config.ingestKey);
+}
+
+/** Which key opens a route. Everything not listed here needs the dashboard's own key. */
+export const INGEST_ROUTES = new Set(['POST /api/notifications']);
 
 async function readBody(req) {
   const chunks = [];
@@ -124,7 +144,12 @@ function decisionMarker({ config, plan, prefix, payload, now }) {
   };
 }
 
-export function routes({ config, s3, store, log }) {
+export function routes({ config, s3, store, notifications, log }) {
+  // Announcements ask for a sweep, because learning that work started is most of what they are
+  // for. Rate limited: a burst of dispatches is a normal thing (one administrator attaching five
+  // policies) and would otherwise be a burst of full bucket listings.
+  let lastNotificationSweep = 0;
+
   return {
     // No authentication: a health check that needs a secret is a health check that reports the
     // secret being wrong as the service being down.
@@ -144,6 +169,58 @@ export function routes({ config, s3, store, log }) {
       await store.refresh('requested from the page');
       return store.get();
     },
+
+    // Posted by the listener after it has dispatched an inspection and acknowledged the queue.
+    //
+    // This is an announcement and NOT a state. Nothing here changes what the page believes about
+    // markers or plans - the sweep decides that, from the buckets, and it will contradict a
+    // fabricated announcement on its next pass. What this buys is latency: the page learns that
+    // work started in seconds instead of at the next sweep interval.
+    //
+    // So a failure here is not the listener's problem. It answers with a status and no retry
+    // advice, because the listener must not retry: the marker is already in S3 and the sweep will
+    // find it whatever happens to this request.
+    'POST /api/notifications': async ({ body }) => {
+      if (!config.ingestKey) {
+        throw new HttpError(503, 'OPT_DASHBOARD_INGEST_KEY is not set; announcements are off');
+      }
+      let entry;
+      try {
+        entry = parseNotification(body);
+      } catch (err) {
+        if (err instanceof NotificationError) throw new HttpError(400, err.message);
+        throw err;
+      }
+
+      const now = Date.now();
+      const recorded = notifications.record(entry, now);
+      log.info(
+        'announced kind=%s request=%s resource=%s account=%s events=%d repeats=%d',
+        recorded.kind, recorded.request_id, recorded.resource ?? '-',
+        recorded.account_id ?? '-', recorded.event_count ?? 0, recorded.repeats,
+      );
+
+      // Not awaited. The announcement is answered as soon as it is recorded, so a slow sweep
+      // cannot hold the listener's socket open - the listener gives this call a short timeout and
+      // anything slower than that would be a hang it has to survive rather than wait for.
+      const due = now - lastNotificationSweep >= config.notificationSweepSeconds * 1000;
+      if (due) {
+        lastNotificationSweep = now;
+        store.refresh(`announced ${recorded.kind} ${recorded.request_id}`).catch(() => {
+          // Already logged by the store, and a failed sweep must not turn into a failed
+          // announcement - the two are independent and the next sweep will run anyway.
+        });
+      }
+
+      return { recorded: recorded.id, swept: due };
+    },
+
+    // What has been announced recently, newest first. Emptied by a restart on purpose: these are
+    // announcements, and everything durable about them is in the buckets.
+    'GET /api/notifications': async () => ({
+      notifications: notifications.list(),
+      enabled: Boolean(config.ingestKey),
+    }),
 
     'GET /api/plans/:id': async ({ params }) => {
       const id = planId(params.id);

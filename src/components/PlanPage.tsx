@@ -3,6 +3,7 @@ import { api } from "../api";
 import type { PlanDetail as Detail, SweepState } from "../types";
 import { PlanDetail } from "./PlanDetail";
 import { PlanList } from "./PlanList";
+import { Notifications } from "./Notifications";
 
 interface Props {
   state: SweepState | null;
@@ -77,6 +78,9 @@ export function PlanPage({ state, error, onRefresh }: Props) {
         </header>
         {error && <div className="error">{error}</div>}
         <PlanList items={plans} selectedId={selectedId} onSelect={setSelectedId} />
+        {/* Below the plan list, not merged into it. The list is what the buckets say; this is
+            what a machine announced a moment ago and the sweep has not confirmed yet. */}
+        <Notifications />
       </aside>
       <main>
         {detailError && <div className="error">{detailError}</div>}

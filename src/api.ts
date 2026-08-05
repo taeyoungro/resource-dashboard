@@ -1,4 +1,6 @@
-import type { DecisionPayload, DecisionResult, PlanDetail, SweepState } from "./types";
+import type {
+  DecisionPayload, DecisionResult, NotificationFeed, PlanDetail, SweepState,
+} from "./types";
 
 // Same origin. The server that serves this page is the server that answers these calls, so there
 // is no host to configure and no CORS to relax. In development the Vite proxy forwards /api to
@@ -48,6 +50,11 @@ export const api = {
   /** Re-read both buckets now, rather than waiting for the interval. */
   sweep: async (): Promise<SweepState> =>
     handle(await fetch(`${BASE}/sweep`, { method: "POST", headers: headers() })),
+
+  /** What the listener has announced recently. Read-only here - posting needs the ingest key,
+   *  which is a machine's credential and never reaches this page. */
+  notifications: async (): Promise<NotificationFeed> =>
+    handle(await fetch(`${BASE}/notifications`, { headers: headers() })),
 
   plan: async (planId: string): Promise<PlanDetail> =>
     handle(await fetch(`${BASE}/plans/${encodeURIComponent(planId)}`, { headers: headers() })),

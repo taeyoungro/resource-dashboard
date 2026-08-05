@@ -131,6 +131,46 @@ export interface PlanDetail {
   artifacts: string[];
 }
 
+/** An announcement from the listener that it dispatched an inspection.
+ *
+ * NOT a state. Nothing here is believed: the sweep reads the buckets and decides what exists, and
+ * it will contradict a fabricated announcement on its next pass. What this buys is latency - the
+ * page learns that work started in seconds rather than at the next sweep - and a recent-activity
+ * view, which the buckets cannot give at all, because a finished inspection deletes its marker and
+ * leaves nothing behind that says it ran.
+ *
+ * In memory on the server and emptied by a restart. Everything durable is in S3.
+ */
+export interface Notification {
+  id: string;
+  kind: "inspector" | "applier" | "inline_writer";
+  request_id: string;
+  account_id: string | null;
+  resource: string | null;
+  request_kind: string | null;
+  marker_bucket: string | null;
+  marker_key: string;
+  task_arn: string | null;
+  event_count: number;
+  event_names: string[];
+  first_event_at: string | null;
+  last_event_at: string | null;
+  /** quiet is the normal one. max_wait means the buffer hit its hard ceiling. */
+  buffer_reason: string | null;
+  held_seconds: number | null;
+  dispatched_at: string | null;
+  received_at: string;
+  first_received_at: string;
+  /** Above zero when the same request was announced again - a redelivered queue message. */
+  repeats: number;
+}
+
+export interface NotificationFeed {
+  notifications: Notification[];
+  /** False when OPT_DASHBOARD_INGEST_KEY is unset on the server; the listener cannot announce. */
+  enabled: boolean;
+}
+
 export interface SweepState {
   swept_at: string;
   markers: Marker[];

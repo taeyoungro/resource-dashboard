@@ -5,9 +5,12 @@
 
 import { createServer } from 'node:http';
 
-import { authorised, HttpError, readBody, routes } from './api.js';
+import {
+  authorised, authorisedToAnnounce, HttpError, INGEST_ROUTES, readBody, routes,
+} from './api.js';
 import { ConfigError, load } from './config.js';
 import { client } from './s3.js';
+import { makeNotifications } from './notifications.js';
 import { staticHandler } from './static.js';
 import { sweep } from './sweep.js';
 
@@ -103,7 +106,8 @@ async function main() {
 
   const s3 = client(config);
   const store = makeStore(s3, config);
-  const routeTable = routes({ config, s3, store, log });
+  const notifications = makeNotifications({ limit: config.notificationLimit });
+  const routeTable = routes({ config, s3, store, notifications, log });
   const serveStatic = staticHandler(config.staticDir);
 
   const server = createServer(async (req, res) => {
@@ -132,10 +136,22 @@ async function main() {
       return;
     }
 
-    if (path !== '/api/health' && !authorised(config, req.headers['x-api-key'])) {
-      log.warn('unauthorised %s %s from %s', req.method, path, req.socket.remoteAddress);
-      json(res, 401, { error: 'X-API-Key missing or wrong' });
-      return;
+    // Which key opens which route, decided here and only here.
+    //
+    // POST /api/notifications takes the ingest key and nothing else. The dashboard's own key is
+    // not accepted there and the ingest key is not accepted anywhere else, so the two callers -
+    // a person who may approve IAM changes, and a machine that may say a task started - stay
+    // separate by construction rather than by convention.
+    const spec = `${req.method} ${path}`;
+    if (path !== '/api/health') {
+      const ok = INGEST_ROUTES.has(spec)
+        ? authorisedToAnnounce(config, req.headers['x-api-key'])
+        : authorised(config, req.headers['x-api-key']);
+      if (!ok) {
+        log.warn('unauthorised %s %s from %s', req.method, path, req.socket.remoteAddress);
+        json(res, 401, { error: 'X-API-Key missing or wrong' });
+        return;
+      }
     }
 
     try {
@@ -166,6 +182,11 @@ async function main() {
         + 'clear unless something in front terminates TLS',
       );
     }
+    // Said at startup, because the failure mode is silence. With no ingest key the listener's
+    // announcements are refused and nothing anywhere says so except a 401 in its log; the page
+    // still works, just a sweep interval behind.
+    log.info('announcements %s (POST /api/notifications)',
+             config.ingestKey ? 'enabled' : 'DISABLED - OPT_DASHBOARD_INGEST_KEY is not set');
   });
 
   // The sweep at startup is half of why a lost notification costs nothing: a replaced instance
