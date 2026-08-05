@@ -12,6 +12,7 @@
 
 import { timingSafeEqual } from 'node:crypto';
 
+import { NotificationError, parse as parseNotification } from './notifications.js';
 import { putJson } from './s3.js';
 import { planPrefixFromId, readPlan } from './sweep.js';
 
@@ -28,6 +29,7 @@ const PLAN_ID = /^\d{12}:[\w+=,.@-]{1,96}$/;
 // key, but the approval marker is still named by it, so it is checked before being made into one.
 const REQUEST_ID = /^\d{12}-[0-9a-f]{16}$/;
 
+// A decision is a reviewer, a comment and a digest. Anything larger is not one.
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_COMMENT = 2000;
 const MAX_REVIEWER = 128;
@@ -39,21 +41,40 @@ export class HttpError extends Error {
   }
 }
 
-export function authorised(config, headerValue) {
-  const given = Buffer.from(String(headerValue ?? ''), 'utf-8');
-  const expected = Buffer.from(config.apiKey, 'utf-8');
+function sameKey(given, expected) {
+  const a = Buffer.from(String(given ?? ''), 'utf-8');
+  const b = Buffer.from(String(expected ?? ''), 'utf-8');
   // Lengths differing is itself the answer, and timingSafeEqual throws rather than returning
   // false when they do, so it is checked first.
-  if (given.length !== expected.length) return false;
-  return timingSafeEqual(given, expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
-async function readBody(req) {
+export function authorised(config, headerValue) {
+  return sameKey(headerValue, config.apiKey);
+}
+
+/** The ingest key, and only the ingest key.
+ *
+ * Deliberately not "the API key also works". The two keys mark two different callers - a person
+ * at a browser who may approve IAM changes, and a machine that may say a task started - and a
+ * route that accepted both would make the distinction advisory. An unset ingest key authorises
+ * nothing, which is why the route reports itself as off rather than open.
+ */
+export function authorisedToAnnounce(config, headerValue) {
+  if (!config.ingestKey) return false;
+  return sameKey(headerValue, config.ingestKey);
+}
+
+/** Which key opens a route. Everything not listed here needs the dashboard's own key. */
+export const INGEST_ROUTES = new Set(['POST /api/notifications']);
+
+export async function readBody(req, maxBytes = MAX_BODY_BYTES) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'request body too large');
+    if (size > maxBytes) throw new HttpError(413, `request body larger than ${maxBytes} bytes`);
     chunks.push(chunk);
   }
   if (size === 0) return {};
@@ -124,7 +145,12 @@ function decisionMarker({ config, plan, prefix, payload, now }) {
   };
 }
 
-export function routes({ config, s3, store, log }) {
+export function routes({ config, s3, store, notifications, markerBodies, log }) {
+  // Announcements ask for a sweep, because learning that work started is most of what they are
+  // for. Rate limited: a burst of dispatches is a normal thing (one administrator attaching five
+  // policies) and would otherwise be a burst of full bucket listings.
+  let lastNotificationSweep = 0;
+
   return {
     // No authentication: a health check that needs a secret is a health check that reports the
     // secret being wrong as the service being down.
@@ -144,6 +170,66 @@ export function routes({ config, s3, store, log }) {
       await store.refresh('requested from the page');
       return store.get();
     },
+
+    // Posted by the listener after it has dispatched an inspection and acknowledged the queue.
+    //
+    // This is an announcement and NOT a state. Nothing here changes what the page believes about
+    // markers or plans - the sweep decides that, from the buckets, and it will contradict a
+    // fabricated announcement on its next pass. What this buys is latency: the page learns that
+    // work started in seconds instead of at the next sweep interval.
+    //
+    // So a failure here is not the listener's problem. It answers with a status and no retry
+    // advice, because the listener must not retry: the marker is already in S3 and the sweep will
+    // find it whatever happens to this request.
+    'POST /api/notifications': async ({ body }) => {
+      if (!config.ingestKey) {
+        throw new HttpError(503, 'OPT_DASHBOARD_INGEST_KEY is not set; announcements are off');
+      }
+      let entry;
+      try {
+        entry = parseNotification(body);
+      } catch (err) {
+        if (err instanceof NotificationError) throw new HttpError(400, err.message);
+        throw err;
+      }
+
+      // The body goes to the cache the sweep reads, the row goes to the panel. Same request, two
+      // consumers, and only one of them wants ten kilobytes.
+      if (entry.marker_body) {
+        markerBodies.put(entry.kind, entry.request_id, entry.marker_body, 'announced');
+      }
+
+      const now = Date.now();
+      const recorded = notifications.record(entry, now);
+      log.info(
+        'announced kind=%s request=%s resource=%s account=%s events=%d body=%s repeats=%d',
+        recorded.kind, recorded.request_id, recorded.resource ?? '-',
+        recorded.account_id ?? '-', recorded.event_count ?? 0,
+        entry.marker_body ? 'held' : (entry.body_omitted ? 'too-large' : 'absent'),
+        recorded.repeats,
+      );
+
+      // Not awaited. The announcement is answered as soon as it is recorded, so a slow sweep
+      // cannot hold the listener's socket open - the listener gives this call a short timeout and
+      // anything slower than that would be a hang it has to survive rather than wait for.
+      const due = now - lastNotificationSweep >= config.notificationSweepSeconds * 1000;
+      if (due) {
+        lastNotificationSweep = now;
+        store.refresh(`announced ${recorded.kind} ${recorded.request_id}`).catch(() => {
+          // Already logged by the store, and a failed sweep must not turn into a failed
+          // announcement - the two are independent and the next sweep will run anyway.
+        });
+      }
+
+      return { recorded: recorded.id, swept: due };
+    },
+
+    // What has been announced recently, newest first. Emptied by a restart on purpose: these are
+    // announcements, and everything durable about them is in the buckets.
+    'GET /api/notifications': async () => ({
+      notifications: notifications.list(),
+      enabled: Boolean(config.ingestKey),
+    }),
 
     'GET /api/plans/:id': async ({ params }) => {
       const id = planId(params.id);
@@ -182,6 +268,17 @@ export function routes({ config, s3, store, log }) {
         // one, not because anybody has to decide about it, and approving it would ask the applier
         // to run a plan that does nothing.
         throw new HttpError(409, `${id} has no changes; there is nothing to decide`);
+      }
+      if (plan.outcome) {
+        // The applier has finished with this plan and outcome.json records what it did. A second
+        // decision would write a marker for a plan whose state has already moved, and the applier
+        // would refuse it at the point of apply - terraform will not run a saved plan against
+        // state that changed under it. Refused here instead, where the reason can be read.
+        throw new HttpError(
+          409,
+          `${id} was already ${plan.outcome.applied ? 'applied' : 'closed'} by `
+          + `${plan.outcome.reviewer ?? 'somebody'}. Change the resource again to get a fresh plan.`,
+        );
       }
       // Refused rather than approved without one. The plan file hash establishes that the applier
       // runs the approved file; it does not establish that the plan.txt the approver just read
@@ -239,6 +336,10 @@ export function routes({ config, s3, store, log }) {
       const key = `${config.applierPrefix}${requestId}.json`;
       const bytes = await putJson(s3, config.markerBucket, key, marker);
 
+      // This process wrote it, so it knows what is in it. Reading it back out of S3 on the next
+      // sweep was always a round trip to learn something it had just decided.
+      markerBodies.put('applier', requestId, marker, 'written-here');
+
       log.info(
         'decision plan=%s request=%s decision=%s reviewer=%s key=s3://%s/%s bytes=%d changes=%s',
         id, requestId, marker.decision, reviewer, config.markerBucket, key, bytes,
@@ -253,4 +354,3 @@ export function routes({ config, s3, store, log }) {
   };
 }
 
-export { readBody };

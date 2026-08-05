@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { makeMarkerBodies } from './markerBodies.js';
 import {
   changesFromPlan, identityFromConfig, isDigest, planIdFromKey, planPrefixFromId, readPlan,
   requestIdFromMarkerKey, sweep,
@@ -29,7 +30,9 @@ const NOW = Date.parse('2026-08-03T12:00:00Z');
 const ago = (seconds) => new Date(NOW - seconds * 1000).toISOString();
 
 function fakeS3(objects, bodies = {}) {
+  const gets = [];
   return {
+    gets,
     async send(command) {
       const input = command.input;
       if (command.constructor.name === 'ListObjectsV2Command') {
@@ -44,6 +47,8 @@ function fakeS3(objects, bodies = {}) {
         return { Contents: contents, IsTruncated: false };
       }
       if (command.constructor.name === 'GetObjectCommand') {
+        // Recorded so a test can assert that a body already held was not fetched again.
+        gets.push(input.Key);
         const body = bodies[`${input.Bucket}/${input.Key}`];
         if (body === undefined) {
           const err = new Error('NoSuchKey');
@@ -72,10 +77,12 @@ const BUCKET = 'opt-org-policy-terraform-state';
  * Keyed by <account>/<resource>/plan/, which is the whole point: two edits to one resource are one
  * prefix, not two. Every test that used to spell out plans/<request id>/ was spelling out the bug.
  */
-function planFixture(account, resource, { at, requestId, hasChanges = true, digest } = {}) {
+function planFixture(account, resource,
+                     { at, requestId, hasChanges = true, digest, outcome } = {}) {
   const prefix = `${account}/${resource}/plan/`;
   const names = ['tfplan', 'main.tf.json', 'plan.json', 'plan.txt', 'changes.sha256',
                  'request.json'];
+  if (outcome) names.push('outcome.json');
   const objects = names.map((n) => ({ key: `${prefix}${n}`, lastModified: at }));
   const bodies = {
     [`${BUCKET}/${prefix}main.tf.json`]: {
@@ -91,6 +98,14 @@ function planFixture(account, resource, { at, requestId, hasChanges = true, dige
       planned_at: at,
     },
   };
+  if (outcome) {
+    bodies[`${BUCKET}/${prefix}outcome.json`] = {
+      schema: 1, request_id: requestId, account_id: account, resource,
+      decision: 'approve', reviewer: 'kim', comment: '', applied: true,
+      detail: 'Apply complete! Resources: 1 added, 0 changed, 0 destroyed.',
+      finished_at: at, ...outcome,
+    };
+  }
   return { objects, bodies, prefix };
 }
 
@@ -254,6 +269,72 @@ test('an empty bucket is an empty answer and not an error', async () => {
   const state = await sweep(fakeS3({}), CONFIG, { now: NOW });
   assert.deepEqual(state.counts, { failed: 0, running: 0, awaiting_decision: 0 });
   assert.deepEqual(state.errors, []);
+});
+
+// ---- the applier's record ----------------------------------------------------------------------
+//
+// The hole this closes: the applier deletes its approval marker when it finishes, so an applied
+// plan used to be indistinguishable from one nobody had looked at. It matters more now that the
+// prefix is per resource and does not go away either - every applied resource would have read as
+// forever awaiting a decision.
+
+test('a plan the applier finished with is not awaiting a decision', async () => {
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa2',
+                             outcome: {} });
+  const s3 = fakeS3({ [BUCKET]: plan.objects }, plan.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  assert.equal(state.plans[0].state, 'applied');
+  assert.equal(state.counts.awaiting_decision, 0);
+  // The surviving copy of the decision. The marker that carried it has been deleted.
+  assert.equal(state.plans[0].outcome.reviewer, 'kim');
+  assert.equal(state.plans[0].outcome.applied, true);
+});
+
+test('a denial the applier closed is shown as closed, not as applied', async () => {
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa3',
+                             outcome: { decision: 'deny', applied: false,
+                                        detail: 'denied by kim: too broad' } });
+  const s3 = fakeS3({ [BUCKET]: plan.objects }, plan.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  assert.equal(state.plans[0].state, 'closed');
+  assert.equal(state.plans[0].outcome.applied, false);
+});
+
+test('an outcome from a plan this one replaced is ignored', async () => {
+  // The prefix is overwritten in place, and the applier writes one outcome per apply. A fresh
+  // plan sitting beside a previous plan's outcome must not read as already decided - that would
+  // hide a plan somebody has to look at.
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa4',
+                             outcome: { request_id: '644701781058-0000000000000000' } });
+  const s3 = fakeS3({ [BUCKET]: plan.objects }, plan.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  assert.equal(state.plans[0].state, 'awaiting_decision');
+  assert.equal(state.plans[0].outcome, null);
+  assert.equal(state.counts.awaiting_decision, 1);
+});
+
+test('an outcome beats an approval marker that is still sitting there', async () => {
+  // Ordering. Between the applier writing the outcome and deleting the marker, both exist - and
+  // the outcome is the newer fact.
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa5',
+                             outcome: {} });
+  const s3 = fakeS3(
+    { 'opt-solution-markers': [
+        { key: 'applier/644701781058-aaaaaaaaaaaaaaa5.json', lastModified: ago(90) },
+      ],
+      [BUCKET]: plan.objects },
+    { 'opt-solution-markers/applier/644701781058-aaaaaaaaaaaaaaa5.json':
+        { request_id: '644701781058-aaaaaaaaaaaaaaa5', decision: 'approve', reviewer: 'kim' },
+      ...plan.bodies },
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  assert.equal(state.plans[0].state, 'applied');
 });
 
 // ---- what is and is not a plan key --------------------------------------------------------------
@@ -439,4 +520,93 @@ test('a truncated or malformed digest is treated as absent', () => {
   assert.equal(isDigest(''), false);
   assert.equal(isDigest(null), false);
   assert.equal(isDigest(undefined), false);
+});
+
+// ---- marker bodies the sweep already holds -------------------------------------------------------
+//
+// The sweep answers two questions with two costs. Which markers exist is one listing. What each one
+// is about was a GetObject per marker, and that is the only reason the body-read cap, the partial
+// read warning and the body_read flag exist.
+//
+// Two of the three writers hand this process the body for free: the listener announces an inspector
+// marker with its body, and the applier markers are ones this process wrote itself. So in a healthy
+// system the sweep makes no GetObject on the marker bucket at all - and when it misses, it costs a
+// call rather than a wrong answer, which is what keeps the announcement from being load-bearing.
+
+const MARKER_BODY = {
+  request_id: '644701781058-aaaaaaaaaaaaaaaa',
+  account_id: '644701781058',
+  resource: 'cmp-WebHosting',
+  kind: 'spec_policy',
+  first_event_at: ago(120),
+  last_event_at: ago(113),
+  events: [{ event_name: 'CreatePolicy', event_time: ago(120), detail: { big: 'x'.repeat(200) } }],
+};
+
+test('a body already held is not fetched again', async () => {
+  const bodies = makeMarkerBodies();
+  bodies.put('inspector', '644701781058-aaaaaaaaaaaaaaaa', MARKER_BODY, 'announced');
+
+  const s3 = fakeS3({ 'opt-solution-markers': [
+    { key: 'inspector/644701781058-aaaaaaaaaaaaaaaa.json', lastModified: ago(60) },
+  ] });
+  const state = await sweep(s3, CONFIG, { now: NOW, bodies });
+
+  assert.deepEqual(s3.gets, [], 'the sweep fetched a body it was already given');
+  assert.equal(state.bodies.held, 1);
+  assert.equal(state.bodies.fetched, 0);
+  // And the row is the same one a fetch would have produced.
+  assert.equal(state.markers[0].resource, 'cmp-WebHosting');
+  assert.equal(state.markers[0].body_read, true);
+  assert.equal(state.markers[0].event_count, 1);
+});
+
+test('a body that was never announced is fetched, and the answer is the same', async () => {
+  // The fallback, and the reason a lost announcement costs a call rather than a wrong answer.
+  const s3 = fakeS3(
+    { 'opt-solution-markers': [
+      { key: 'inspector/644701781058-aaaaaaaaaaaaaaaa.json', lastModified: ago(60) },
+    ] },
+    { 'opt-solution-markers/inspector/644701781058-aaaaaaaaaaaaaaaa.json': MARKER_BODY },
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW, bodies: makeMarkerBodies() });
+
+  assert.deepEqual(s3.gets, ['inspector/644701781058-aaaaaaaaaaaaaaaa.json']);
+  assert.equal(state.bodies.fetched, 1);
+  assert.equal(state.markers[0].resource, 'cmp-WebHosting');
+});
+
+test('an applier marker this process wrote is not read back', async () => {
+  // It knows what is in it. Reading it back was a round trip to learn something it had just decided.
+  const approval = { request_id: '644701781058-bbbbbbbbbbbbbbbb', account_id: '644701781058',
+                     resource: 'cmp-WebHosting', decision: 'approve', reviewer: 'kim' };
+  const bodies = makeMarkerBodies();
+  bodies.put('applier', '644701781058-bbbbbbbbbbbbbbbb', approval, 'written-here');
+
+  const s3 = fakeS3({ 'opt-solution-markers': [
+    { key: 'applier/644701781058-bbbbbbbbbbbbbbbb.json', lastModified: ago(60) },
+  ] });
+  const state = await sweep(s3, CONFIG, { now: NOW, bodies });
+
+  assert.deepEqual(s3.gets, []);
+  assert.equal(state.markers[0].reviewer, 'kim');
+  assert.equal(state.markers[0].decision, 'approve');
+});
+
+test('the fetch cap counts only what was not already held', async () => {
+  // The cap exists because fetching bodies in bulk is expensive. Bodies that arrived by
+  // announcement cost nothing, so they must not consume it.
+  const bodies = makeMarkerBodies();
+  const objects = [];
+  for (let i = 0; i < 5; i += 1) {
+    const id = `644701781058-${String(i).repeat(16)}`;
+    objects.push({ key: `inspector/${id}.json`, lastModified: ago(60 + i) });
+    if (i < 3) bodies.put('inspector', id, { ...MARKER_BODY, request_id: id }, 'announced');
+  }
+  const s3 = fakeS3({ 'opt-solution-markers': objects });
+  const state = await sweep(s3, CONFIG, { ...{ now: NOW }, bodies });
+
+  assert.equal(state.bodies.held, 3);
+  assert.equal(state.bodies.fetched, 2, 'only the two that were never announced');
+  assert.equal(s3.gets.length, 2);
 });

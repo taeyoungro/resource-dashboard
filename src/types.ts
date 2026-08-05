@@ -54,15 +54,32 @@ export interface PlanSummary {
   artifacts: string[];
 
   /**
-   * awaiting_decision  no approval marker beside it
-   * decided            an approval marker exists, so the applier has it
+   * awaiting_decision  no approval marker beside it and no outcome
+   * decided            an approval marker exists, so the applier has it and has not finished
+   * applied            the applier applied it and recorded outcome.json
+   * closed             the applier finished with it without applying - a denial
    * no_changes         the twin already matches the spec; nothing to decide
-   *
-   * The first two cannot distinguish a plan nobody has looked at from one already applied: the
-   * applier deletes its marker when it finishes and nothing is written in its place. Known, and
-   * shown on the page rather than hidden behind a filter.
    */
-  state: "awaiting_decision" | "decided" | "no_changes";
+  state: "awaiting_decision" | "decided" | "applied" | "closed" | "no_changes";
+
+  /** The applier's record, once it has finished with this plan. Null until then. */
+  outcome: PlanOutcome | null;
+}
+
+/** What the applier did, read from outcome.json in the plan prefix.
+ *
+ * This is the surviving copy of the decision. The applier deletes the approval marker when it
+ * finishes, and CloudTrail records that the object went rather than what was in it - so the
+ * reviewer and the decision are carried here first, and this is what anybody reads afterwards.
+ */
+export interface PlanOutcome {
+  decision: "approve" | "deny" | null;
+  reviewer: string | null;
+  /** False on a denial, and false on an approval the applier refused. Both are outcomes. */
+  applied: boolean;
+  /** terraform's own summary line, or why it was not applied. */
+  detail: string;
+  finished_at: string | null;
 }
 
 export interface PlanChange {
@@ -78,6 +95,8 @@ export interface PlanDetail {
   request_id: string | null;
   /** False when the twin already matches the spec. Such a plan cannot be approved. */
   has_changes: boolean;
+  /** What the applier did, once it has finished. A plan with one is not awaiting anything. */
+  outcome: PlanOutcome | null;
   account_id: string | null;
   resource: string | null;
   planned_at: string | null;
@@ -112,6 +131,48 @@ export interface PlanDetail {
   artifacts: string[];
 }
 
+/** An announcement from the listener that it dispatched an inspection.
+ *
+ * NOT a state. Nothing here is believed: the sweep reads the buckets and decides what exists, and
+ * it will contradict a fabricated announcement on its next pass. What this buys is latency - the
+ * page learns that work started in seconds rather than at the next sweep - and a recent-activity
+ * view, which the buckets cannot give at all, because a finished inspection deletes its marker and
+ * leaves nothing behind that says it ran.
+ *
+ * In memory on the server and emptied by a restart. Everything durable is in S3.
+ */
+export interface Notification {
+  id: string;
+  kind: "inspector" | "applier" | "inline_writer";
+  request_id: string;
+  account_id: string | null;
+  resource: string | null;
+  request_kind: string | null;
+  marker_bucket: string | null;
+  marker_key: string;
+  task_arn: string | null;
+  event_count: number;
+  event_names: string[];
+  first_event_at: string | null;
+  last_event_at: string | null;
+  /** quiet is the normal one. max_wait means the buffer hit its hard ceiling. */
+  buffer_reason: string | null;
+  held_seconds: number | null;
+  dispatched_at: string | null;
+  /** True when the marker was too large to travel with the announcement. The sweep fetches it. */
+  body_omitted: boolean;
+  received_at: string;
+  first_received_at: string;
+  /** Above zero when the same request was announced again - a redelivered queue message. */
+  repeats: number;
+}
+
+export interface NotificationFeed {
+  notifications: Notification[];
+  /** False when OPT_DASHBOARD_INGEST_KEY is unset on the server; the listener cannot announce. */
+  enabled: boolean;
+}
+
 export interface SweepState {
   swept_at: string;
   markers: Marker[];
@@ -124,6 +185,12 @@ export interface SweepState {
    * somebody made by hand, and calling it a failure teaches everyone to ignore the banner.
    */
   skipped_keys?: number;
+  /**
+   * Marker bodies this sweep already held versus had to fetch from S3. Zero fetched is the healthy
+   * shape - the listener announces inspector markers with their bodies, and the approval markers
+   * are ones this server wrote. A number that climbs means announcements are not arriving.
+   */
+  bodies?: { held: number; fetched: number };
   counts: {
     failed: number;
     running: number;

@@ -58,7 +58,28 @@ export function load() {
     );
   }
 
+  // A second key, for one route, and deliberately not the same one.
+  //
+  // OPT_DASHBOARD_API_KEY approves plans. Handing it to the listener so it could announce its
+  // dispatches would give a machine that consumes a queue the ability to approve IAM changes -
+  // the exact separation this system is built around. So the listener gets a key that opens
+  // POST /api/notifications and nothing else, and a leak of it buys noise in a panel.
+  //
+  // Optional. Unset means the ingest route is off and answers 503, rather than open.
+  const ingestKey = (process.env.OPT_DASHBOARD_INGEST_KEY ?? '').trim();
+  if (ingestKey && ingestKey.length < 32) {
+    throw new ConfigError('OPT_DASHBOARD_INGEST_KEY must be at least 32 characters');
+  }
+
   const apiKey = required('OPT_DASHBOARD_API_KEY');
+  if (ingestKey && ingestKey === apiKey) {
+    // Not a strength check. Equal keys collapse the two scopes into one, which is the thing the
+    // second key exists to prevent, and it would do so silently.
+    throw new ConfigError(
+      'OPT_DASHBOARD_INGEST_KEY must differ from OPT_DASHBOARD_API_KEY - the ingest key is for a '
+      + 'machine that may only announce, and the API key can approve plans',
+    );
+  }
   if (apiKey.length < 32) {
     // Not a strength meter. It is the one credential standing in front of the only principal in
     // this system that may write an approval, so a value short enough to have been typed by hand
@@ -92,6 +113,27 @@ export function load() {
     port: integer('OPT_PORT', 8080),
 
     apiKey,
+    ingestKey,
+
+    // Marker bodies kept in memory so the sweep does not fetch them again. Filled by the
+    // listener's announcements and by the approval markers this process writes itself, which
+    // between them is every marker in a healthy system - so a sweep makes no GetObject at all.
+    // A miss costs one call and gives the same answer, which is what keeps the announcement path
+    // from being load-bearing. Bodies reach ten kilobytes, so the count is the memory bound.
+    markerBodyCache: integer('OPT_MARKER_BODY_CACHE', 200),
+
+    // An announcement carries a marker body. The listener leaves the body out above its own
+    // limit rather than sending something this would refuse, so this only has to be the larger
+    // of the two.
+    maxAnnouncementBytes: integer('OPT_MAX_ANNOUNCEMENT_BYTES', 128 * 1024),
+
+    // How many announcements the panel keeps. They are announcements and not a log: the durable
+    // record of what ran is the marker, the plan prefix and CloudWatch.
+    notificationLimit: integer('OPT_NOTIFICATION_LIMIT', 200),
+
+    // A notification asks for a sweep, because learning that work started is most of its value.
+    // Not on every one: a burst of dispatches would otherwise be a burst of full bucket listings.
+    notificationSweepSeconds: integer('OPT_NOTIFICATION_SWEEP_SECONDS', 10),
 
     // Where the built single page application lives. Served from this process rather than from a
     // separate web server so there is one origin, and therefore no reason to relax CORS.
