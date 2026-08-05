@@ -115,6 +115,18 @@ export function load() {
     apiKey,
     ingestKey,
 
+    // Marker bodies kept in memory so the sweep does not fetch them again. Filled by the
+    // listener's announcements and by the approval markers this process writes itself, which
+    // between them is every marker in a healthy system - so a sweep makes no GetObject at all.
+    // A miss costs one call and gives the same answer, which is what keeps the announcement path
+    // from being load-bearing. Bodies reach ten kilobytes, so the count is the memory bound.
+    markerBodyCache: integer('OPT_MARKER_BODY_CACHE', 200),
+
+    // An announcement carries a marker body. The listener leaves the body out above its own
+    // limit rather than sending something this would refuse, so this only has to be the larger
+    // of the two.
+    maxAnnouncementBytes: integer('OPT_MAX_ANNOUNCEMENT_BYTES', 128 * 1024),
+
     // How many announcements the panel keeps. They are announcements and not a log: the durable
     // record of what ran is the marker, the plan prefix and CloudWatch.
     notificationLimit: integer('OPT_NOTIFICATION_LIMIT', 200),

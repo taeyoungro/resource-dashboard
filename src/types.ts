@@ -159,6 +159,8 @@ export interface Notification {
   buffer_reason: string | null;
   held_seconds: number | null;
   dispatched_at: string | null;
+  /** True when the marker was too large to travel with the announcement. The sweep fetches it. */
+  body_omitted: boolean;
   received_at: string;
   first_received_at: string;
   /** Above zero when the same request was announced again - a redelivered queue message. */
@@ -183,6 +185,12 @@ export interface SweepState {
    * somebody made by hand, and calling it a failure teaches everyone to ignore the banner.
    */
   skipped_keys?: number;
+  /**
+   * Marker bodies this sweep already held versus had to fetch from S3. Zero fetched is the healthy
+   * shape - the listener announces inspector markers with their bodies, and the approval markers
+   * are ones this server wrote. A number that climbs means announcements are not arriving.
+   */
+  bodies?: { held: number; fetched: number };
   counts: {
     failed: number;
     running: number;

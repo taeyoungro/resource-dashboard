@@ -39,6 +39,9 @@ function Row({ item }: { item: Notification }) {
         {item.repeats > 0 ? (
           <span className="badge badge-warn">재전달 {item.repeats}회</span>
         ) : null}
+        {/* The listener leaves an over-large marker out rather than trimming it. Nothing is lost -
+            the object is in the bucket and the sweep fetches it - but it is worth seeing. */}
+        {item.body_omitted ? <span className="badge">본문 미포함</span> : null}
       </div>
       {item.event_names.length > 0 ? (
         <div className="meta small">{item.event_names.join(", ")}</div>

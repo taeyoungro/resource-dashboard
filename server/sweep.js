@@ -142,19 +142,38 @@ export function changesFromPlan(planJson) {
   return changes;
 }
 
-async function readMarkerBodies(s3, config, markers, errors) {
+/** The body of every marker, from the cache where possible and S3 for the rest.
+ *
+ * The cache holds what this process was already given: the listener announces an inspector marker
+ * with its body at the moment it dispatches, and the applier markers are ones this process wrote
+ * itself. In a healthy system that is all of them, and this function makes no S3 call at all.
+ *
+ * The fallback is what keeps the announcement from being load-bearing. A dropped push, a restarted
+ * dashboard, an evicted entry - each costs one GetObject and produces the same answer. Lose every
+ * push and this behaves exactly as it did before the announcement path existed.
+ */
+async function readMarkerBodies(s3, config, markers, bodies, errors) {
+  const out = new Map();
+  const missing = [];
+
+  for (const marker of markers) {
+    const requestId = requestIdFromMarkerKey(marker.key, marker.prefix);
+    const cached = requestId ? bodies?.get(marker.kind, requestId) : null;
+    if (cached) out.set(marker.key, cached);
+    else missing.push(marker);
+  }
+
   // Oldest first: if the cap bites, the bodies worth having are the ones that have been stuck
   // longest, not whichever the listing happened to return.
-  const ordered = [...markers].sort((a, b) => (a.lastModified ?? '').localeCompare(b.lastModified ?? ''));
+  const ordered = [...missing].sort((a, b) => (a.lastModified ?? '').localeCompare(b.lastModified ?? ''));
   const capped = ordered.slice(0, config.maxBodiesPerSweep);
   if (ordered.length > capped.length) {
     errors.push(
-      `read ${capped.length} of ${ordered.length} marker bodies (OPT_MAX_BODIES_PER_SWEEP);` +
-        ' the rest are listed without their contents',
+      `fetched ${capped.length} of ${ordered.length} marker bodies that were not already held ` +
+        '(OPT_MAX_BODIES_PER_SWEEP); the rest are listed without their contents',
     );
   }
 
-  const out = new Map();
   for (const marker of capped) {
     try {
       out.set(marker.key, await getJson(s3, config.markerBucket, marker.key));
@@ -164,7 +183,7 @@ async function readMarkerBodies(s3, config, markers, errors) {
       errors.push(`${marker.key}: ${err.message}`);
     }
   }
-  return out;
+  return { bodies: out, fetched: capped.length, held: markers.length - missing.length };
 }
 
 function describeMarkers(markers, bodies, kind, prefix, nowMs, graceSeconds) {
@@ -319,7 +338,7 @@ function planState(manifest, outcome, requestId, decidedRequestIds) {
   return 'awaiting_decision';
 }
 
-export async function sweep(s3, config, { now = Date.now() } = {}) {
+export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}) {
   const errors = [];
 
   const [inspectorListing, applierListing] = await Promise.all([
@@ -330,22 +349,27 @@ export async function sweep(s3, config, { now = Date.now() } = {}) {
   // Decide what is a marker once, before anything reads a body. Filtering in describeMarkers and
   // not here is what let a folder placeholder through to getJson: the listing was passed to the
   // reader raw, so the reader tried to parse an object the describer would have skipped.
+  // The prefix and kind travel with each object so the body lookup can be keyed by request id
+  // rather than by S3 key - the cache is filled by writers who never saw a key.
   const isMarker = (prefix) => (o) => requestIdFromMarkerKey(o.key, prefix) !== null;
-  const inspectorMarkers = inspectorListing.filter(isMarker(config.inspectorPrefix));
-  const applierMarkers = applierListing.filter(isMarker(config.applierPrefix));
+  const tag = (kind, prefix) => (o) => ({ ...o, kind, prefix });
+  const inspectorMarkers = inspectorListing
+    .filter(isMarker(config.inspectorPrefix)).map(tag('inspector', config.inspectorPrefix));
+  const applierMarkers = applierListing
+    .filter(isMarker(config.applierPrefix)).map(tag('applier', config.applierPrefix));
 
   const skipped =
     (inspectorListing.length - inspectorMarkers.length) +
     (applierListing.length - applierMarkers.length);
 
-  const bodies = await readMarkerBodies(
-    s3, config, [...inspectorMarkers, ...applierMarkers], errors,
+  const read = await readMarkerBodies(
+    s3, config, [...inspectorMarkers, ...applierMarkers], bodies, errors,
   );
 
   const markers = [
-    ...describeMarkers(inspectorMarkers, bodies, 'inspector', config.inspectorPrefix,
+    ...describeMarkers(inspectorMarkers, read.bodies, 'inspector', config.inspectorPrefix,
                        now, config.markerGraceSeconds),
-    ...describeMarkers(applierMarkers, bodies, 'applier', config.applierPrefix,
+    ...describeMarkers(applierMarkers, read.bodies, 'applier', config.applierPrefix,
                        now, config.markerGraceSeconds),
   ];
   markers.sort((a, b) => (b.age_seconds ?? 0) - (a.age_seconds ?? 0));
@@ -370,6 +394,10 @@ export async function sweep(s3, config, { now = Date.now() } = {}) {
     // ignore the banner. It is counted instead, and the count goes to the log.
     errors,
     skipped_keys: skipped,
+    // How many marker bodies this sweep already held versus had to fetch. Zero fetched is the
+    // healthy shape; a number that climbs means announcements are not arriving, which is worth
+    // seeing before it becomes a body-read cap warning.
+    bodies: { held: read.held, fetched: read.fetched },
     counts: {
       failed: markers.filter((m) => m.state === 'failed').length,
       running: markers.filter((m) => m.state === 'running').length,

@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { makeMarkerBodies } from './markerBodies.js';
 import {
   changesFromPlan, identityFromConfig, isDigest, planIdFromKey, planPrefixFromId, readPlan,
   requestIdFromMarkerKey, sweep,
@@ -29,7 +30,9 @@ const NOW = Date.parse('2026-08-03T12:00:00Z');
 const ago = (seconds) => new Date(NOW - seconds * 1000).toISOString();
 
 function fakeS3(objects, bodies = {}) {
+  const gets = [];
   return {
+    gets,
     async send(command) {
       const input = command.input;
       if (command.constructor.name === 'ListObjectsV2Command') {
@@ -44,6 +47,8 @@ function fakeS3(objects, bodies = {}) {
         return { Contents: contents, IsTruncated: false };
       }
       if (command.constructor.name === 'GetObjectCommand') {
+        // Recorded so a test can assert that a body already held was not fetched again.
+        gets.push(input.Key);
         const body = bodies[`${input.Bucket}/${input.Key}`];
         if (body === undefined) {
           const err = new Error('NoSuchKey');
@@ -515,4 +520,93 @@ test('a truncated or malformed digest is treated as absent', () => {
   assert.equal(isDigest(''), false);
   assert.equal(isDigest(null), false);
   assert.equal(isDigest(undefined), false);
+});
+
+// ---- marker bodies the sweep already holds -------------------------------------------------------
+//
+// The sweep answers two questions with two costs. Which markers exist is one listing. What each one
+// is about was a GetObject per marker, and that is the only reason the body-read cap, the partial
+// read warning and the body_read flag exist.
+//
+// Two of the three writers hand this process the body for free: the listener announces an inspector
+// marker with its body, and the applier markers are ones this process wrote itself. So in a healthy
+// system the sweep makes no GetObject on the marker bucket at all - and when it misses, it costs a
+// call rather than a wrong answer, which is what keeps the announcement from being load-bearing.
+
+const MARKER_BODY = {
+  request_id: '644701781058-aaaaaaaaaaaaaaaa',
+  account_id: '644701781058',
+  resource: 'cmp-WebHosting',
+  kind: 'spec_policy',
+  first_event_at: ago(120),
+  last_event_at: ago(113),
+  events: [{ event_name: 'CreatePolicy', event_time: ago(120), detail: { big: 'x'.repeat(200) } }],
+};
+
+test('a body already held is not fetched again', async () => {
+  const bodies = makeMarkerBodies();
+  bodies.put('inspector', '644701781058-aaaaaaaaaaaaaaaa', MARKER_BODY, 'announced');
+
+  const s3 = fakeS3({ 'opt-solution-markers': [
+    { key: 'inspector/644701781058-aaaaaaaaaaaaaaaa.json', lastModified: ago(60) },
+  ] });
+  const state = await sweep(s3, CONFIG, { now: NOW, bodies });
+
+  assert.deepEqual(s3.gets, [], 'the sweep fetched a body it was already given');
+  assert.equal(state.bodies.held, 1);
+  assert.equal(state.bodies.fetched, 0);
+  // And the row is the same one a fetch would have produced.
+  assert.equal(state.markers[0].resource, 'cmp-WebHosting');
+  assert.equal(state.markers[0].body_read, true);
+  assert.equal(state.markers[0].event_count, 1);
+});
+
+test('a body that was never announced is fetched, and the answer is the same', async () => {
+  // The fallback, and the reason a lost announcement costs a call rather than a wrong answer.
+  const s3 = fakeS3(
+    { 'opt-solution-markers': [
+      { key: 'inspector/644701781058-aaaaaaaaaaaaaaaa.json', lastModified: ago(60) },
+    ] },
+    { 'opt-solution-markers/inspector/644701781058-aaaaaaaaaaaaaaaa.json': MARKER_BODY },
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW, bodies: makeMarkerBodies() });
+
+  assert.deepEqual(s3.gets, ['inspector/644701781058-aaaaaaaaaaaaaaaa.json']);
+  assert.equal(state.bodies.fetched, 1);
+  assert.equal(state.markers[0].resource, 'cmp-WebHosting');
+});
+
+test('an applier marker this process wrote is not read back', async () => {
+  // It knows what is in it. Reading it back was a round trip to learn something it had just decided.
+  const approval = { request_id: '644701781058-bbbbbbbbbbbbbbbb', account_id: '644701781058',
+                     resource: 'cmp-WebHosting', decision: 'approve', reviewer: 'kim' };
+  const bodies = makeMarkerBodies();
+  bodies.put('applier', '644701781058-bbbbbbbbbbbbbbbb', approval, 'written-here');
+
+  const s3 = fakeS3({ 'opt-solution-markers': [
+    { key: 'applier/644701781058-bbbbbbbbbbbbbbbb.json', lastModified: ago(60) },
+  ] });
+  const state = await sweep(s3, CONFIG, { now: NOW, bodies });
+
+  assert.deepEqual(s3.gets, []);
+  assert.equal(state.markers[0].reviewer, 'kim');
+  assert.equal(state.markers[0].decision, 'approve');
+});
+
+test('the fetch cap counts only what was not already held', async () => {
+  // The cap exists because fetching bodies in bulk is expensive. Bodies that arrived by
+  // announcement cost nothing, so they must not consume it.
+  const bodies = makeMarkerBodies();
+  const objects = [];
+  for (let i = 0; i < 5; i += 1) {
+    const id = `644701781058-${String(i).repeat(16)}`;
+    objects.push({ key: `inspector/${id}.json`, lastModified: ago(60 + i) });
+    if (i < 3) bodies.put('inspector', id, { ...MARKER_BODY, request_id: id }, 'announced');
+  }
+  const s3 = fakeS3({ 'opt-solution-markers': objects });
+  const state = await sweep(s3, CONFIG, { ...{ now: NOW }, bodies });
+
+  assert.equal(state.bodies.held, 3);
+  assert.equal(state.bodies.fetched, 2, 'only the two that were never announced');
+  assert.equal(s3.gets.length, 2);
 });

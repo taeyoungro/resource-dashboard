@@ -107,6 +107,14 @@ export function parse(body) {
     buffer_reason: text(body.buffer?.reason, 'buffer.reason', null, { required: false, max: 32 }),
     held_seconds: typeof body.buffer?.held_seconds === 'number' ? body.buffer.held_seconds : null,
     dispatched_at: text(body.dispatched_at, 'dispatched_at', null, { required: false }),
+
+    // The marker itself. Absent when the listener judged it too large to send, which it says
+    // rather than trimming - a half body is one somebody would read as whole. Either way the
+    // object is in the bucket and the sweep can fetch it.
+    marker_body: body.body && typeof body.body === 'object' && !Array.isArray(body.body)
+      ? body.body
+      : null,
+    body_omitted: body.body_omitted === true,
   };
 }
 
@@ -121,12 +129,16 @@ export function makeNotifications({ limit = 200 } = {}) {
 
   function record(entry, now) {
     const id = `${entry.kind}:${entry.request_id}`;
+    // The panel row does not carry the body. It is put in the marker-body cache instead, where the
+    // sweep looks for it, and keeping a second copy here would double the memory this process
+    // holds for the same bytes.
+    const { marker_body: _body, ...row } = entry;
     const existing = byId.get(id);
     // Delete before set so the insertion order puts the newest last, which is what makes list()
     // newest-first without sorting on every read.
     byId.delete(id);
     byId.set(id, {
-      ...entry,
+      ...row,
       id,
       received_at: new Date(now).toISOString(),
       first_received_at: existing?.first_received_at ?? new Date(now).toISOString(),

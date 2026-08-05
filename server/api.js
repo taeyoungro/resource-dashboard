@@ -29,6 +29,7 @@ const PLAN_ID = /^\d{12}:[\w+=,.@-]{1,96}$/;
 // key, but the approval marker is still named by it, so it is checked before being made into one.
 const REQUEST_ID = /^\d{12}-[0-9a-f]{16}$/;
 
+// A decision is a reviewer, a comment and a digest. Anything larger is not one.
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_COMMENT = 2000;
 const MAX_REVIEWER = 128;
@@ -68,12 +69,12 @@ export function authorisedToAnnounce(config, headerValue) {
 /** Which key opens a route. Everything not listed here needs the dashboard's own key. */
 export const INGEST_ROUTES = new Set(['POST /api/notifications']);
 
-async function readBody(req) {
+export async function readBody(req, maxBytes = MAX_BODY_BYTES) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'request body too large');
+    if (size > maxBytes) throw new HttpError(413, `request body larger than ${maxBytes} bytes`);
     chunks.push(chunk);
   }
   if (size === 0) return {};
@@ -144,7 +145,7 @@ function decisionMarker({ config, plan, prefix, payload, now }) {
   };
 }
 
-export function routes({ config, s3, store, notifications, log }) {
+export function routes({ config, s3, store, notifications, markerBodies, log }) {
   // Announcements ask for a sweep, because learning that work started is most of what they are
   // for. Rate limited: a burst of dispatches is a normal thing (one administrator attaching five
   // policies) and would otherwise be a burst of full bucket listings.
@@ -192,12 +193,20 @@ export function routes({ config, s3, store, notifications, log }) {
         throw err;
       }
 
+      // The body goes to the cache the sweep reads, the row goes to the panel. Same request, two
+      // consumers, and only one of them wants ten kilobytes.
+      if (entry.marker_body) {
+        markerBodies.put(entry.kind, entry.request_id, entry.marker_body, 'announced');
+      }
+
       const now = Date.now();
       const recorded = notifications.record(entry, now);
       log.info(
-        'announced kind=%s request=%s resource=%s account=%s events=%d repeats=%d',
+        'announced kind=%s request=%s resource=%s account=%s events=%d body=%s repeats=%d',
         recorded.kind, recorded.request_id, recorded.resource ?? '-',
-        recorded.account_id ?? '-', recorded.event_count ?? 0, recorded.repeats,
+        recorded.account_id ?? '-', recorded.event_count ?? 0,
+        entry.marker_body ? 'held' : (entry.body_omitted ? 'too-large' : 'absent'),
+        recorded.repeats,
       );
 
       // Not awaited. The announcement is answered as soon as it is recorded, so a slow sweep
@@ -327,6 +336,10 @@ export function routes({ config, s3, store, notifications, log }) {
       const key = `${config.applierPrefix}${requestId}.json`;
       const bytes = await putJson(s3, config.markerBucket, key, marker);
 
+      // This process wrote it, so it knows what is in it. Reading it back out of S3 on the next
+      // sweep was always a round trip to learn something it had just decided.
+      markerBodies.put('applier', requestId, marker, 'written-here');
+
       log.info(
         'decision plan=%s request=%s decision=%s reviewer=%s key=s3://%s/%s bytes=%d changes=%s',
         id, requestId, marker.decision, reviewer, config.markerBucket, key, bytes,
@@ -341,4 +354,3 @@ export function routes({ config, s3, store, notifications, log }) {
   };
 }
 
-export { readBody };
