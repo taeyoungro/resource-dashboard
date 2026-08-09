@@ -14,7 +14,8 @@ import { timingSafeEqual } from 'node:crypto';
 
 import { NotificationError, parse as parseNotification } from './notifications.js';
 import { putJson } from './s3.js';
-import { planPrefixFromId, readPlan } from './sweep.js';
+import { ImpactError, parse as parseImpact } from './impacts.js';
+import { planPrefixFromId, readImpact, readPlan } from './sweep.js';
 
 // A plan is identified by the governed resource it belongs to, not by the request that produced
 // it: <12 digit account>:<resource>. One resource has one state and one plan, and a second edit
@@ -67,7 +68,21 @@ export function authorisedToAnnounce(config, headerValue) {
 }
 
 /** Which key opens a route. Everything not listed here needs the dashboard's own key. */
-export const INGEST_ROUTES = new Set(['POST /api/notifications']);
+// Bounded so one decision cannot post an unbounded document. The inline policy has a byte ceiling
+// of its own that the writer enforces; this is only to keep a single request sane.
+const MAX_RESTRICTIONS = 50;
+
+// The three forms, and they are not interchangeable - they produce different statements and go stale
+// in different directions. See event_pipeline code/generator/restriction.py.
+const RESTRICTION_INTENTS = new Set(['allow_only', 'deny_only', 'tag_condition']);
+
+export const INGEST_ROUTES = new Set([
+  'POST /api/notifications',
+  // The impact querier's delivery. Same key as the listener's announcements and deliberately so:
+  // both are machines saying what they did, and neither may approve anything. The dashboard's own
+  // key - the one that CAN approve an IAM change - opens neither.
+  'POST /api/impact',
+]);
 
 export async function readBody(req, maxBytes = MAX_BODY_BYTES) {
   const chunks = [];
@@ -93,7 +108,7 @@ function planId(raw) {
   return value;
 }
 
-function decisionMarker({ config, plan, prefix, payload, now }) {
+function decisionMarker({ config, plan, prefix, payload, now, restrictions = [], impactDigest = '' }) {
   return {
     // What the applier is being asked to do, and to what.
     request_id: plan.request_id,
@@ -136,6 +151,19 @@ function decisionMarker({ config, plan, prefix, payload, now }) {
       planned_at: plan.planned_at,
     },
 
+    // The administrator's restriction, as DECISIONS rather than as a policy document.
+    //
+    // This process does not author IAM content. If it sent a document the applier passed through,
+    // a defect or a compromise here could write Allow where somebody clicked Deny - so what travels
+    // is what was chosen, and the inline writer builds the statements and refuses anything that
+    // cannot become one.
+    //
+    // Both fields are omitted when there is no restriction, which keeps an ordinary approval byte
+    // for byte what it was before this existed.
+    ...(restrictions.length > 0
+      ? { restrictions, expected_impact_sha256: impactDigest }
+      : {}),
+
     // What produced this record, so a marker that turns up unexplained can be traced to a build.
     issued_by: {
       component: 'opt-SolutionDashboard',
@@ -145,7 +173,7 @@ function decisionMarker({ config, plan, prefix, payload, now }) {
   };
 }
 
-export function routes({ config, s3, store, notifications, markerBodies, log }) {
+export function routes({ config, s3, store, notifications, markerBodies, impacts, log }) {
   // Announcements ask for a sweep, because learning that work started is most of what they are
   // for. Rate limited: a burst of dispatches is a normal thing (one administrator attaching five
   // policies) and would otherwise be a burst of full bucket listings.
@@ -231,11 +259,73 @@ export function routes({ config, s3, store, notifications, markerBodies, log }) 
       enabled: Boolean(config.ingestKey),
     }),
 
+    // Posted by the impact querier when it has finished assessing a plan.
+    //
+    // This carries the assessment itself rather than telling the page to go and fetch it, because
+    // the alternative was a GetObject per open plan on every sweep - a cost that scales with how
+    // many plans are open and buys nothing.
+    //
+    // It is still not a state. impact.json is in the state bucket with its digest beside it, and the
+    // impact/ marker is what says an assessment is outstanding; both are read from the buckets. So a
+    // push that never lands costs latency and one call for a plan somebody opens, which is what lets
+    // the querier post once and never retry.
+    'POST /api/impact': async ({ body }) => {
+      if (!config.ingestKey) {
+        throw new HttpError(503, 'OPT_DASHBOARD_INGEST_KEY is not set; impact delivery is off');
+      }
+      let entry;
+      try {
+        entry = parseImpact(body);
+      } catch (err) {
+        if (err instanceof ImpactError) throw new HttpError(400, err.message);
+        throw err;
+      }
+
+      impacts.put(entry);
+      log.info(
+        'impact request=%s account=%s resource=%s digest=%s omitted=%s resources=%s',
+        entry.request_id, entry.account_id, entry.resource, entry.impact_sha256.slice(0, 12),
+        entry.body_omitted, entry.summary?.resources ?? '?',
+      );
+
+      // No sweep is asked for. The assessment does not change what markers or plans exist, and the
+      // page reads it from the plan route when somebody opens the plan.
+      return { recorded: entry.request_id, body_omitted: entry.body_omitted };
+    },
+
     'GET /api/plans/:id': async ({ params }) => {
       const id = planId(params.id);
       const plan = await readPlan(s3, config, id);
       if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
-      return plan;
+
+      // The assessment, from the push if it landed and from the bucket if it did not.
+      //
+      // Matched on the plan's CURRENT request id, never on the plan id. A prefix is overwritten in
+      // place by every inspection, so a cached assessment from an earlier one describes a plan that
+      // no longer exists - and showing it beside a fresh plan.txt is exactly the mismatch the
+      // digest checks exist to prevent, arriving through the display instead.
+      let assessment = null;
+      let source = null;
+      if (plan.request_id) {
+        const pushed = impacts.get(plan.request_id);
+        if (pushed && !pushed.body_omitted && pushed.impact?.request_id === plan.request_id) {
+          assessment = pushed.impact;
+          source = 'pushed';
+        }
+      }
+      let digest = null;
+      if (!assessment) {
+        const stored = await readImpact(s3, config, id);
+        if (stored?.document
+            && (!plan.request_id || stored.document.request_id === plan.request_id)) {
+          assessment = stored.document;
+          digest = stored.digest;
+          source = 'stored';
+        }
+      }
+
+      // The digest the page has to send back with a restriction. Not computed here - see readImpact.
+      return { ...plan, assessment, assessment_source: source, assessment_sha256: digest };
     },
 
     'POST /api/plans/:id/decision': async ({ params, body }) => {
@@ -317,6 +407,116 @@ export function routes({ config, s3, store, notifications, markerBodies, log }) 
         );
       }
 
+      // ---- an approval may also carry a restriction ------------------------------------------
+      //
+      // Optional, and absent is the ordinary case. A plan can be approved with no restriction at
+      // all, and deliberately can be approved before its assessment even exists - making the
+      // approval path depend on the querier would turn an assessment outage into a pipeline outage.
+      //
+      // What a restriction needs is the assessment, because a restriction NAMES RESOURCES and the
+      // enumerated set is the only fence those names can be checked against. So the pair travels
+      // together: the decisions, and the digest of the assessment they were made from.
+      //
+      // The checks below are for a readable error, not for safety. The inline writer recomposes the
+      // document from these decisions and re-validates every one of them against the fence it is
+      // handed - it has to, because this process is the component that is not trusted. Catching an
+      // impossible restriction here means the person who chose it hears why now, rather than an
+      // approval sitting in a bucket and a container refusing it later.
+      const restrictions = body.restrictions ?? [];
+      if (!Array.isArray(restrictions)
+          || restrictions.some((r) => !r || typeof r !== 'object' || Array.isArray(r))) {
+        throw new HttpError(400, 'restrictions must be an array of objects');
+      }
+      let impactDigest = '';
+      if (restrictions.length > 0) {
+        if (body.decision !== 'approve') {
+          throw new HttpError(400, 'a denial cannot carry a restriction: nothing is being granted');
+        }
+        if (restrictions.length > MAX_RESTRICTIONS) {
+          throw new HttpError(400, `at most ${MAX_RESTRICTIONS} restrictions per decision`);
+        }
+
+        const stored = await readImpact(s3, config, id);
+        if (!stored?.document) {
+          throw new HttpError(
+            409,
+            `${id} has no impact assessment stored, so there is nothing to check the restricted `
+            + 'resources against. Approve without a restriction, or wait for the assessment.',
+          );
+        }
+        if (!stored.digest) {
+          throw new HttpError(
+            409,
+            `${id} has an assessment with no impact.sha256 beside it, so nothing would establish `
+            + 'that the assessment shown is the one the applier reads.',
+          );
+        }
+        if (requestId && stored.document.request_id !== requestId) {
+          // The assessment belongs to an inspection this plan replaced. Its enumerated resources
+          // describe a permission set that is not the one being approved.
+          throw new HttpError(
+            409,
+            `the stored assessment is for request ${stored.document.request_id}, and this plan is `
+            + `${requestId}. Reload - the assessment for the current plan is not ready.`,
+          );
+        }
+
+        // Same rule as expected_changes_sha256: the page sends back what it displayed, and a
+        // different value means it was showing an assessment that has since been replaced.
+        const expectedImpact = String(body.expected_impact_sha256 ?? '').trim();
+        if (!expectedImpact) {
+          throw new HttpError(400, 'expected_impact_sha256 is required with a restriction: it names '
+                                   + 'the assessment the restriction was chosen from');
+        }
+        if (expectedImpact !== stored.digest) {
+          throw new HttpError(
+            409,
+            `${id} was re-assessed since it was shown. The stored assessment is now `
+            + `${stored.digest}, not ${expectedImpact}. Reload and choose again.`,
+          );
+        }
+
+        const enumerated = new Set(stored.document.allowed_resources ?? []);
+        const protectedActions = new Set(stored.document.protected_actions ?? []);
+        for (const restriction of restrictions) {
+          if (!RESTRICTION_INTENTS.has(restriction.intent)) {
+            throw new HttpError(400, `restriction intent must be one of `
+                                     + `${[...RESTRICTION_INTENTS].join(', ')}`);
+          }
+          const actions = Array.isArray(restriction.actions) ? restriction.actions : [];
+          if (actions.length === 0 || actions.some((a) => typeof a !== 'string' || !a.trim())) {
+            throw new HttpError(400, 'a restriction needs at least one action, as strings');
+          }
+          for (const action of actions) {
+            if (action.trim() === '*' || action.trim().startsWith('*')) {
+              throw new HttpError(400, `a wildcard action cannot be restricted (${action}): with `
+                                       + 'NotResource it would deny everything outside the list');
+            }
+            if (protectedActions.has(action.trim())) {
+              throw new HttpError(
+                400,
+                `${action} is part of the declaration path and cannot be restricted. It is how a `
+                + 'user writes a spec, and restricting it would leave them unable to request the fix.',
+              );
+            }
+          }
+          const named = Array.isArray(restriction.resources) ? restriction.resources : [];
+          for (const arn of named) {
+            if (typeof arn !== 'string' || !enumerated.has(arn)) {
+              throw new HttpError(
+                400,
+                `${String(arn).slice(0, 120)} is not in the impact assessment. A restriction may `
+                + 'only name resources the assessment enumerated.',
+              );
+            }
+          }
+        }
+
+        // Carried, never computed here. The querier wrote it; the applier recomputes over the
+        // object and compares.
+        impactDigest = stored.digest;
+      }
+
       // The marker is named by the inspection that produced this plan, not by the resource: the
       // name has to fit ECS startedBy, which is 36 characters of [A-Za-z0-9/_-] and would not hold
       // a resource name. Checked rather than trusted - it arrives from an object in a bucket.
@@ -332,6 +532,7 @@ export function routes({ config, s3, store, notifications, markerBodies, log }) 
       const marker = decisionMarker({
         config, plan, prefix: planPrefixFromId(id),
         payload: { ...body, reviewer, comment }, now: Date.now(),
+        restrictions, impactDigest,
       });
       const key = `${config.applierPrefix}${requestId}.json`;
       const bytes = await putJson(s3, config.markerBucket, key, marker);

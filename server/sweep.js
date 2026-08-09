@@ -62,6 +62,36 @@ const OUTCOME_ARTIFACT = 'outcome.json';
 // so it must not author the value that authorises its own approval - it carries the inspector's.
 const DIGEST_ARTIFACT = 'changes.sha256';
 
+// Written by the impact querier: what the permission set will reach, enumerated before it is
+// granted. Its presence is what makes a restriction possible - a restriction names resources, and
+// this is the fence those names are checked against - so its absence is a state the page has to
+// distinguish rather than hide. See event_pipeline code/impact.
+const IMPACT_ARTIFACT = 'impact.json';
+const IMPACT_DIGEST_ARTIFACT = 'impact.sha256';
+
+/** What has happened to the assessment for the inspection currently stored in a prefix.
+ *
+ * Three states and they are not degrees of the same thing:
+ *
+ *   ready        impact.json is there. A restriction can be decided
+ *   in_progress  the impact/ marker for THIS request still exists, so the querier has not finished.
+ *                The page says so, rather than showing an empty assessment that reads as "nothing
+ *                to worry about"
+ *   unavailable  neither. Either the querier failed after its marker was closed, or this plan was
+ *                made before assessments existed. The plan is still approvable - deliberately -
+ *                just not with a restriction
+ *
+ * The marker is consulted only for the CURRENT request id. A marker left by an earlier inspection
+ * of the same resource says nothing about the plan that is there now.
+ */
+function assessmentState(artifacts, requestId, outstandingRequestIds) {
+  const ready = artifacts.has(IMPACT_ARTIFACT);
+  const outstanding = Boolean(requestId) && outstandingRequestIds.has(requestId);
+  if (ready && !outstanding) return 'ready';
+  if (outstanding) return 'in_progress';
+  return 'unavailable';
+}
+
 /** The request id in a marker key, or null when the key is not a marker at all.
  *
  * Not everything under a prefix is a marker. Creating inspector/ or applier/ as a folder in the S3
@@ -218,7 +248,7 @@ function describeMarkers(markers, bodies, kind, prefix, nowMs, graceSeconds) {
   return rows;
 }
 
-async function collectPlans(s3, config, decidedRequestIds, errors) {
+async function collectPlans(s3, config, decidedRequestIds, outstandingAssessments, errors) {
   // No prefix. Plans are keyed by the governed resource, so they are spread across one prefix per
   // account rather than gathered under one - there is nothing narrower to ask for. The listing
   // returns state files too and the pattern in planIdFromKey drops them.
@@ -294,6 +324,10 @@ async function collectPlans(s3, config, decidedRequestIds, errors) {
       artifacts: [...artifacts.keys()].sort(),
       state: planState(manifest, outcome, requestId, decidedRequestIds),
       outcome: outcomeFor(outcome, requestId),
+      // Whether the page can offer a restriction, and what to say while it cannot. Never a reason
+      // to withhold the approval itself - see assessmentState().
+      assessment: assessmentState(artifacts, requestId, outstandingAssessments),
+      assessment_digest_stored: artifacts.has(IMPACT_DIGEST_ARTIFACT),
     });
   }
 
@@ -341,9 +375,13 @@ function planState(manifest, outcome, requestId, decidedRequestIds) {
 export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}) {
   const errors = [];
 
-  const [inspectorListing, applierListing] = await Promise.all([
+  const [inspectorListing, applierListing, impactListing] = await Promise.all([
     listPrefix(s3, config.markerBucket, config.inspectorPrefix),
     listPrefix(s3, config.markerBucket, config.applierPrefix),
+    // Listed, never read. This marker says an assessment is outstanding and nothing else, so a
+    // GetObject on it would buy nothing - the assessment itself arrives by push or from the plan
+    // prefix. Its bodies are therefore not in readMarkerBodies below either.
+    listPrefix(s3, config.markerBucket, config.impactPrefix),
   ]);
 
   // Decide what is a marker once, before anything reads a body. Filtering in describeMarkers and
@@ -380,7 +418,16 @@ export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}
       .filter(Boolean),
   );
 
-  const plans = await collectPlans(s3, config, decided, errors);
+  // Which inspections still owe an assessment. Keyed by request id because the inspector names the
+  // marker by the inspection, not by the resource - a plan prefix outlives many inspections and only
+  // the current one's marker says anything about the plan that is there now.
+  const outstandingAssessments = new Set(
+    impactListing
+      .map((m) => requestIdFromMarkerKey(m.key, config.impactPrefix))
+      .filter(Boolean),
+  );
+
+  const plans = await collectPlans(s3, config, decided, outstandingAssessments, errors);
 
   return {
     swept_at: new Date(now).toISOString(),
@@ -407,6 +454,44 @@ export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}
 }
 
 /** Everything needed to show one plan, read live rather than from the sweep. */
+/** The stored assessment for one plan, or null.
+ *
+ * The fallback path, and only that. The querier pushes the assessment when it finishes and the page
+ * serves it from memory; this exists for the pushes that did not land, for an assessment too large to
+ * travel in a request body, and for a process that restarted since.
+ *
+ * Reading it is one GetObject for a plan somebody actually opened, which is the difference from doing
+ * it in the sweep - there it would be one call per open plan whether or not anybody was looking.
+ */
+export async function readImpact(s3, config, planId) {
+  const prefix = planPrefixFromId(planId);
+  if (!prefix) return null;
+
+  let document = null;
+  try {
+    document = await getJson(s3, config.stateBucket, `${prefix}${IMPACT_ARTIFACT}`);
+  } catch {
+    // No assessment stored. Not an error - a plan approved before its assessment finished is a
+    // supported case, and the caller distinguishes "not there" from "not yet" using the marker.
+    return null;
+  }
+
+  // The querier's own digest, read rather than computed. The same rule as changes.sha256: this
+  // process is the component that is not trusted, so it must not author the value that authorises
+  // its own approval - it carries the one the container wrote. The applier recomputes over the
+  // object and compares, which is what makes carrying it meaningful.
+  let storedDigest = null;
+  try {
+    const raw = await getBytes(s3, config.stateBucket, `${prefix}${IMPACT_DIGEST_ARTIFACT}`);
+    const value = raw.toString('utf-8').trim();
+    if (isDigest(value)) storedDigest = value;
+  } catch {
+    storedDigest = null;
+  }
+
+  return { document, digest: storedDigest };
+}
+
 export async function readPlan(s3, config, planId) {
   const prefix = planPrefixFromId(planId);
   if (!prefix) return null;

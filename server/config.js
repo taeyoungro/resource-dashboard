@@ -98,6 +98,10 @@ export function load() {
     // AccessDenied on write and a silently empty list on read.
     inspectorPrefix: 'inspector/',
     applierPrefix: 'applier/',
+    // Written by the inspector before it writes request.json, deleted by the impact querier. While
+    // it exists the assessment for that inspection has not finished - which is what lets the page
+    // say "assessment in progress" rather than showing nothing and looking like there is nothing.
+    impactPrefix: 'impact/',
 
     // The state bucket has no plan prefix any more. Everything terraform produces for one governed
     // resource lives under <account id>/<resource>/, and the plan artifacts are the plan/ subfolder
@@ -134,6 +138,17 @@ export function load() {
     // A notification asks for a sweep, because learning that work started is most of its value.
     // Not on every one: a burst of dispatches would otherwise be a burst of full bucket listings.
     notificationSweepSeconds: integer('OPT_NOTIFICATION_SWEEP_SECONDS', 10),
+
+    // Assessments pushed by the impact querier. Fewer entries than marker bodies because an
+    // assessment carries resource ARNs rather than event names - a wide grant on a busy account is
+    // far larger than any marker. A miss costs one GetObject and gives the same answer.
+    impactCache: integer('OPT_IMPACT_CACHE', 50),
+
+    // An assessment is the largest thing anything posts here. The querier drops the assessment from
+    // its push above its own limit and sends the summary alone, so this only has to be the larger of
+    // the two - and it is the reason the impact route has its own body cap rather than sharing the
+    // 16 kilobyte one every other POST uses.
+    maxImpactBytes: integer('OPT_MAX_IMPACT_BYTES', 512 * 1024),
 
     // Where the built single page application lives. Served from this process rather than from a
     // separate web server so there is one origin, and therefore no reason to relax CORS.

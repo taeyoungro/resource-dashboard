@@ -29,7 +29,15 @@ export function PlanList({ items, selectedId, onSelect }: Props) {
           className={it.plan_id === selectedId ? "selected" : ""}
           onClick={() => onSelect(it.plan_id)}
         >
-          <div className="row">{stateBadge(it.state)}</div>
+          <div className="row">
+            {stateBadge(it.state)}
+            {/* Only worth a badge while it is outstanding. "ready" is the normal case and would be
+                noise on every row; "unavailable" means the plan can be approved but not restricted,
+                which the detail panel says where somebody is about to decide. */}
+            {it.assessment === "in_progress" && (
+              <span className="badge badge-warn">평가 중</span>
+            )}
+          </div>
           {/* The resource. It is also what the plan is keyed by now - one governed resource has
               one state and one plan, and a new inspection replaces the old one rather than adding
               another row for the same thing. */}

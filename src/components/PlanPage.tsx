@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import type { PlanDetail as Detail, SweepState } from "../types";
+import type { PlanDetail as Detail, Restriction, SweepState } from "../types";
 import { PlanDetail } from "./PlanDetail";
 import { PlanList } from "./PlanList";
 import { Notifications } from "./Notifications";
@@ -44,7 +44,12 @@ export function PlanPage({ state, error, onRefresh }: Props) {
     if (selectedId) load(selectedId);
   }, [selectedId, load]);
 
-  const decide = async (decision: "approve" | "deny", reviewer: string, comment: string) => {
+  const decide = async (
+    decision: "approve" | "deny",
+    reviewer: string,
+    comment: string,
+    restrictions: Restriction[],
+  ) => {
     if (!selectedId || !detail) return;
     setBusy(true);
     setDetailError(null);
@@ -52,11 +57,20 @@ export function PlanPage({ state, error, onRefresh }: Props) {
       // The digest of the plan that is on screen right now, sent back so the server can refuse if
       // the stored plan is no longer it. The prefix holds one plan per governed resource and a new
       // inspection overwrites it, so the plan can change under a page that is sitting open.
+      //
+      // A restriction carries a second digest for the same reason: it names resources that came from
+      // the assessment on screen, and a later inspection can have replaced that too.
       const result = await api.decide(selectedId, {
         decision,
         reviewer,
         comment,
         expected_changes_sha256: detail.changes_sha256 ?? "",
+        ...(restrictions.length > 0
+          ? {
+              restrictions,
+              expected_impact_sha256: detail.assessment_sha256 ?? "",
+            }
+          : {}),
       });
       window.alert(`기록했습니다.\n${result.written}`);
       onRefresh();
@@ -89,6 +103,7 @@ export function PlanPage({ state, error, onRefresh }: Props) {
             detail={detail}
             decided={selected?.state === "decided"}
             busy={busy}
+            assessmentState={selected?.assessment ?? null}
             onDecide={decide}
           />
         ) : (
