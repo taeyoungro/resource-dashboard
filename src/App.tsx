@@ -114,18 +114,7 @@ export default function App() {
       ) : null}
 
       {tab === "plans" ? (
-        <>
-          {/* Stated on the page rather than only in a document, because the person deciding is
-              the one who would otherwise be misled by it. */}
-          <div className="row-warn">
-            적용이 끝난 계획도 여기 남습니다. 적용기가 끝나면서 자기 마커를 지우고 그 자리에
-            아무것도 쓰지 않기 때문에,{" "}
-            <strong>아직 아무도 보지 않은 계획과 이미 적용된 계획을 구별할 수 없습니다.</strong>{" "}
-            이미 적용된 계획을 다시 승인해도 저장된 계획 파일이 낡았으므로 적용 단계에서
-            실패합니다.
-          </div>
-          <PlanPage state={state} error={error} onRefresh={sweepNow} />
-        </>
+        <PlanPage state={state} error={error} onRefresh={sweepNow} />
       ) : (
         <MarkerPage state={state} error={error} onRefresh={sweepNow} />
       )}

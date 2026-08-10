@@ -170,7 +170,9 @@ pre.report, pre.plan {
   font-size: 0.8rem;
   color: var(--muted);
 }
-.sweep-bar .refresh { margin-left: auto; }
+/* width:auto overrides the global .refresh rule, which exists for the sidebar button. In a flex row
+   a 100% width item eats the remaining space and the button ends up spanning the bar. */
+.sweep-bar .refresh { margin-left: auto; width: auto; }
 
 .app.single { display: block; overflow-y: auto; }
 .app.single main { padding: 1rem 1.25rem; }
