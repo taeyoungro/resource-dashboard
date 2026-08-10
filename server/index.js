@@ -10,6 +10,7 @@ import {
 } from './api.js';
 import { ConfigError, load } from './config.js';
 import { client } from './s3.js';
+import { makeImpacts } from './impacts.js';
 import { makeMarkerBodies } from './markerBodies.js';
 import { makeNotifications } from './notifications.js';
 import { staticHandler } from './static.js';
@@ -110,9 +111,10 @@ async function main() {
   const s3 = client(config);
   // Before the store, which reads it on every sweep.
   const markerBodies = makeMarkerBodies({ limit: config.markerBodyCache });
+  const impacts = makeImpacts({ limit: config.impactCache });
   const store = makeStore(s3, config, markerBodies);
   const notifications = makeNotifications({ limit: config.notificationLimit });
-  const routeTable = routes({ config, s3, store, notifications, markerBodies, log });
+  const routeTable = routes({ config, s3, store, notifications, markerBodies, impacts, log });
   const serveStatic = staticHandler(config.staticDir);
 
   const server = createServer(async (req, res) => {
@@ -162,7 +164,12 @@ async function main() {
     try {
       // An announcement carries a marker body and is allowed to be large; a decision is a
       // name and a sentence and is not.
-      const limit = INGEST_ROUTES.has(spec) ? config.maxAnnouncementBytes : undefined;
+      // Per route, because an assessment is far larger than a marker body and both are larger than
+      // any other POST. One shared cap would either refuse a legitimate assessment or let every
+      // other route accept half a megabyte.
+      const limit = spec === 'POST /api/impact'
+        ? config.maxImpactBytes
+        : (INGEST_ROUTES.has(spec) ? config.maxAnnouncementBytes : undefined);
       const body = req.method === 'POST' ? await readBody(req, limit) : {};
       json(res, 200, await route.handler({ params: route.params, body }));
     } catch (err) {

@@ -170,7 +170,9 @@ pre.report, pre.plan {
   font-size: 0.8rem;
   color: var(--muted);
 }
-.sweep-bar .refresh { margin-left: auto; }
+/* width:auto overrides the global .refresh rule, which exists for the sidebar button. In a flex row
+   a 100% width item eats the remaining space and the button ends up spanning the bar. */
+.sweep-bar .refresh { margin-left: auto; width: auto; }
 
 .app.single { display: block; overflow-y: auto; }
 .app.single main { padding: 1rem 1.25rem; }
@@ -223,3 +225,102 @@ pre.plan {
 
 .error ul { margin: 0.4rem 0 0; padding-left: 1.1rem; }
 .error li { font-size: 0.78rem; }
+
+/* ---- the impact assessment ------------------------------------------------------------------ */
+/* The enumeration is the input to the restriction, so the resource lists are the working surface
+   rather than an appendix. Sensitive resources are marked because a truncated list keeps them first
+   and an approver has to be able to see why. */
+
+.notice {
+  padding: 0.7rem 0.9rem;
+  margin: 0.8rem 0;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.warn, .warn-inline {
+  padding: 0.6rem 0.8rem;
+  margin: 0.6rem 0;
+  border: 1px solid #8a6d1f;
+  border-radius: 6px;
+  background: rgba(180, 140, 30, 0.12);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.warn ul { margin: 0.35rem 0 0; padding-left: 1.1rem; }
+.warn-inline { margin: 0.4rem 0 0; font-size: 0.78rem; }
+
+.impact { margin: 1rem 0; }
+.impact > header { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.impact > header h3 { margin: 0; }
+
+.impact .policy {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+  margin: 0.5rem 0;
+}
+.impact .policy > summary { cursor: pointer; font-size: 0.88rem; }
+
+.impact .group { margin: 0.5rem 0 0.5rem 0.6rem; }
+.impact .group-head { font-size: 0.8rem; }
+.impact .resources { list-style: none; margin: 0.25rem 0 0; padding: 0; }
+.impact .resources li {
+  font-size: 0.76rem;
+  padding: 1px 0;
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.impact .resources li.sensitive code { color: #e0a03c; font-weight: 600; }
+.impact .tags { color: var(--muted); font-size: 0.72rem; }
+
+.impact .baseline { margin-top: 0.8rem; font-size: 0.82rem; }
+.impact .baseline ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+
+.impact .restrict { margin-top: 0.6rem; font-size: 0.84rem; }
+.impact .editor {
+  margin-top: 0.5rem;
+  padding: 0.6rem;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.impact .editor label { display: block; margin-bottom: 0.4rem; }
+.impact .editor label.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0 0.7rem 0.3rem 0;
+  font-size: 0.78rem;
+}
+.impact .editor label.inline.sensitive code { color: #e0a03c; }
+.impact .editor fieldset {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.6rem;
+}
+.impact .editor legend { font-size: 0.78rem; color: var(--muted); padding: 0 0.3rem; }
+.impact .editor select, .impact .editor input[type="text"] {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.4rem;
+  font-family: inherit;
+  font-size: 0.8rem;
+  margin-right: 0.4rem;
+}
+.impact .editor div.inline { display: flex; gap: 0.4rem; align-items: center; margin-top: 0.4rem; }
+.impact .editor button {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}

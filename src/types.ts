@@ -64,7 +64,22 @@ export interface PlanSummary {
 
   /** The applier's record, once it has finished with this plan. Null until then. */
   outcome: PlanOutcome | null;
+
+  /**
+   * Whether the impact assessment for THIS inspection is available.
+   *
+   * ready        impact.json is stored. A restriction can be chosen
+   * in_progress  the impact/ marker for this request still exists, so the querier is still working.
+   *              Said out loud rather than shown as an empty assessment, which would read as
+   *              "nothing to worry about"
+   * unavailable  neither. Approval is still possible - deliberately, so an assessment outage is not
+   *              a pipeline outage - just not approval with a restriction
+   */
+  assessment: AssessmentState;
+  assessment_digest_stored: boolean;
 }
+
+export type AssessmentState = "ready" | "in_progress" | "unavailable";
 
 /** What the applier did, read from outcome.json in the plan prefix.
  *
@@ -91,6 +106,15 @@ export interface PlanChange {
 
 export interface PlanDetail {
   plan_id: string;
+  /**
+   * The impact assessment, when there is one. Served from the querier's push when it landed and read
+   * from the bucket when it did not, and matched on the plan's CURRENT request id either way - a
+   * cached assessment from an earlier inspection describes a plan that no longer exists.
+   */
+  assessment: Impact | null;
+  assessment_source: "pushed" | "stored" | null;
+  /** The querier's own digest, which a restriction has to send back. Never computed by the server. */
+  assessment_sha256: string | null;
   /** Which inspection produced this plan, and what the approval marker gets named by. */
   request_id: string | null;
   /** False when the twin already matches the spec. Such a plan cannot be approved. */
@@ -213,9 +237,114 @@ export interface DecisionPayload {
    * approval for a plan the reviewer never read, and every later check would pass.
    */
   expected_changes_sha256: string;
+
+  /**
+   * The administrator's restriction, as DECISIONS rather than as a policy document.
+   *
+   * Omitted for an ordinary approval, which is the common case. When present the server checks each
+   * one against the impact assessment and the inline writer recomposes the statements from them -
+   * this page never authors IAM content, because a defect here could otherwise write Allow where
+   * somebody clicked Deny.
+   */
+  restrictions?: Restriction[];
+
+  /**
+   * The digest of the assessment the restriction was chosen from. Required whenever restrictions is
+   * non-empty: a restriction names resources, and this is what establishes that the assessment which
+   * enumerated them is the one that is still stored.
+   */
+  expected_impact_sha256?: string;
+}
+
+/** One thing an administrator decided, before it is a policy statement.
+ *
+ * The three intents are not interchangeable. They produce different statements and they go stale in
+ * opposite directions, so the page asks which one is meant rather than guessing:
+ *
+ *   allow_only     Deny with NotResource. Anything not listed - including resources created
+ *                  tomorrow - is denied. Grows with what is KEPT
+ *   deny_only      Deny with Resource. Small, and a resource created tomorrow is allowed
+ *   tag_condition  Deny with a tag condition. Fixed size however many it covers, and it keeps
+ *                  covering resources that get the tag later
+ */
+export interface Restriction {
+  /** Which attached policy prompted this. Recorded; it does not scope the statement. */
+  policy: string;
+  intent: "allow_only" | "deny_only" | "tag_condition";
+  actions: string[];
+  /** allow_only: what to KEEP. deny_only: what to deny. Empty for tag_condition. */
+  resources?: string[];
+  tag_key?: string;
+  tag_values?: string[];
 }
 
 export interface DecisionResult {
   written: string;
   marker: Record<string, unknown>;
+}
+
+
+/** What a permission set will reach, enumerated before it is granted.
+ *
+ * Produced by the impact querier. Only the fields this page reads are modelled - the document
+ * carries more, and adding to it must not require this file to change for the page to keep working.
+ */
+export interface Impact {
+  request_id: string;
+  account_id: string;
+  resource: string;
+  permission_set_name: string | null;
+  inventory_as_of: string;
+  /** The statements a new restriction would REPLACE. Shown so nobody overwrites one unknowingly. */
+  current_admin_deny: unknown[];
+  policies: ImpactPolicy[];
+  /** Every enumerated ARN. A restriction may name only these. */
+  allowed_resources: string[];
+  /** The action patterns the plan grants, as written - wildcards included. */
+  attached_actions: string[];
+  /** The declaration path. Restricting any of these would lock the user out of the pipeline. */
+  protected_actions: string[];
+  coverage: ImpactCoverage;
+}
+
+export interface ImpactPolicy {
+  source: "aws_managed" | "customer_managed";
+  identifier: string;
+  default_version_id: string | null;
+  /** Granted to every governed user at the permission set layer. Summarised, never enumerated. */
+  is_baseline: boolean;
+  restrictable: boolean;
+  /** Why the document could not be read, when it could not. Its absence is not "grants nothing". */
+  unreadable: string | null;
+  actions_granted: string[];
+  affected: ImpactGroup[];
+  summary?: string;
+}
+
+export interface ImpactGroup {
+  service: string;
+  resource_type: string;
+  actions: string[];
+  /** "*" when the statement named no resource, "listed" when it named ARNs or patterns. */
+  scope: "*" | "listed";
+  total: number;
+  /** Resource Explorer returns at most 1000 per query, so a true count here is a floor. */
+  truncated: boolean;
+  sensitive_hits: number;
+  resources: ImpactResource[];
+}
+
+export interface ImpactResource {
+  arn: string;
+  region: string;
+  tags: Record<string, string>;
+  sensitive: boolean;
+}
+
+export interface ImpactCoverage {
+  services_failed: string[];
+  truncated_groups: string[];
+  policies_unreadable: string[];
+  /** False when anything above is non-empty. An incomplete assessment is still the best answer. */
+  complete: boolean;
 }

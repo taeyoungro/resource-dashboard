@@ -1,11 +1,19 @@
 import { useState } from "react";
-import type { PlanDetail as Detail } from "../types";
+import type { AssessmentState, PlanDetail as Detail, Restriction } from "../types";
+import { Impact } from "./Impact";
 
 interface Props {
   detail: Detail;
   decided: boolean;
   busy: boolean;
-  onDecide: (decision: "approve" | "deny", reviewer: string, comment: string) => void;
+  /** From the sweep, so the page can tell "still assessing" from "no assessment". */
+  assessmentState: AssessmentState | null;
+  onDecide: (
+    decision: "approve" | "deny",
+    reviewer: string,
+    comment: string,
+    restrictions: Restriction[],
+  ) => void;
 }
 
 const actionClass = (actions: string[]) => {
@@ -14,9 +22,10 @@ const actionClass = (actions: string[]) => {
   return "badge badge-ok";
 };
 
-export function PlanDetail({ detail, decided, busy, onDecide }: Props) {
+export function PlanDetail({ detail, decided, busy, assessmentState, onDecide }: Props) {
   const [reviewer, setReviewer] = useState("");
   const [comment, setComment] = useState("");
+  const [restrictions, setRestrictions] = useState<Restriction[]>([]);
 
   const submit = (decision: "approve" | "deny") => {
     if (!reviewer.trim()) {
@@ -27,9 +36,19 @@ export function PlanDetail({ detail, decided, busy, onDecide }: Props) {
       window.alert("거부에는 사유가 필요합니다. 변경을 요청한 사람이 읽을 것은 이것뿐입니다.");
       return;
     }
+    const active = decision === "approve" ? restrictions.filter((r) => r.actions.length > 0) : [];
+    if (decision === "approve" && restrictions.length > active.length) {
+      window.alert("동작을 고르지 않은 제한이 있습니다. 지우거나 동작을 고르세요.");
+      return;
+    }
     const what = detail.resource ?? detail.plan_id;
-    if (!window.confirm(`${what} 를 ${decision === "approve" ? "승인" : "거부"}합니다.`)) return;
-    onDecide(decision, reviewer.trim(), comment.trim());
+    const suffix = active.length > 0 ? ` 제한 ${active.length}건과 함께` : "";
+    if (
+      !window.confirm(`${what} 를${suffix} ${decision === "approve" ? "승인" : "거부"}합니다.`)
+    ) {
+      return;
+    }
+    onDecide(decision, reviewer.trim(), comment.trim(), active);
   };
 
   return (
@@ -44,6 +63,31 @@ export function PlanDetail({ detail, decided, busy, onDecide }: Props) {
           계획 시각: {detail.planned_at ? new Date(detail.planned_at).toLocaleString() : "—"}
         </span>
       </div>
+
+      {/* The assessment, or what is happening instead of one.
+          Approval is never blocked on this: a plan can be approved with no assessment at all, and
+          making the decision path depend on the querier would turn an assessment outage into a
+          pipeline outage. What is unavailable without one is the RESTRICTION - it names resources,
+          and the enumerated set is the only fence those names can be checked against. */}
+      {detail.assessment ? (
+        <Impact
+          assessment={detail.assessment}
+          source={detail.assessment_source}
+          restrictions={restrictions}
+          onChange={setRestrictions}
+          disabled={busy || decided}
+        />
+      ) : assessmentState === "in_progress" ? (
+        <div className="notice">
+          <strong>영향도 평가가 진행 중입니다.</strong> 이 계획은 지금도 승인할 수 있습니다 — 다만
+          제한을 걸려면 평가가 끝나야 합니다. 평가가 끝나면 이 화면에 나타납니다.
+        </div>
+      ) : (
+        <div className="notice">
+          이 계획에는 영향도 평가가 없습니다. 승인은 가능하지만 <strong>제한은 걸 수 없습니다</strong> —
+          제한은 자원을 지목하고, 그 이름을 대조할 근거가 평가뿐입니다.
+        </div>
+      )}
 
       <h3>바뀌는 것</h3>
       {detail.changes.length === 0 ? (
