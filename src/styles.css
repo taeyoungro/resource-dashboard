@@ -554,6 +554,35 @@ label.pick-item .rtype { color: var(--muted); font-size: 0.7rem; }
   font-size: 0.8rem;
 }
 
+/* The related-services fold inside the picker, same idea as the one on the page: the policy's own
+   service is what somebody opened the dialog for. Reuses .related's look; only the spacing differs,
+   because in here it sits inside a scroll rather than in a page column. */
+/* 전체 선택 for one block, in its sticky heading. Right-aligned so it is in the same place in every
+   block, and quiet until hovered - it acts on up to several hundred checkboxes. */
+dialog.picker .pick-head { display: flex; align-items: baseline; gap: 0.5rem; }
+dialog.picker button.block-all {
+  margin-left: auto;
+  padding: 0 0.4rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+dialog.picker button.block-all:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg);
+}
+
+dialog.picker .related {
+  margin: 0.7rem 0 0.3rem;
+  padding: 0.35rem 0 0.1rem 0.6rem;
+  border-left: 2px solid var(--border);
+}
+dialog.picker .related > summary { cursor: pointer; font-size: 0.78rem; color: var(--muted); }
+dialog.picker .related > summary:hover { color: var(--text); }
+dialog.picker .related > p { margin: 0.3rem 0 0.4rem; font-size: 0.75rem; line-height: 1.5; }
+
 dialog.picker > footer {
   display: flex;
   align-items: center;

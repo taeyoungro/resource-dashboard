@@ -70,7 +70,11 @@ export function authorisedToAnnounce(config, headerValue) {
 /** Which key opens a route. Everything not listed here needs the dashboard's own key. */
 // Bounded so one decision cannot post an unbounded document. The inline policy has a byte ceiling
 // of its own that the writer enforces; this is only to keep a single request sane.
-const MAX_RESTRICTIONS = 50;
+// One restriction per ACTION now, not per policy, and 전체 선택 in the picker makes a hundred of them
+// one click. This is a sanity bound, not the real limit: the real one is the permission set inline
+// policy quota of 10,240 bytes, which a hundred single-ARN statements already exceed. The page
+// estimates that and says so before submitting, and generator/restriction.py measures it exactly.
+const MAX_RESTRICTIONS = 200;
 
 // The three forms, and they are not interchangeable - they produce different statements and go stale
 // in different directions. See event_pipeline code/generator/restriction.py.
@@ -459,7 +463,12 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
           throw new HttpError(400, 'a denial cannot carry a restriction: nothing is being granted');
         }
         if (restrictions.length > MAX_RESTRICTIONS) {
-          throw new HttpError(400, `at most ${MAX_RESTRICTIONS} restrictions per decision`);
+          throw new HttpError(
+            400,
+            `at most ${MAX_RESTRICTIONS} restricted actions per decision. The permission set inline `
+            + 'policy quota of 10,240 bytes is reached well before this, so a restriction this wide '
+            + 'wants a tag condition instead - one statement whatever it covers.',
+          );
         }
 
         const stored = await readImpact(s3, config, id);
