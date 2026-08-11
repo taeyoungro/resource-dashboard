@@ -319,14 +319,22 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // digest checks exist to prevent, arriving through the display instead.
       let assessment = null;
       let source = null;
+      let digest = null;
       if (plan.request_id) {
         const pushed = impacts.get(plan.request_id);
         if (pushed && !pushed.body_omitted && pushed.impact?.request_id === plan.request_id) {
           assessment = pushed.impact;
           source = 'pushed';
+          // The digest the container computed over the object it wrote, carried in the push beside
+          // the body. It used to be set on the stored path only, so an assessment that arrived by
+          // push - the ordinary case, since the container POSTs it - gave the page a null
+          // assessment_sha256, the page sent no expected_impact_sha256, and the decision route
+          // refused every restriction with a 400. This is not computed here either: the value comes
+          // from the container, and the decision route compares it against the digest beside the
+          // stored object before it carries anything into a marker.
+          digest = pushed.impact_sha256 ?? null;
         }
       }
-      let digest = null;
       if (!assessment) {
         const stored = await readImpact(s3, config, id);
         if (stored?.document
@@ -435,6 +443,24 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // handed - it has to, because this process is the component that is not trusted. Catching an
       // impossible restriction here means the person who chose it hears why now, rather than an
       // approval sitting in a bucket and a container refusing it later.
+      // Declared HERE and not below, where it used to be. The restriction block reads it to check
+      // that the stored assessment belongs to this inspection, and a const declared further down the
+      // same function body is in its temporal dead zone at that point - so every approval carrying a
+      // restriction threw ReferenceError and became a 500. It read as an approval path that simply
+      // did not work, with nothing in the message saying why. api.test.js now covers it.
+      //
+      // The marker is named by the inspection that produced this plan, not by the resource: the name
+      // has to fit ECS startedBy, which is 36 characters of [A-Za-z0-9/_-] and would not hold a
+      // resource name. Checked rather than trusted - it arrives from an object in a bucket.
+      const requestId = String(plan.request_id ?? '');
+      if (!REQUEST_ID.test(requestId)) {
+        throw new HttpError(
+          409,
+          `${id} has no usable request id in request.json (${requestId.slice(0, 64) || 'absent'}), `
+          + 'so the approval marker cannot be named. Change the resource again to get a fresh plan.',
+        );
+      }
+
       const restrictions = body.restrictions ?? [];
       if (!Array.isArray(restrictions)
           || restrictions.some((r) => !r || typeof r !== 'object' || Array.isArray(r))) {
@@ -528,18 +554,6 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // Carried, never computed here. The querier wrote it; the applier recomputes over the
         // object and compares.
         impactDigest = stored.digest;
-      }
-
-      // The marker is named by the inspection that produced this plan, not by the resource: the
-      // name has to fit ECS startedBy, which is 36 characters of [A-Za-z0-9/_-] and would not hold
-      // a resource name. Checked rather than trusted - it arrives from an object in a bucket.
-      const requestId = String(plan.request_id ?? '');
-      if (!REQUEST_ID.test(requestId)) {
-        throw new HttpError(
-          409,
-          `${id} has no usable request id in request.json (${requestId.slice(0, 64) || 'absent'}), `
-          + 'so the approval marker cannot be named. Change the resource again to get a fresh plan.',
-        );
       }
 
       const marker = decisionMarker({
