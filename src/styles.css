@@ -359,13 +359,21 @@ pre.plan {
 .impact .baseline { margin-top: 0.8rem; font-size: 0.82rem; }
 .impact .baseline ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
 
-.impact .restrict { margin-top: 0.6rem; font-size: 0.84rem; }
-.impact .editor {
-  margin-top: 0.5rem;
-  padding: 0.6rem;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
+/* The restriction controls, now the block's own content rather than something behind a checkbox. A
+   dashed box read as "nested, optional" when it was; a rule and a label read as "this section". */
+.impact .restrict { margin-top: 0.8rem; font-size: 0.84rem; }
+.impact .restrict-head {
+  display: block;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
 }
+.impact .editor { margin-top: 0.4rem; }
+.impact .editor .none-chosen { margin: 0.4rem 0 0; font-size: 0.78rem; }
 .impact .editor label { display: block; margin-bottom: 0.4rem; }
 .impact .editor label.inline {
   display: inline-flex;

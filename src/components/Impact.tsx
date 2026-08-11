@@ -238,10 +238,6 @@ function PolicyBlock({
   // restriction holding several actions and one shared resource list is what made the ARN shapes
   // collide, so the page no longer builds one.
   const ours = restrictions.filter((r) => r.policy === policy.identifier);
-  // The checkbox cannot be derived from `ours` alone: ticked with nothing chosen yet is zero
-  // restrictions, which is also what unticked looks like.
-  const [restricting, setRestricting] = useState(false);
-  const checked = restricting || ours.length > 0;
 
   // Wildcards cannot be restricted - with NotResource a wildcard action denies everything outside the
   // list, including the baseline. What the policy literally names is offered as its own group; the
@@ -333,36 +329,27 @@ function PolicyBlock({
         </p>
       )}
 
+      {/* No checkbox in front of this. There used to be one - "이 정책에 제한을 건다" - and it was a
+          second door in front of a door: the policy block is already collapsed, so opening it is the
+          statement of intent, and a tick inside it only asked the same question again. What a
+          restriction IS is the actions chosen; nothing is sent for a policy with none, so the state the
+          checkbox held is a state the data already has. */}
       <div className="restrict">
-        <label>
-          <input
-            type="checkbox"
-            disabled={disabled}
-            checked={checked}
-            onChange={(e) => {
-              setRestricting(e.target.checked);
-              if (!e.target.checked) set([]);
-            }}
-          />{" "}
-          이 정책에 제한을 건다
-        </label>
-
-        {checked && (
-          <RestrictionEditor
-            policy={policy.identifier}
-            primary={primary}
-            existing={ours}
-            affected={policy.affected}
-            offerable={offerable}
-            granted={policy.actions_offerable ?? []}
-            protectedActions={protectedActions}
-            disabled={disabled}
-            onChange={set}
-            reference={reference}
-            referenceError={referenceError}
-            omitted={omitted}
-          />
-        )}
+        <span className="restrict-head">제한</span>
+        <RestrictionEditor
+          policy={policy.identifier}
+          primary={primary}
+          existing={ours}
+          affected={policy.affected}
+          offerable={offerable}
+          granted={policy.actions_offerable ?? []}
+          protectedActions={protectedActions}
+          disabled={disabled}
+          onChange={set}
+          reference={reference}
+          referenceError={referenceError}
+          omitted={omitted}
+        />
       </div>
     </details>
   );
@@ -596,8 +583,8 @@ function RestrictionEditor({
             ))}
           </ul>
         ) : (
-          <p className="warn-inline">
-            동작을 하나 이상 골라야 한다. 동작 없는 제한은 목록 밖 전부를 거부한다.
+          <p className="muted none-chosen">
+            고른 동작이 없다 — 이 정책에는 제한이 걸리지 않는다.
           </p>
         )}
 
