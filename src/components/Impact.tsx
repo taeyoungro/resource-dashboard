@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import type {
-  ActionCatalogue, CatalogueAction, Impact as Assessment, ImpactGroup, ImpactPolicy, Restriction,
+  ActionCatalogue, Impact as Assessment, ImpactGroup, ImpactPolicy, Restriction,
 } from "../types";
+import { ActionPicker } from "./ActionPicker";
 
 /**
  * What the permission set will reach, and the place a restriction is chosen.
@@ -34,11 +35,6 @@ interface Props {
   /** Null while it is still loading, or when the server could not read the file. */
   catalogue: ActionCatalogue | null;
 }
-
-/** The order an administrator looks in. Somebody restricting a queue wants Write, not Read. */
-const ACCESS_ORDER: CatalogueAction["access"][] = [
-  "Write", "Permissions management", "Tagging", "Read", "List",
-];
 
 const INTENT_LABEL: Record<Restriction["intent"], string> = {
   allow_only: "이 자원만 허용 — 이후 생기는 자원은 거부된다",
@@ -289,7 +285,7 @@ function RestrictionEditor({
   onChange: (next: Restriction) => void;
   catalogue: ActionCatalogue | null;
 }) {
-  const [typed, setTyped] = useState("");
+  const [picking, setPicking] = useState(false);
   const everyArn = groups.flatMap((g) => g.resources.map((r) => r.arn));
 
   // Which services this policy actually reaches, so the picker offers those and not the whole
@@ -304,20 +300,6 @@ function RestrictionEditor({
   // restrictable rather than blocked.
   const covered = services.filter((service) => catalogue?.services[service]);
   const uncovered = services.filter((service) => !catalogue?.services[service]);
-
-  // An account-level action names no resource, so an allow_only restriction on it would deny it
-  // outright rather than narrow it - generator/restriction.py refuses exactly that. Offered for the
-  // other two intents, where a flat Deny is what the administrator meant.
-  const usable = (entry: CatalogueAction) =>
-    !protectedActions.includes(entry.action)
-    && !(restriction.intent === "allow_only" && entry.account_level);
-
-  const toggleAction = (action: string) => {
-    const actions = restriction.actions.includes(action)
-      ? restriction.actions.filter((a) => a !== action)
-      : [...restriction.actions, action];
-    onChange({ ...restriction, actions });
-  };
 
   const toggleResource = (arn: string) => {
     const current = restriction.resources ?? [];
@@ -353,118 +335,61 @@ function RestrictionEditor({
         </select>
       </label>
 
+      {/* A button, not a list. The offering is in a dialog with its own search and scroll: this page
+          is where a plan is read and approved, and one service with several hundred actions would
+          push the plan off the screen. What is chosen stays here, because it is part of the decision
+          and has to be readable without opening anything. */}
       <fieldset>
         <legend>동작</legend>
 
-        {/* Named literally by the policy. Always offered, catalogue or not. */}
-        {offerable.length > 0 && (
-          <div className="action-group">
-            <span className="action-group-head">이 정책이 직접 지목한 동작</span>
-            {offerable.map((action) => (
-              <label key={action} className="inline">
-                <input
-                  type="checkbox"
-                  disabled={disabled}
-                  checked={restriction.actions.includes(action)}
-                  onChange={() => toggleAction(action)}
-                />{" "}
-                <code>{action}</code>
-              </label>
-            ))}
-          </div>
-        )}
+        <div className="pick-open">
+          <button type="button" disabled={disabled} onClick={() => setPicking(true)}>
+            동작 고르기
+            {restriction.actions.length > 0 && ` (${restriction.actions.length}개)`}
+          </button>
+          <span className="muted">
+            {covered.length > 0
+              && `${covered.map((s) => catalogue?.services[s]?.label ?? s).join(", ")} 목록에서 고른다`}
+            {covered.length > 0 && uncovered.length > 0 && " · "}
+            {uncovered.length > 0 && `${uncovered.join(", ")}는 이름을 직접 적는다`}
+          </span>
+        </div>
 
-        {/* From the catalogue, grouped by access level. This is what a wildcarded policy needs: it
-            names no concrete action, and the concrete ones it covers are not derivable on this page. */}
-        {covered.map((service) => {
-          const entries = (catalogue?.services[service]?.actions ?? []).filter(usable);
-          const label = catalogue?.services[service]?.label ?? service;
-          return (
-            <div key={service} className="action-group">
-              <span className="action-group-head">
-                {label} — 이 정책이 닿는 서비스
-              </span>
-              {ACCESS_ORDER.map((access) => {
-                const ofLevel = entries.filter((e) => e.access === access);
-                if (ofLevel.length === 0) return null;
-                return (
-                  <div key={access} className="action-access">
-                    <span className="muted">{access}</span>
-                    {ofLevel.map((entry) => (
-                      <label key={entry.action} className="inline">
-                        <input
-                          type="checkbox"
-                          disabled={disabled}
-                          checked={restriction.actions.includes(entry.action)}
-                          onChange={() => toggleAction(entry.action)}
-                        />{" "}
-                        <code>{entry.action}</code>
-                      </label>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
-
-        {/* The catalogue does not cover every service yet, and a service it has not reached must stay
-            restrictable rather than become blocked. Both the server and the inline writer check what
-            is typed here, so an unknown action is refused with a sentence rather than accepted. */}
-        {uncovered.length > 0 && (
-          <div className="action-group">
-            <span className="action-group-head">
-              {uncovered.join(", ")} — 목록이 아직 없다. 동작 이름을 직접 적는다
-            </span>
-            <div className="inline">
-              <input
-                type="text"
-                placeholder={`${uncovered[0]}:...`}
-                disabled={disabled}
-                value={typed}
-                onChange={(e) => setTyped(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && typed.trim()) {
-                    e.preventDefault();
-                    toggleAction(typed.trim());
-                    setTyped("");
-                  }
-                }}
-              />
-              <button
-                type="button"
-                disabled={disabled || !typed.trim()}
-                onClick={() => {
-                  toggleAction(typed.trim());
-                  setTyped("");
-                }}
-              >
-                동작 추가
-              </button>
-            </div>
-          </div>
-        )}
-
-        {catalogue?.error && (
-          <p className="warn-inline">
-            동작 목록을 읽지 못했다 ({catalogue.error}). 이름을 직접 적으면 된다 — 서버와 인라인
-            작성기가 어차피 검사한다.
-          </p>
-        )}
-
-        {restriction.actions.length > 0 && (
+        {restriction.actions.length > 0 ? (
           <p className="muted chosen">
-            고른 동작 {restriction.actions.length}개:{" "}
             {restriction.actions.map((a) => (
               <code key={a}>{a} </code>
             ))}
           </p>
-        )}
-
-        {restriction.actions.length === 0 && (
+        ) : (
           <p className="warn-inline">
             동작을 하나 이상 골라야 한다. 동작 없는 제한은 목록 밖 전부를 거부한다.
           </p>
+        )}
+
+        {catalogue?.error && (
+          <p className="warn-inline">
+            동작 목록을 읽지 못했다 ({catalogue.error}). 목록 대신 이름을 직접 적으면 된다 — 서버와
+            인라인 작성기가 어차피 검사한다.
+          </p>
+        )}
+
+        {picking && (
+          <ActionPicker
+            policy={restriction.policy}
+            intent={restriction.intent}
+            chosen={restriction.actions}
+            named={offerable}
+            covered={covered}
+            uncovered={uncovered}
+            catalogue={catalogue}
+            protectedActions={protectedActions}
+            onCommit={(actions) => {
+              onChange({ ...restriction, actions });
+              setPicking(false);
+            }}
+            onCancel={() => setPicking(false)}
+          />
         )}
       </fieldset>
 

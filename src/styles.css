@@ -324,25 +324,154 @@ pre.plan {
   cursor: pointer;
 }
 
-/* Action picker. Grouped by access level because somebody restricting a queue is looking for Write,
-   and a flat list of twenty actions is a list nobody reads. */
-.impact .editor .action-group {
-  margin: 0.5rem 0;
-  padding-top: 0.4rem;
-  border-top: 1px solid var(--border);
-}
-.impact .editor .action-group:first-of-type { border-top: none; padding-top: 0; }
-.impact .editor .action-group-head {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--muted);
-  margin-bottom: 0.3rem;
-}
-.impact .editor .action-access { margin: 0.2rem 0 0.3rem 0.5rem; }
-.impact .editor .action-access > span {
-  display: inline-block;
-  min-width: 9rem;
-  font-size: 0.72rem;
-  vertical-align: top;
-}
+/* What the page keeps of the action picker: a button, a note about where the list comes from, and the
+   actions chosen. The offering itself is in the dialog below. */
+.impact .editor .pick-open { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.impact .editor .pick-open > span { font-size: 0.75rem; }
 .impact .editor .chosen { margin-top: 0.4rem; font-size: 0.76rem; }
+
+/* ---- the action picker dialog --------------------------------------------------------------- */
+/* Opened with showModal(), so the browser puts it in the top layer. That matters here: the editor is
+   inside a <details> inside a column with overflow-y:auto, and a positioned overlay would be clipped
+   by both. It also brings Escape, a backdrop and focus containment without any of them being written.
+
+   [open] is on the display rule deliberately. An author display value overrides the user agent's
+   display:none for a closed dialog, so putting flex on the bare selector would leave the panel sitting
+   in the page. */
+dialog.picker {
+  width: min(54rem, 94vw);
+  max-height: 84vh;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+dialog.picker[open] { display: flex; flex-direction: column; }
+dialog.picker::backdrop { background: rgba(10, 12, 16, 0.45); }
+
+dialog.picker > header {
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+dialog.picker > header h4 { margin: 0 0 0.25rem; font-size: 0.92rem; }
+dialog.picker > header p { margin: 0 0 0.55rem; font-size: 0.78rem; line-height: 1.5; }
+
+.picker-search { display: flex; align-items: center; gap: 0.6rem; }
+.picker-search input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  font-size: 0.82rem;
+}
+.picker-search input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.picker-search .count { font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+
+/* The scroll. min-height:0 so this flex item may shrink below its content - without it the body grows
+   to fit every action and pushes the footer past the bottom of the dialog, which is the whole reason
+   the footer sits outside it. */
+/* No padding at the top. A sticky child pins to the content edge, so a top padding leaves a strip
+   above it that scrolling rows show through - half a line of checkboxes floating over the heading. The
+   space that strip was there for belongs to the heading itself. */
+.picker-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 1rem 0.9rem;
+}
+
+.pick-group { margin-top: 0.6rem; }
+.pick-group:first-child { margin-top: 0; }
+/* Sticky, so the service and group a checkbox belongs to stay on screen while the list scrolls. */
+.pick-head {
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+  padding: 0.55rem 0 0.25rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+/* Columns rather than one line per action: a service with several hundred actions is a long scroll
+   either way, and auto-fill keeps it three columns wide on a normal window and one on a narrow one. */
+.pick-level {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.05rem 0.8rem;
+  margin: 0.25rem 0 0.45rem;
+}
+.pick-level > .level-name {
+  grid-column: 1 / -1;
+  margin: 0.35rem 0 0.1rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+label.pick-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.2rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+}
+/* An action name is one unbroken token, so a name wider than its column would run over the column
+   beside it rather than wrap. iam:UpdateAssumeRolePolicy and ec2:DescribeInstanceCreditSpecifications
+   are both wide enough for that. Breaking mid-name is ugly and reads; overlapping does not. */
+label.pick-item > code { min-width: 0; overflow-wrap: anywhere; }
+label.pick-item > input { flex: none; }
+label.pick-item:hover { background: var(--panel-2); }
+label.pick-item.on code { color: var(--accent); font-weight: 700; }
+label.pick-item .rtype { color: var(--muted); font-size: 0.7rem; }
+.pick-empty { margin: 0.8rem 0; font-size: 0.8rem; }
+
+.picker-typed { display: flex; gap: 0.4rem; margin: 0.35rem 0; }
+.picker-typed input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+dialog.picker > footer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1rem;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 0.8rem;
+}
+dialog.picker button {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.85rem;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+/* Pushes itself and everything after it to the right edge, so 취소 and 적용 sit together. */
+dialog.picker button.grow { margin-left: auto; }
+dialog.picker button.commit {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
