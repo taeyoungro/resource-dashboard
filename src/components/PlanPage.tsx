@@ -13,6 +13,30 @@ interface Props {
   onRefresh: () => void;
 }
 
+// Whether the left column is folded. A preference and not a secret, so localStorage rather than the
+// sessionStorage the API key uses - somebody who folded the list yesterday meant it. Both calls are
+// guarded: localStorage throws rather than answering null where storage is denied, and a page that
+// cannot load because it could not read a preference would be a poor trade.
+const FOLD_STORAGE = "opt_dashboard_sidebar_folded";
+
+const foldPreference = {
+  get: (): boolean => {
+    try {
+      return window.localStorage.getItem(FOLD_STORAGE) === "1";
+    } catch {
+      return false;
+    }
+  },
+  set: (folded: boolean): void => {
+    try {
+      if (folded) window.localStorage.setItem(FOLD_STORAGE, "1");
+      else window.localStorage.removeItem(FOLD_STORAGE);
+    } catch {
+      /* a preference that cannot be remembered is not worth an error on screen */
+    }
+  },
+};
+
 export function PlanPage({ state, error, onRefresh }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -22,6 +46,7 @@ export function PlanPage({ state, error, onRefresh }: Props) {
   // runs, so there is nothing to poll for - and a failure is not worth surfacing as an error: the
   // picker falls back to a typed action, which is how the screen worked before the catalogue existed.
   const [catalogue, setCatalogue] = useState<ActionCatalogue | null>(null);
+  const [folded, setFolded] = useState(foldPreference.get);
 
   const plans = state?.plans ?? [];
   const selected = plans.find((p) => p.plan_id === selectedId) ?? null;
@@ -91,22 +116,67 @@ export function PlanPage({ state, error, onRefresh }: Props) {
     }
   };
 
+  const fold = (next: boolean) => {
+    setFolded(next);
+    foldPreference.set(next);
+  };
+  const awaiting = state?.counts.awaiting_decision ?? 0;
+
   return (
-    <div className="app">
-      <aside className="sidebar">
+    <div className={folded ? "app folded" : "app"}>
+      <aside className={folded ? "sidebar folded" : "sidebar"}>
+        {/* Folded, the column is a rail and the button IS the rail: one control, a target the width
+            of the column, and it does not move when it is pressed. The rail says how many plans are
+            awaiting a decision, because folding the list must not be a way to stop seeing that. */}
         <header>
-          <h1>계획</h1>
-          <button className="refresh" onClick={onRefresh}>
-            다시 읽기
-          </button>
+          <div className="sidebar-head">
+            <button
+              className="fold"
+              aria-expanded={!folded}
+              title={
+                folded
+                  ? `목록 펼치기${awaiting > 0 ? ` — 결정 대기 ${awaiting}건` : ""}`
+                  : "목록 접기"
+              }
+              onClick={() => fold(!folded)}
+            >
+              <span aria-hidden="true">{folded ? "›" : "‹"}</span>
+              {folded && (
+                <>
+                  <span className="rail">계획</span>
+                  {/* A badge and not part of the vertical label. Digits are rotated sideways in
+                      vertical writing while Hangul stays upright, so a number in that run lands on
+                      its side across the character above it. */}
+                  {awaiting > 0 && <span className="badge badge-warn">{awaiting}</span>}
+                </>
+              )}
+            </button>
+            {!folded && <h1>계획</h1>}
+          </div>
+          {!folded && (
+            <button className="refresh" onClick={onRefresh}>
+              다시 읽기
+            </button>
+          )}
         </header>
-        {error && <div className="error">{error}</div>}
-        <PlanList items={plans} selectedId={selectedId} onSelect={setSelectedId} />
-        {/* Below the plan list, not merged into it. The list is what the buckets say; this is
-            what a machine announced a moment ago and the sweep has not confirmed yet. */}
-        <Notifications />
+
+        {/* Unmounted rather than hidden while folded. Everything in here comes from the server, so
+            nothing is lost by taking it down, and Notifications polls on an interval - a poll nobody
+            can see is a call worth not making. */}
+        {!folded && (
+          <>
+            {error && <div className="error">{error}</div>}
+            <PlanList items={plans} selectedId={selectedId} onSelect={setSelectedId} />
+            {/* Below the plan list, not merged into it. The list is what the buckets say; this is
+                what a machine announced a moment ago and the sweep has not confirmed yet. */}
+            <Notifications />
+          </>
+        )}
       </aside>
       <main>
+        {/* The sidebar is where this normally goes, and folding must not be a way to stop seeing that
+            the list could not be read - a stale list looks exactly like a quiet one. */}
+        {folded && error && <div className="error">{error}</div>}
         {detailError && <div className="error">{detailError}</div>}
         {detail ? (
           <PlanDetail
