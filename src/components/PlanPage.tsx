@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import type {
-  ActionCatalogue, PlanDetail as Detail, Restriction, SweepState,
-} from "../types";
+import type { PlanDetail as Detail, Restriction, SweepState } from "../types";
 import { PlanDetail } from "./PlanDetail";
 import { PlanList } from "./PlanList";
 import { Notifications } from "./Notifications";
@@ -42,10 +40,6 @@ export function PlanPage({ state, error, onRefresh }: Props) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // Fetched once. It is read from a file at server startup and does not change while that process
-  // runs, so there is nothing to poll for - and a failure is not worth surfacing as an error: the
-  // picker falls back to a typed action, which is how the screen worked before the catalogue existed.
-  const [catalogue, setCatalogue] = useState<ActionCatalogue | null>(null);
   const [folded, setFolded] = useState(foldPreference.get);
 
   const plans = state?.plans ?? [];
@@ -74,10 +68,6 @@ export function PlanPage({ state, error, onRefresh }: Props) {
   useEffect(() => {
     if (selectedId) load(selectedId);
   }, [selectedId, load]);
-
-  useEffect(() => {
-    api.actions().then(setCatalogue).catch(() => setCatalogue(null));
-  }, []);
 
   const decide = async (
     decision: "approve" | "deny",
@@ -184,7 +174,6 @@ export function PlanPage({ state, error, onRefresh }: Props) {
             decided={selected?.state === "decided"}
             busy={busy}
             assessmentState={selected?.assessment ?? null}
-            catalogue={catalogue}
             onDecide={decide}
           />
         ) : (

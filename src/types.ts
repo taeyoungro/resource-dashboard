@@ -304,8 +304,30 @@ export interface Impact {
   attached_actions: string[];
   /** The declaration path. Restricting any of these would lock the user out of the pipeline. */
   protected_actions: string[];
+  /**
+   * The actions the restriction screen offers, with each one's access level and resource types.
+   *
+   * Carried here rather than served from a file of the dashboard's own. That file was a second copy of
+   * data AWS owns and had drifted from it - four of its twenty entries disagreed with the reference -
+   * and what the screen needs is the actions THIS plan grants, which is what the container knows.
+   *
+   * Absent on an assessment written before the container carried it. The screen then keeps a text box,
+   * which is how it worked for an uncovered service all along.
+   */
+  action_reference?: ImpactActionReference;
   coverage: ImpactCoverage;
 }
+
+export interface ImpactActionReference {
+  /** The canonical digest of the reference the container built this from. */
+  reference_version: string;
+  retrieved_at: string;
+  /** service prefix -> bare action name -> [access level, resource types]. */
+  services: Record<string, Record<string, [ImpactAccessLevel, string[]]>>;
+}
+
+export type ImpactAccessLevel =
+  "List" | "Read" | "Write" | "Permissions management" | "Tagging";
 
 export interface ImpactPolicy {
   source: "aws_managed" | "customer_managed";
@@ -316,7 +338,14 @@ export interface ImpactPolicy {
   restrictable: boolean;
   /** Why the document could not be read, when it could not. Its absence is not "grants nothing". */
   unreadable: string | null;
+  /** The patterns the policy names, as written - wildcards included. Not for the picker. */
   actions_granted: string[];
+  /**
+   * The concrete actions the picker may offer for this policy: wildcards expanded through the AWS
+   * Service Reference, protected actions removed. Absent on an assessment written before the
+   * container carried it, and the screen falls back to typing.
+   */
+  actions_offerable?: string[];
   affected: ImpactGroup[];
   summary?: string;
 }
@@ -324,6 +353,10 @@ export interface ImpactPolicy {
 export interface ImpactGroup {
   service: string;
   resource_type: string;
+  /**
+   * The actions that reach THIS resource type - not every action of the service. It used to be the
+   * latter, so a DynamoDB policy listed every AMI in the account with ec2:DescribeVpcs beside it.
+   */
   actions: string[];
   /** "*" when the statement named no resource, "listed" when it named ARNs or patterns. */
   scope: "*" | "listed";
@@ -331,6 +364,12 @@ export interface ImpactGroup {
   /** Resource Explorer returns at most 1000 per query, so a true count here is a floor. */
   truncated: boolean;
   sensitive_hits: number;
+  /**
+   * "resource_type" when the reference decided which actions reach this type. "service" when it could
+   * not and the group therefore lists every resource of the service - the old, over-reporting answer,
+   * marked so the screen can say so. Absent on an older assessment.
+   */
+  attribution?: "resource_type" | "service";
   resources: ImpactResource[];
 }
 
@@ -345,37 +384,16 @@ export interface ImpactCoverage {
   services_failed: string[];
   truncated_groups: string[];
   policies_unreadable: string[];
+  /** Actions the reference did not know. Their groups fall back to service level attribution. */
+  actions_unresolved?: string[];
+  /** Patterns that could not be expanded - Action "*" and its kind. Nothing was enumerated for them. */
+  actions_unbounded?: string[];
+  /** Known actions that name no resource. Nothing enumerated for these is an answer, not a gap. */
+  actions_account_level?: string[];
+  /** Services whose action list did not fit the budget. Those are typed by hand. */
+  action_lists_omitted?: string[];
+  /** Why the action reference is not loaded, when it is not. Null when it is. */
+  reference?: string | null;
   /** False when anything above is non-empty. An incomplete assessment is still the best answer. */
   complete: boolean;
-}
-
-
-/** IAM actions per service, so the restriction screen offers a list instead of asking for typing.
- *
- * NOT a trust boundary. The server checks every chosen action against what the plan grants and
- * against the protected set, and the inline writer checks them again - so an action missing from the
- * catalogue can still be typed, and one wrongly in it is refused with a sentence.
- */
-export interface ActionCatalogue {
-  services: Record<string, CatalogueService>;
-  /** Why the file could not be read, when it could not. The screen then behaves as it did before. */
-  error: string | null;
-}
-
-export interface CatalogueService {
-  label: string;
-  actions: CatalogueAction[];
-}
-
-export interface CatalogueAction {
-  action: string;
-  access: "List" | "Read" | "Write" | "Permissions management" | "Tagging";
-  /** The resource type it operates on, or "*" when it names none. */
-  resource: string;
-  /**
-   * True when the action names no resource. Such an action cannot be narrowed by an allow_only
-   * restriction - a NotResource list can never contain "*", so the statement would deny it outright -
-   * so the screen offers it only for the other two intents.
-   */
-  account_level: boolean;
 }

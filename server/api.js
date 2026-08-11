@@ -173,7 +173,7 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
   };
 }
 
-export function routes({ config, s3, store, notifications, markerBodies, impacts, actions, log }) {
+export function routes({ config, s3, store, notifications, markerBodies, impacts, log }) {
   // Announcements ask for a sweep, because learning that work started is most of what they are
   // for. Rate limited: a burst of dispatches is a normal thing (one administrator attaching five
   // policies) and would otherwise be a burst of full bucket listings.
@@ -293,19 +293,6 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       return { recorded: entry.request_id, body_omitted: entry.body_omitted };
     },
 
-    // The IAM action catalogue, so the restriction screen offers a list instead of asking somebody
-    // to type an action name.
-    //
-    // Read from a file into memory at startup, and NOT a trust boundary. Every action chosen from it
-    // is checked in the decision route below against what the plan actually grants and against the
-    // protected set, and checked again by the inline writer. An action missing from the file can
-    // still be typed; one wrongly in it is refused with a sentence.
-    //
-    // error is carried rather than hidden: a catalogue that failed to load leaves the screen working
-    // exactly as it did before the file existed, and the page says so instead of silently showing
-    // fewer services than somebody expects.
-    'GET /api/actions': async () => actions.all(),
-
     'GET /api/plans/:id': async ({ params }) => {
       const id = planId(params.id);
       const plan = await readPlan(s3, config, id);
@@ -319,14 +306,22 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // digest checks exist to prevent, arriving through the display instead.
       let assessment = null;
       let source = null;
+      let digest = null;
       if (plan.request_id) {
         const pushed = impacts.get(plan.request_id);
         if (pushed && !pushed.body_omitted && pushed.impact?.request_id === plan.request_id) {
           assessment = pushed.impact;
           source = 'pushed';
+          // The digest the container computed over the object it wrote, carried in the push beside
+          // the body. It used to be set on the stored path only, so an assessment that arrived by
+          // push - the ordinary case, since the container POSTs it - gave the page a null
+          // assessment_sha256, the page sent no expected_impact_sha256, and the decision route
+          // refused every restriction with a 400. This is not computed here either: the value comes
+          // from the container, and the decision route compares it against the digest beside the
+          // stored object before it carries anything into a marker.
+          digest = pushed.impact_sha256 ?? null;
         }
       }
-      let digest = null;
       if (!assessment) {
         const stored = await readImpact(s3, config, id);
         if (stored?.document
@@ -435,6 +430,24 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // handed - it has to, because this process is the component that is not trusted. Catching an
       // impossible restriction here means the person who chose it hears why now, rather than an
       // approval sitting in a bucket and a container refusing it later.
+      // Declared HERE and not below, where it used to be. The restriction block reads it to check
+      // that the stored assessment belongs to this inspection, and a const declared further down the
+      // same function body is in its temporal dead zone at that point - so every approval carrying a
+      // restriction threw ReferenceError and became a 500. It read as an approval path that simply
+      // did not work, with nothing in the message saying why. api.test.js now covers it.
+      //
+      // The marker is named by the inspection that produced this plan, not by the resource: the name
+      // has to fit ECS startedBy, which is 36 characters of [A-Za-z0-9/_-] and would not hold a
+      // resource name. Checked rather than trusted - it arrives from an object in a bucket.
+      const requestId = String(plan.request_id ?? '');
+      if (!REQUEST_ID.test(requestId)) {
+        throw new HttpError(
+          409,
+          `${id} has no usable request id in request.json (${requestId.slice(0, 64) || 'absent'}), `
+          + 'so the approval marker cannot be named. Change the resource again to get a fresh plan.',
+        );
+      }
+
       const restrictions = body.restrictions ?? [];
       if (!Array.isArray(restrictions)
           || restrictions.some((r) => !r || typeof r !== 'object' || Array.isArray(r))) {
@@ -491,6 +504,22 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
 
         const enumerated = new Set(stored.document.allowed_resources ?? []);
         const protectedActions = new Set(stored.document.protected_actions ?? []);
+
+        // Actions that name no resource type at all, from the reference the assessment carries. A
+        // NotResource list can never hold one, and a Resource list of ARNs never matches one - so
+        // allow_only is impossible and deny_only with named resources produces a statement that reads
+        // as a control and denies nothing. The inline writer refuses both; this says so first, with the
+        // name, rather than letting an approval sit in a bucket and be refused later.
+        const accountLevel = new Set();
+        for (const [service, block] of Object.entries(
+          stored.document.action_reference?.services ?? {},
+        )) {
+          for (const [name, entry] of Object.entries(block)) {
+            if (Array.isArray(entry?.[1]) && entry[1].length === 0) {
+              accountLevel.add(`${service}:${name}`);
+            }
+          }
+        }
         for (const restriction of restrictions) {
           if (!RESTRICTION_INTENTS.has(restriction.intent)) {
             throw new HttpError(400, `restriction intent must be one of `
@@ -512,6 +541,25 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
                 + 'user writes a spec, and restricting it would leave them unable to request the fix.',
               );
             }
+            if (accountLevel.has(action.trim())) {
+              if (restriction.intent === 'allow_only') {
+                throw new HttpError(
+                  400,
+                  `${action} names no resource, so a NotResource list can never contain it and the `
+                  + 'statement would deny the action outright rather than narrow it. If that is the '
+                  + 'intent, choose "이 자원만 거부" and no resources.',
+                );
+              }
+              if (restriction.intent === 'deny_only'
+                  && Array.isArray(restriction.resources) && restriction.resources.length > 0) {
+                throw new HttpError(
+                  400,
+                  `${action} names no resource, so a Deny listing specific resources would never `
+                  + 'match it - the statement would be recorded and would deny nothing. Deny it with '
+                  + 'no resources, which denies it outright.',
+                );
+              }
+            }
           }
           const named = Array.isArray(restriction.resources) ? restriction.resources : [];
           for (const arn of named) {
@@ -528,18 +576,6 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // Carried, never computed here. The querier wrote it; the applier recomputes over the
         // object and compares.
         impactDigest = stored.digest;
-      }
-
-      // The marker is named by the inspection that produced this plan, not by the resource: the
-      // name has to fit ECS startedBy, which is 36 characters of [A-Za-z0-9/_-] and would not hold
-      // a resource name. Checked rather than trusted - it arrives from an object in a bucket.
-      const requestId = String(plan.request_id ?? '');
-      if (!REQUEST_ID.test(requestId)) {
-        throw new HttpError(
-          409,
-          `${id} has no usable request id in request.json (${requestId.slice(0, 64) || 'absent'}), `
-          + 'so the approval marker cannot be named. Change the resource again to get a fresh plan.',
-        );
       }
 
       const marker = decisionMarker({

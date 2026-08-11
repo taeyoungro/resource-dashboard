@@ -1,5 +1,5 @@
 import type {
-  ActionCatalogue, DecisionPayload, DecisionResult, NotificationFeed, PlanDetail, SweepState,
+  DecisionPayload, DecisionResult, NotificationFeed, PlanDetail, SweepState,
 } from "./types";
 
 // Same origin. The server that serves this page is the server that answers these calls, so there
@@ -55,11 +55,6 @@ export const api = {
    *  which is a machine's credential and never reaches this page. */
   notifications: async (): Promise<NotificationFeed> =>
     handle(await fetch(`${BASE}/notifications`, { headers: headers() })),
-
-  /** The IAM action catalogue, read once. Static for the life of the server process, so the page
-   *  fetches it once rather than per plan. */
-  actions: async (): Promise<ActionCatalogue> =>
-    handle(await fetch(`${BASE}/actions`, { headers: headers() })),
 
   plan: async (planId: string): Promise<PlanDetail> =>
     handle(await fetch(`${BASE}/plans/${encodeURIComponent(planId)}`, { headers: headers() })),
