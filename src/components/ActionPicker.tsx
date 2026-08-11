@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ActionCatalogue, CatalogueAction, Restriction } from "../types";
+import type { ImpactAccessLevel, Restriction } from "../types";
 
 /**
  * Choosing the actions a restriction covers, in a modal dialog.
@@ -30,12 +30,28 @@ import type { ActionCatalogue, CatalogueAction, Restriction } from "../types";
  * This is still an input aid and not a trust boundary. Anything ticked or typed here is checked again
  * by the decision route against what the plan grants and against the protected set, and a third time
  * by the inline writer against the fence the applier handed it.
+ *
+ * The list comes from the assessment, not from a file of this server's own. It used to be the latter -
+ * server/data/aws-actions.json, written by hand, covering SQS - and it was a second copy of data AWS
+ * owns which had already drifted from it: four of its twenty entries had the wrong access level or the
+ * wrong resource type. The container reads AWS's Service Reference to decide the enumeration anyway, so
+ * it hands over exactly the actions this plan grants, with wildcards expanded and protected actions
+ * already removed.
  */
 
 /** The order an administrator looks in. Somebody restricting a queue wants Write, not Read. */
-const ACCESS_ORDER: CatalogueAction["access"][] = [
+const ACCESS_ORDER: ImpactAccessLevel[] = [
   "Write", "Permissions management", "Tagging", "Read", "List",
 ];
+
+/** One offerable action, resolved from the assessment's reference. */
+export interface Offer {
+  action: string;
+  access: ImpactAccessLevel;
+  resources: string[];
+  /** No resource type at all. An allow_only restriction on it would deny it outright. */
+  account_level: boolean;
+}
 
 const INTENT_NOTE: Record<Restriction["intent"], string> = {
   allow_only:
@@ -53,18 +69,20 @@ interface Props {
   chosen: string[];
   /** Actions the policy literally names, already stripped of wildcards and protected names. */
   named: string[];
-  /** Services this policy reaches that the catalogue covers. */
-  covered: string[];
-  /** Services it reaches that the catalogue does not. Those are typed. */
+  /** Services whose actions the assessment listed, with the offers themselves. */
+  covered: { service: string; offers: Offer[] }[];
+  /** Services this policy grants that the assessment did not list. Those are typed. */
   uncovered: string[];
-  catalogue: ActionCatalogue | null;
+  /** Why the reference is missing, when it is. The same sentence the file error used to carry. */
+  referenceError: string | null;
   protectedActions: string[];
   onCommit: (actions: string[]) => void;
   onCancel: () => void;
 }
 
 export function ActionPicker({
-  policy, intent, chosen, named, covered, uncovered, catalogue, protectedActions, onCommit, onCancel,
+  policy, intent, chosen, named, covered, uncovered, referenceError, protectedActions,
+  onCommit, onCancel,
 }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -84,9 +102,9 @@ export function ActionPicker({
   // An account-level action names no resource, so an allow_only restriction on it would deny it
   // outright rather than narrow it - generator/restriction.py refuses exactly that. Offered for the
   // other two intents, where a flat Deny is what the administrator meant.
-  const usable = (entry: CatalogueAction) =>
-    !protectedActions.includes(entry.action)
-    && !(intent === "allow_only" && entry.account_level);
+  const usable = (offer: Offer) =>
+    !protectedActions.includes(offer.action)
+    && !(intent === "allow_only" && offer.account_level);
 
   // Everything the dialog offers, regardless of the search. Anything in the draft that is NOT in here
   // gets its own group: an action typed earlier, or one that was ticked under deny_only and became
@@ -94,37 +112,37 @@ export function ActionPicker({
   // restriction with no checkbox to clear it.
   const offered = useMemo(() => {
     const set = new Set(named);
-    for (const service of covered) {
-      for (const entry of catalogue?.services[service]?.actions ?? []) {
-        if (usable(entry)) set.add(entry.action);
+    for (const group of covered) {
+      for (const offer of group.offers) {
+        if (usable(offer)) set.add(offer.action);
       }
     }
     return set;
     // intent and protectedActions are here because usable() reads them, which is not something a
     // dependency list can see for itself.
-  }, [named, covered, catalogue, intent, protectedActions]);
+  }, [named, covered, intent, protectedActions]);
 
   const q = query.trim().toLowerCase();
-  const hit = (action: string, access = "", resource = "") =>
+  const hit = (action: string, access = "", resources: string[] = []) =>
     !q
     || action.toLowerCase().includes(q)
     || access.toLowerCase().includes(q)
-    || resource.toLowerCase().includes(q);
+    || resources.some((r) => r.toLowerCase().includes(q));
 
   const namedShown = named.filter((action) => hit(action));
   const strays = draft.filter((action) => !offered.has(action));
   const straysShown = strays.filter((action) => hit(action));
-  const groups = covered.map((service) => {
-    const body = catalogue?.services[service];
-    const offering = (body?.actions ?? []).filter(usable);
+  const groups = covered.map(({ service, offers }) => {
+    const offering = offers.filter(usable);
     // The resource type earns a column only where it tells two actions apart. Every SQS action operates
     // on a queue, so printing "queue" twenty times is twenty pieces of noise; S3 has buckets and
     // objects, and there it decides which restriction is possible at all.
+    const shapes = new Set(offering.map((o) => o.resources.join(",")));
     return {
       service,
-      label: body?.label ?? service,
-      showResource: new Set(offering.map((e) => e.resource)).size > 1,
-      entries: offering.filter((e) => hit(e.action, e.access, e.resource)),
+      label: service,
+      showResource: shapes.size > 1,
+      entries: offering.filter((o) => hit(o.action, o.access, o.resources)),
     };
   });
 
@@ -149,7 +167,7 @@ export function ActionPicker({
     <label key={action} className={draft.includes(action) ? "pick-item on" : "pick-item"}>
       <input type="checkbox" checked={draft.includes(action)} onChange={() => toggle(action)} />
       <code>{action}</code>
-      {resource && resource !== "*" && <span className="rtype">{resource}</span>}
+      {resource && <span className="rtype">{resource}</span>}
     </label>
   );
 
@@ -209,8 +227,9 @@ export function ActionPicker({
               return (
                 <div key={access} className="pick-level">
                   <span className="level-name">{access}</span>
-                  {ofLevel.map((entry) =>
-                    item(entry.action, group.showResource ? entry.resource : undefined))}
+                  {ofLevel.map((offer) =>
+                    item(offer.action,
+                         group.showResource ? (offer.resources.join(", ") || "자원 없음") : undefined))}
                 </div>
               );
             })}
@@ -225,20 +244,21 @@ export function ActionPicker({
           </p>
         )}
 
-        {/* Always here, not only for services the catalogue misses. The file is written by hand and is
-            incomplete on purpose, so a covered service can still be missing the action somebody
-            needs. Both the server and the inline writer check what is typed, so an action that does
-            not exist is refused with a sentence rather than accepted. */}
+        {/* Always here, not only for services the assessment did not list. A service can be omitted
+            because its list did not fit the byte budget, the reference may not have known an action,
+            and an assessment written before the container carried lists has none at all. Both the
+            server and the inline writer check what is typed, so an action that does not exist is
+            refused with a sentence rather than accepted. */}
         <div className="pick-group">
           <span className="pick-head">
             {uncovered.length > 0
-              ? `${uncovered.join(", ")} — 목록이 아직 없다. 동작 이름을 직접 적는다`
+              ? `${uncovered.join(", ")} — 평가가 목록을 싣지 않았다. 동작 이름을 직접 적는다`
               : "목록에 없는 동작을 직접 적는다"}
           </span>
           <div className="picker-typed">
             <input
               type="text"
-              placeholder={`${uncovered[0] ?? covered[0] ?? "service"}:...`}
+              placeholder={`${uncovered[0] ?? covered[0]?.service ?? "service"}:...`}
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
               onKeyDown={(e) => {
@@ -254,9 +274,9 @@ export function ActionPicker({
           </div>
         </div>
 
-        {catalogue?.error && (
+        {referenceError && (
           <p className="warn-inline">
-            동작 목록을 읽지 못했다 ({catalogue.error}). 이름을 직접 적으면 된다 — 서버와 인라인
+            평가가 동작 목록을 싣지 못했다 ({referenceError}). 이름을 직접 적으면 된다 — 서버와 인라인
             작성기가 어차피 검사한다.
           </p>
         )}

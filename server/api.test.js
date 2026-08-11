@@ -128,7 +128,14 @@ const ASSESSMENT = {
   allowed_resources: [QUEUE],
   protected_actions: ['iam:CreateRole'],
   policies: [],
-  coverage: { complete: true },
+  // The action list the container carries, which replaced this server's own copy of it. An empty
+  // resource list means the action names no resource type - sqs:ListQueues is account wide.
+  action_reference: {
+    reference_version: 'a'.repeat(64),
+    retrieved_at: '2026-08-11T00:00:00Z',
+    services: { sqs: { DeleteMessage: ['Write', ['queue']], ListQueues: ['Read', []] } },
+  },
+  coverage: { complete: true, services_failed: [], truncated_groups: [], policies_unreadable: [] },
 };
 const ASSESSMENT_JSON = JSON.stringify(ASSESSMENT);
 const ASSESSMENT_SHA = createHash('sha256').update(ASSESSMENT_JSON).digest('hex');
@@ -296,4 +303,63 @@ test('a denial cannot carry a restriction', async () => {
     }),
     /a denial cannot carry a restriction/,
   );
+});
+
+
+test('an account-level action cannot be narrowed by an allow_only restriction', async () => {
+  // A NotResource list can never contain "*", so the statement would deny sqs:ListQueues outright
+  // rather than narrow it. generator/restriction.py refuses this and so does the inline writer; the
+  // point of refusing here too is that the person hears the reason while they are still choosing.
+  const { route } = harness({ pushed: PUSHED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ ...restriction, intent: 'allow_only', actions: ['sqs:ListQueues'] }],
+        expected_impact_sha256: ASSESSMENT_SHA,
+      }),
+    }),
+    /names no resource/,
+  );
+});
+
+test('an account-level action cannot be denied against named resources', async () => {
+  // This one is worse than impossible: the statement is accepted by IAM and matches nothing, because
+  // the action is authorised against "*" and never against a queue ARN. It reads as a control.
+  const { route } = harness({ pushed: PUSHED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ ...restriction, intent: 'deny_only', actions: ['sqs:ListQueues'] }],
+        expected_impact_sha256: ASSESSMENT_SHA,
+      }),
+    }),
+    /would never match it/,
+  );
+});
+
+test('an account-level action denied with no resources is the shape that works', async () => {
+  const { route, s3 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ policy: 'p', intent: 'deny_only', actions: ['sqs:ListQueues'], resources: [] }],
+      expected_impact_sha256: ASSESSMENT_SHA,
+    }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.deepEqual(marker.restrictions[0].actions, ['sqs:ListQueues']);
+});
+
+test('an action with resource types is unaffected by the account-level checks', async () => {
+  const { route, s3 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ ...restriction, intent: 'allow_only' }],
+      expected_impact_sha256: ASSESSMENT_SHA,
+    }),
+  });
+  assert.ok(s3.puts.some((p) => p.key.startsWith('applier/')));
 });

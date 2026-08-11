@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import type {
-  ActionCatalogue, Impact as Assessment, ImpactGroup, ImpactPolicy, Restriction,
+  Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPolicy, Restriction,
 } from "../types";
 import { ActionPicker } from "./ActionPicker";
+import type { Offer } from "./ActionPicker";
 
 /**
  * What the permission set will reach, and the place a restriction is chosen.
@@ -32,8 +33,6 @@ interface Props {
   restrictions: Restriction[];
   onChange: (restrictions: Restriction[]) => void;
   disabled: boolean;
-  /** Null while it is still loading, or when the server could not read the file. */
-  catalogue: ActionCatalogue | null;
 }
 
 const INTENT_LABEL: Record<Restriction["intent"], string> = {
@@ -43,7 +42,7 @@ const INTENT_LABEL: Record<Restriction["intent"], string> = {
 };
 
 export function Impact({
-  assessment, source, restrictions, onChange, disabled, catalogue,
+  assessment, source, restrictions, onChange, disabled,
 }: Props) {
   const restrictable = assessment.policies.filter((p) => p.restrictable && !p.unreadable);
   const baseline = assessment.policies.filter((p) => p.is_baseline);
@@ -108,7 +107,9 @@ export function Impact({
           restrictions={restrictions}
           onChange={onChange}
           disabled={disabled}
-          catalogue={catalogue}
+          reference={assessment.action_reference ?? null}
+          referenceError={assessment.coverage.reference ?? null}
+          omitted={assessment.coverage.action_lists_omitted ?? []}
         />
       ))}
 
@@ -152,21 +153,25 @@ function PolicyBlock({
   restrictions,
   onChange,
   disabled,
-  catalogue,
+  reference,
+  referenceError,
+  omitted,
 }: {
   policy: ImpactPolicy;
   protectedActions: string[];
   restrictions: Restriction[];
   onChange: (restrictions: Restriction[]) => void;
   disabled: boolean;
-  catalogue: ActionCatalogue | null;
+  reference: ImpactActionReference | null;
+  referenceError: string | null;
+  omitted: string[];
 }) {
   const mine = restrictions.find((r) => r.policy === policy.identifier) ?? null;
 
-  // Wildcards cannot be restricted - with NotResource a wildcard action denies everything outside
-  // the list, including the baseline. The concrete actions a wildcard covers are not knowable here
-  // without the Service Authorization Reference, so what is offered is what the policy literally
-  // names, and a wildcarded policy is narrowed by typing the action.
+  // Wildcards cannot be restricted - with NotResource a wildcard action denies everything outside the
+  // list, including the baseline. What the policy literally names is offered as its own group; the
+  // concrete actions BEHIND a wildcard now arrive in actions_offerable, expanded by the container from
+  // the AWS Service Reference, which is what this page could never do for itself.
   const offerable = policy.actions_granted.filter(
     (a) => !a.includes("*") && !protectedActions.includes(a),
   );
@@ -225,10 +230,13 @@ function PolicyBlock({
             restriction={mine}
             groups={policy.affected}
             offerable={offerable}
+            granted={policy.actions_offerable ?? []}
             protectedActions={protectedActions}
             disabled={disabled}
             onChange={set}
-            catalogue={catalogue}
+            reference={reference}
+            referenceError={referenceError}
+            omitted={omitted}
           />
         )}
       </div>
@@ -246,6 +254,15 @@ function GroupBlock({ group }: { group: ImpactGroup }) {
           {group.total}개{group.truncated && " 이상 (잘림)"} · 범위 {group.scope} ·{" "}
           {group.actions.join(", ")}
         </span>
+        {/* The actions above are the ones that reach this type. When the reference could not decide
+            that, the group is every resource of the service and the actions beside it may not touch any
+            of them - which is what this whole panel used to do silently. */}
+        {group.attribution === "service" && (
+          <span className="badge badge-warn" title={
+            "이 서비스의 자원 전부이다. 참조가 동작별 자원 유형을 판정하지 못해, 옆의 동작이 이 자원에 "
+            + "작용하지 않을 수 있다."
+          }> 서비스 단위</span>
+        )}
       </div>
       <ul className="resources">
         {group.resources.slice(0, 50).map((resource) => (
@@ -272,34 +289,61 @@ function RestrictionEditor({
   restriction,
   groups,
   offerable,
+  granted,
   protectedActions,
   disabled,
   onChange,
-  catalogue,
+  reference,
+  referenceError,
+  omitted,
 }: {
   restriction: Restriction;
   groups: ImpactGroup[];
   offerable: string[];
+  /** Every concrete action this policy grants, wildcards already expanded by the container. */
+  granted: string[];
   protectedActions: string[];
   disabled: boolean;
   onChange: (next: Restriction) => void;
-  catalogue: ActionCatalogue | null;
+  reference: ImpactActionReference | null;
+  referenceError: string | null;
+  omitted: string[];
 }) {
   const [picking, setPicking] = useState(false);
   const everyArn = groups.flatMap((g) => g.resources.map((r) => r.arn));
 
-  // Which services this policy actually reaches, so the picker offers those and not the whole
-  // catalogue. A restriction on a policy that touches queues has no business listing bucket actions.
-  const services = useMemo(
-    () => [...new Set(groups.map((g) => g.service))].sort(),
-    [groups],
-  );
-
-  // Split into what the catalogue covers and what it does not. The second half keeps the text box:
-  // the catalogue is an input aid, so a service it has not been extended to yet must still be
-  // restrictable rather than blocked.
-  const covered = services.filter((service) => catalogue?.services[service]);
-  const uncovered = services.filter((service) => !catalogue?.services[service]);
+  // Keyed off what the policy GRANTS, never off the enumerated groups.
+  //
+  // That distinction is the whole point. Fixing the attribution defect removes ec2's groups from
+  // AmazonDynamoDBFullAccess - correctly, since its three ec2 describes reach nothing - and keying the
+  // offer off groups would therefore make those three actions unrestrictable. The fix would have taken
+  // away the ability to restrict exactly what it stopped over-reporting.
+  const { covered, uncovered } = useMemo(() => {
+    const services = [...new Set(granted.map((a) => a.split(":", 1)[0]))].sort();
+    const listed: { service: string; offers: Offer[] }[] = [];
+    const missing: string[] = [];
+    for (const service of services) {
+      const block = reference?.services[service];
+      const offers = granted
+        .filter((a) => a.startsWith(`${service}:`))
+        .map((action): Offer | null => {
+          const entry = block?.[action.slice(service.length + 1)];
+          if (!entry) return null;
+          return {
+            action,
+            access: entry[0],
+            resources: entry[1],
+            // No resource type at all. generator/restriction.py refuses an allow_only restriction on
+            // one of these, so the picker greys it out for that intent.
+            account_level: entry[1].length === 0,
+          };
+        })
+        .filter((o): o is Offer => o !== null);
+      if (offers.length > 0) listed.push({ service, offers });
+      else missing.push(service);
+    }
+    return { covered: listed, uncovered: missing };
+  }, [granted, reference]);
 
   const toggleResource = (arn: string) => {
     const current = restriction.resources ?? [];
@@ -349,7 +393,7 @@ function RestrictionEditor({
           </button>
           <span className="muted">
             {covered.length > 0
-              && `${covered.map((s) => catalogue?.services[s]?.label ?? s).join(", ")} 목록에서 고른다`}
+              && `${covered.map((c) => `${c.service} ${c.offers.length}개`).join(", ")} 중에서 고른다`}
             {covered.length > 0 && uncovered.length > 0 && " · "}
             {uncovered.length > 0 && `${uncovered.join(", ")}는 이름을 직접 적는다`}
           </span>
@@ -367,10 +411,17 @@ function RestrictionEditor({
           </p>
         )}
 
-        {catalogue?.error && (
+        {referenceError && (
           <p className="warn-inline">
-            동작 목록을 읽지 못했다 ({catalogue.error}). 목록 대신 이름을 직접 적으면 된다 — 서버와
-            인라인 작성기가 어차피 검사한다.
+            평가가 동작 목록을 싣지 못했다 ({referenceError}). 목록 대신 이름을 직접 적으면 된다 —
+            서버와 인라인 작성기가 어차피 검사한다.
+          </p>
+        )}
+
+        {omitted.length > 0 && (
+          <p className="warn-inline">
+            {omitted.join(", ")}의 동작 목록은 크기 제한을 넘어 평가에 실리지 않았다. 이름을 직접
+            적으면 된다.
           </p>
         )}
 
@@ -382,7 +433,7 @@ function RestrictionEditor({
             named={offerable}
             covered={covered}
             uncovered={uncovered}
-            catalogue={catalogue}
+            referenceError={referenceError}
             protectedActions={protectedActions}
             onCommit={(actions) => {
               onChange({ ...restriction, actions });

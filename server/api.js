@@ -173,7 +173,7 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
   };
 }
 
-export function routes({ config, s3, store, notifications, markerBodies, impacts, actions, log }) {
+export function routes({ config, s3, store, notifications, markerBodies, impacts, log }) {
   // Announcements ask for a sweep, because learning that work started is most of what they are
   // for. Rate limited: a burst of dispatches is a normal thing (one administrator attaching five
   // policies) and would otherwise be a burst of full bucket listings.
@@ -292,19 +292,6 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // page reads it from the plan route when somebody opens the plan.
       return { recorded: entry.request_id, body_omitted: entry.body_omitted };
     },
-
-    // The IAM action catalogue, so the restriction screen offers a list instead of asking somebody
-    // to type an action name.
-    //
-    // Read from a file into memory at startup, and NOT a trust boundary. Every action chosen from it
-    // is checked in the decision route below against what the plan actually grants and against the
-    // protected set, and checked again by the inline writer. An action missing from the file can
-    // still be typed; one wrongly in it is refused with a sentence.
-    //
-    // error is carried rather than hidden: a catalogue that failed to load leaves the screen working
-    // exactly as it did before the file existed, and the page says so instead of silently showing
-    // fewer services than somebody expects.
-    'GET /api/actions': async () => actions.all(),
 
     'GET /api/plans/:id': async ({ params }) => {
       const id = planId(params.id);
@@ -517,6 +504,22 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
 
         const enumerated = new Set(stored.document.allowed_resources ?? []);
         const protectedActions = new Set(stored.document.protected_actions ?? []);
+
+        // Actions that name no resource type at all, from the reference the assessment carries. A
+        // NotResource list can never hold one, and a Resource list of ARNs never matches one - so
+        // allow_only is impossible and deny_only with named resources produces a statement that reads
+        // as a control and denies nothing. The inline writer refuses both; this says so first, with the
+        // name, rather than letting an approval sit in a bucket and be refused later.
+        const accountLevel = new Set();
+        for (const [service, block] of Object.entries(
+          stored.document.action_reference?.services ?? {},
+        )) {
+          for (const [name, entry] of Object.entries(block)) {
+            if (Array.isArray(entry?.[1]) && entry[1].length === 0) {
+              accountLevel.add(`${service}:${name}`);
+            }
+          }
+        }
         for (const restriction of restrictions) {
           if (!RESTRICTION_INTENTS.has(restriction.intent)) {
             throw new HttpError(400, `restriction intent must be one of `
@@ -537,6 +540,25 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
                 `${action} is part of the declaration path and cannot be restricted. It is how a `
                 + 'user writes a spec, and restricting it would leave them unable to request the fix.',
               );
+            }
+            if (accountLevel.has(action.trim())) {
+              if (restriction.intent === 'allow_only') {
+                throw new HttpError(
+                  400,
+                  `${action} names no resource, so a NotResource list can never contain it and the `
+                  + 'statement would deny the action outright rather than narrow it. If that is the '
+                  + 'intent, choose "이 자원만 거부" and no resources.',
+                );
+              }
+              if (restriction.intent === 'deny_only'
+                  && Array.isArray(restriction.resources) && restriction.resources.length > 0) {
+                throw new HttpError(
+                  400,
+                  `${action} names no resource, so a Deny listing specific resources would never `
+                  + 'match it - the statement would be recorded and would deny nothing. Deny it with '
+                  + 'no resources, which denies it outright.',
+                );
+              }
             }
           }
           const named = Array.isArray(restriction.resources) ? restriction.resources : [];
