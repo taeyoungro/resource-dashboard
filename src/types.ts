@@ -348,3 +348,34 @@ export interface ImpactCoverage {
   /** False when anything above is non-empty. An incomplete assessment is still the best answer. */
   complete: boolean;
 }
+
+
+/** IAM actions per service, so the restriction screen offers a list instead of asking for typing.
+ *
+ * NOT a trust boundary. The server checks every chosen action against what the plan grants and
+ * against the protected set, and the inline writer checks them again - so an action missing from the
+ * catalogue can still be typed, and one wrongly in it is refused with a sentence.
+ */
+export interface ActionCatalogue {
+  services: Record<string, CatalogueService>;
+  /** Why the file could not be read, when it could not. The screen then behaves as it did before. */
+  error: string | null;
+}
+
+export interface CatalogueService {
+  label: string;
+  actions: CatalogueAction[];
+}
+
+export interface CatalogueAction {
+  action: string;
+  access: "List" | "Read" | "Write" | "Permissions management" | "Tagging";
+  /** The resource type it operates on, or "*" when it names none. */
+  resource: string;
+  /**
+   * True when the action names no resource. Such an action cannot be narrowed by an allow_only
+   * restriction - a NotResource list can never contain "*", so the statement would deny it outright -
+   * so the screen offers it only for the other two intents.
+   */
+  account_level: boolean;
+}
