@@ -33,6 +33,49 @@ code { font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
 .arn-list li { padding: 4px 0; border-bottom: 1px solid var(--border); }
 .app { display: grid; grid-template-columns: 360px 1fr; flex: 1; min-height: 0; }
 
+/* Folded, the left column narrows to a rail rather than disappearing. A column that vanishes takes
+   its own toggle with it and leaves the button to be found somewhere in the panel beside it; a rail
+   keeps the control at the edge it belongs to, and the grid stays two columns either way. */
+.app.folded { grid-template-columns: 2.5rem 1fr; }
+.sidebar.folded { overflow: hidden; }
+.sidebar.folded header { padding: 8px 4px; }
+
+.sidebar .fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  min-height: 26px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+}
+.sidebar .fold:hover { background: var(--panel-2); border-color: var(--border); color: var(--text); }
+/* Folded, the button becomes the rail: full width of the column, and tall enough to be an easy
+   target. The label reads top to bottom because a 2.5rem column has no room for it any other way. */
+.sidebar.folded .fold {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 0 12px;
+}
+.sidebar.folded .fold .rail {
+  writing-mode: vertical-rl;
+  /* Hangul stands upright in vertical writing by default but Latin letters and digits are laid on
+     their side, so this is here for whatever ends up in the label later rather than for 계획. */
+  text-orientation: upright;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.sidebar.folded .fold .badge { padding: 0 5px; font-size: 10px; }
+
 .sidebar {
   background: var(--panel);
   border-right: 1px solid var(--border);
@@ -40,6 +83,8 @@ code { font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
 }
 .sidebar header { padding: 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); z-index: 1; }
 .sidebar h1 { margin: 0 0 12px; font-size: 18px; display: flex; align-items: center; gap: 8px; }
+.sidebar .sidebar-head { display: flex; align-items: center; gap: 8px; }
+.sidebar .sidebar-head h1 { margin: 0; }
 .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .live-dot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .live-dot.off { background: var(--muted); }
