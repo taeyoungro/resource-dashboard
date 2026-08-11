@@ -74,6 +74,34 @@ function primaryService(identifier: string, candidates: string[]): string | null
   );
 }
 
+/**
+ * The permission set inline policy quota. NOT the 32,768 the API accepts.
+ *
+ * A permission set provisions as an IAM role in the target account, so it is bound by the role's inline
+ * policy limit, and that one is not increasable. A document between the two is stored successfully and
+ * then fails at ProvisionPermissionSet - after somebody approved it. So the size is estimated here,
+ * before the approval, and generator/restriction.py measures it exactly before it writes.
+ */
+const INLINE_LIMIT = 10240;
+
+/** Roughly what these choices will serialise to. The same statement shape restriction.py builds. */
+function estimateBytes(intent: Restriction["intent"], choices: Choice[], tag: string): number {
+  const statements = choices.map((choice, n) => (intent === "tag_condition"
+    ? {
+      Sid: `AdminDeny${n + 1}`, Effect: "Deny", Action: choice.action, Resource: "*",
+      Condition: { StringEquals: { [`aws:ResourceTag/${tag}`]: [] } },
+    }
+    : {
+      Sid: `AdminDeny${n + 1}`,
+      Effect: "Deny",
+      Action: choice.action,
+      ...(intent === "allow_only"
+        ? { NotResource: choice.resources }
+        : { Resource: choice.resources.length > 0 ? choice.resources : "*" }),
+    }));
+  return JSON.stringify({ Version: "2012-10-17", Statement: statements }).length;
+}
+
 const INTENT_LABEL: Record<Restriction["intent"], string> = {
   allow_only: "이 자원만 허용 — 이후 생기는 자원은 거부된다",
   deny_only: "이 자원만 거부 — 이후 생기는 자원은 허용된다",
@@ -322,6 +350,7 @@ function PolicyBlock({
         {checked && (
           <RestrictionEditor
             policy={policy.identifier}
+            primary={primary}
             existing={ours}
             affected={policy.affected}
             offerable={offerable}
@@ -397,6 +426,7 @@ function GroupBlock({ group }: { group: ImpactGroup }) {
 
 function RestrictionEditor({
   policy,
+  primary,
   existing,
   affected,
   offerable,
@@ -409,6 +439,8 @@ function RestrictionEditor({
   omitted,
 }: {
   policy: string;
+  /** The service this policy is named for, or null. Its actions go first; the rest fold away. */
+  primary: string | null;
   existing: Restriction[];
   affected: ImpactGroup[];
   offerable: string[];
@@ -491,8 +523,16 @@ function RestrictionEditor({
       if (offers.length > 0) listed.push({ service, offers });
       else missing.push(service);
     }
+    // The policy's own service first, for the same reason its resources go first on the page: an
+    // approver who opened AWSLambda_FullAccess is looking for a lambda action, and 3 cloudformation
+    // actions ahead of 90 lambda ones is 3 things to scroll past every time.
+    listed.sort((a, b) => {
+      if (a.service === primary) return -1;
+      if (b.service === primary) return 1;
+      return a.service.localeCompare(b.service);
+    });
     return { covered: listed, uncovered: missing };
-  }, [granted, reference]);
+  }, [granted, reference, primary]);
 
 
   return (
@@ -561,6 +601,24 @@ function RestrictionEditor({
           </p>
         )}
 
+        {(() => {
+          // Estimated, and said so. The exact number depends on statements this write preserves, which
+          // only the container can see - but a restriction that is going to be refused for size should
+          // not get as far as an approval marker to find that out.
+          const bytes = estimateBytes(intent, choices, tagKey);
+          if (choices.length === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
+          return (
+            <p className={bytes > INLINE_LIMIT ? "error" : "warn-inline"}>
+              인라인 정책 예상 크기 약 {bytes.toLocaleString()}바이트
+              {bytes > INLINE_LIMIT
+                ? ` — 권한 세트 한도 ${INLINE_LIMIT.toLocaleString()}바이트를 넘는다. 이대로면 인라인
+                   작성기가 거부한다. 동작을 줄이거나 태그 조건을 쓰면 된다 — 태그 조건은 몇 개를 덮든
+                   문장 하나다.`
+                : ` (한도 ${INLINE_LIMIT.toLocaleString()}바이트)`}
+            </p>
+          );
+        })()}
+
         {/* Not refused here. For an action that reaches nothing - a List action, or one whose resource
             type is absent from the account - having no resources is the only correct state, and it is
             the container that knows which of those is a legitimate flat deny. */}
@@ -596,6 +654,7 @@ function RestrictionEditor({
             referenceError={referenceError}
             protectedActions={protectedActions}
             affected={affected}
+            primary={primary}
             onCommit={(next) => {
               emit(intent, next);
               setPicking(false);

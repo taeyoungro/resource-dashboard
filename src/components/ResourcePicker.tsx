@@ -23,7 +23,10 @@ import type { ImpactGroup, Restriction } from "../types";
  */
 
 interface Props {
-  action: string;
+  /** The action being scoped, or null when one pick is being spread across several. */
+  action: string | null;
+  /** For the bulk case: how many actions it will land on, and how many cannot take it. */
+  spread?: { applies: number; skipped: string[] };
   intent: Restriction["intent"];
   /** The groups the assessment says this action reaches. Empty is meaningful - see the body. */
   groups: ImpactGroup[];
@@ -38,7 +41,9 @@ const HEADING: Record<Restriction["intent"], string> = {
   tag_condition: "태그 조건은 자원을 지목하지 않는다",
 };
 
-export function ResourcePicker({ action, intent, groups, chosen, onCommit, onCancel }: Props) {
+export function ResourcePicker({
+  action, spread, intent, groups, chosen, onCommit, onCancel,
+}: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const search = useRef<HTMLInputElement>(null);
 
@@ -85,9 +90,25 @@ export function ResourcePicker({ action, intent, groups, chosen, onCommit, onCan
     >
       <header>
         <h4>
-          자원 고르기 <span className="muted">— <code>{action}</code></span>
+          자원 고르기{" "}
+          <span className="muted">
+            {action !== null ? <>— <code>{action}</code></> : `— 고른 동작 ${spread?.applies ?? 0}개 전체`}
+          </span>
         </h4>
         <p className="muted">{HEADING[intent]}</p>
+        {action === null && (
+          <p className="muted">
+            고른 자원은 그것을 다룰 수 있는 동작에만 들어간다.
+            {spread && spread.skipped.length > 0 && (
+              <>
+                {" "}
+                <strong>{spread.skipped.length}개 동작은 비워진다</strong> — 자원을 지목하지 않거나
+                다른 자원 유형을 다루는 동작이다: {spread.skipped.slice(0, 4).join(", ")}
+                {spread.skipped.length > 4 && ` 외 ${spread.skipped.length - 4}개`}
+              </>
+            )}
+          </p>
+        )}
         <div className="picker-search">
           <input
             ref={search}

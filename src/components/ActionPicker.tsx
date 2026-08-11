@@ -90,13 +90,15 @@ interface Props {
   protectedActions: string[];
   /** Every group the assessment enumerated for this policy, so a row can offer its own resources. */
   affected: ImpactGroup[];
+  /** The service the policy is named for. Its block is shown; the others fold away. */
+  primary: string | null;
   onCommit: (choices: Choice[]) => void;
   onCancel: () => void;
 }
 
 export function ActionPicker({
   policy, intent, chosen, named, covered, uncovered, referenceError, protectedActions, affected,
-  onCommit, onCancel,
+  primary, onCommit, onCancel,
 }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -106,6 +108,8 @@ export function ActionPicker({
   const [typed, setTyped] = useState("");
   /** The action whose resources are being picked, in a dialog above this one. */
   const [scoping, setScoping] = useState<string | null>(null);
+  /** True while one resource pick is being spread across every chosen action. */
+  const [spreading, setSpreading] = useState(false);
 
   const held = (action: string) => draft.find((c) => c.action === action);
 
@@ -113,6 +117,20 @@ export function ActionPicker({
   // resource type, which is the corrected meaning of the field - it used to be every action of the
   // service, and scoping per action off it would have offered resources the action cannot touch.
   const reachedBy = (action: string) => affected.filter((g) => g.actions.includes(action));
+
+  // Which group each enumerated ARN came from, so a resource picked once can be handed only to the
+  // actions that can actually reach it. This is what keeps a bulk apply from putting the same list on
+  // every action regardless of shape - the mismatch generator/restriction.py splits statements to avoid.
+  const owner = useMemo(() => {
+    const map = new Map<string, ImpactGroup>();
+    for (const group of affected) {
+      for (const resource of group.resources) map.set(resource.arn, group);
+    }
+    return map;
+  }, [affected]);
+
+  const reachable = (action: string, arns: string[]) =>
+    arns.filter((arn) => owner.get(arn)?.actions.includes(action));
 
   // Mounted only while open, so this runs once. showModal() rather than the open attribute: the
   // attribute alone leaves the element in the page flow, unclipped by nothing and modal to nobody.
@@ -182,6 +200,33 @@ export function ActionPicker({
   // legitimate flat deny.
   const unscoped = draft.filter((c) => c.resources.length === 0);
 
+  // What a bulk apply would reach. An action that names no resource type, or one whose type nothing in
+  // the assessment holds, cannot take a resource at all - and that is a different thing from "not
+  // chosen yet", so it is counted separately and said before the pick rather than after.
+  const spreadable = useMemo(() => {
+    const applies: string[] = [];
+    const skipped: string[] = [];
+    for (const choice of draft) {
+      (reachedBy(choice.action).length > 0 ? applies : skipped).push(choice.action);
+    }
+    // affected is the dependency; reachedBy closes over it.
+    return { applies: applies.length, skipped };
+  }, [draft, affected]);
+
+  /** Every resource any chosen action can reach, for the bulk dialog to offer. */
+  const spreadGroups = useMemo(() => {
+    const seen = new Set<ImpactGroup>();
+    for (const choice of draft) for (const group of reachedBy(choice.action)) seen.add(group);
+    return [...seen];
+  }, [draft, affected]);
+
+  // The policy's own service is shown; the services it only reaches incidentally fold away, exactly as
+  // their resources do on the page. AWSLambda_FullAccess grants three cloudformation and kms actions
+  // beside ninety lambda ones, and those three are not what anybody opened this dialog for.
+  const primaryBlocks = primary === null ? groups : groups.filter((g) => g.service === primary);
+  const relatedBlocks = primary === null ? [] : groups.filter((g) => g.service !== primary);
+  const relatedShown = relatedBlocks.reduce((n, g) => n + g.entries.length, 0);
+
   const total = offered.size + strays.length;
   const shown = namedShown.length + straysShown.length
     + groups.reduce((n, g) => n + g.entries.length, 0);
@@ -194,6 +239,20 @@ export function ActionPicker({
   const scope = (action: string, resources: string[]) =>
     setDraft((current) => current.map((c) => (c.action === action ? { ...c, resources } : c)));
 
+  /** One pick, handed to each chosen action filtered down to what that action can reach. */
+  const spread = (arns: string[]) =>
+    setDraft((current) => current.map((c) => ({ ...c, resources: reachable(c.action, arns) })));
+
+  const selectAll = (offers: Offer[], on: boolean) =>
+    setDraft((current) => {
+      const names = offers.map((o) => o.action);
+      if (!on) return current.filter((c) => !names.includes(c.action));
+      const held = new Set(current.map((c) => c.action));
+      return [...current, ...names.filter((n) => !held.has(n)).map((action) => ({
+        action, resources: [] as string[],
+      }))];
+    });
+
   const add = () => {
     const action = typed.trim();
     if (!action) return;
@@ -203,6 +262,22 @@ export function ActionPicker({
       ? current
       : [...current, { action, resources: [] }]));
     setTyped("");
+  };
+
+  /** 전체 선택 for one block. Acts on what is SHOWN, so it follows the search rather than ignoring it. */
+  const blockToggle = (group: { service: string; entries: Offer[] }) => {
+    if (group.entries.length === 0) return null;
+    const all = group.entries.every((o) => Boolean(held(o.action)));
+    return (
+      <button
+        type="button"
+        className="block-all"
+        onClick={() => selectAll(group.entries, !all)}
+        title={q ? "검색으로 걸러진 것만 대상이다" : undefined}
+      >
+        {all ? "전체 해제" : `전체 선택 ${group.entries.length}개`}
+      </button>
+    );
   };
 
   // The resource button sits OUTSIDE the label. Inside one, a click on it would also toggle the
@@ -282,9 +357,12 @@ export function ActionPicker({
           </div>
         )}
 
-        {groups.map((group) => (
+        {primaryBlocks.map((group) => (
           <div key={group.service} className="pick-group">
-            <span className="pick-head">{group.label} — 이 정책이 닿는 서비스</span>
+            <span className="pick-head">
+              {group.label} — 이 정책이 닿는 서비스
+              {blockToggle(group)}
+            </span>
             {ACCESS_ORDER.map((access) => {
               const ofLevel = group.entries.filter((e) => e.access === access);
               if (ofLevel.length === 0) return null;
@@ -299,6 +377,43 @@ export function ActionPicker({
             })}
           </div>
         ))}
+
+        {relatedBlocks.length > 0 && (
+          // Open while a search is running. The count above includes matches in here, and a hit the
+          // person cannot see is worse than no fold at all.
+          <details className="related" open={Boolean(q)}>
+            <summary>
+              연관 서비스 동작 {relatedBlocks.reduce((n, g) => n + g.entries.length, 0)}개 —{" "}
+              {relatedBlocks.map((g) => g.service).join(", ")}
+              {q && relatedShown > 0 && ` · 검색 결과 ${relatedShown}개`}
+            </summary>
+            <p className="muted">
+              {primary} 작업을 위해 함께 부여된 동작이다. 제한 대상으로 고를 수는 있다.
+            </p>
+            {relatedBlocks.map((group) => (
+              <div key={group.service} className="pick-group">
+                <span className="pick-head">
+                  {group.label}
+                  {blockToggle(group)}
+                </span>
+                {ACCESS_ORDER.map((access) => {
+                  const ofLevel = group.entries.filter((e) => e.access === access);
+                  if (ofLevel.length === 0) return null;
+                  return (
+                    <div key={access} className="pick-level">
+                      <span className="level-name">{access}</span>
+                      {ofLevel.map((offer) =>
+                        item(offer.action,
+                             group.showResource
+                               ? (offer.resources.join(", ") || "자원 없음")
+                               : undefined))}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </details>
+        )}
 
         {shown === 0 && (
           <p className="muted pick-empty">
@@ -352,6 +467,19 @@ export function ActionPicker({
           {intent !== "tag_condition" && unscoped.length > 0
             && ` · 자원 미지정 ${unscoped.length}개`}
         </span>
+        {intent !== "tag_condition" && (
+          <button
+            type="button"
+            disabled={draft.length === 0 || spreadable.applies === 0}
+            title={spreadable.skipped.length > 0
+              ? `${spreadable.skipped.length}개 동작은 자원을 받을 수 없어 비워진다`
+              : "고른 동작 전체에 같은 자원을 적용한다"}
+            onClick={() => setSpreading(true)}
+          >
+            자원 일괄 적용
+            {spreadable.skipped.length > 0 && ` (${spreadable.applies}/${draft.length})`}
+          </button>
+        )}
         <button type="button" disabled={draft.length === 0} onClick={() => setDraft([])}>
           비우기
         </button>
@@ -365,6 +493,21 @@ export function ActionPicker({
 
       {/* Above this dialog, in the same top layer. Escape closes the topmost one, which is the one the
           person is looking at. */}
+      {spreading && (
+        <ResourcePicker
+          action={null}
+          spread={spreadable}
+          intent={intent}
+          groups={spreadGroups}
+          chosen={[]}
+          onCommit={(resources) => {
+            spread(resources);
+            setSpreading(false);
+          }}
+          onCancel={() => setSpreading(false)}
+        />
+      )}
+
       {scoping !== null && (
         <ResourcePicker
           action={scoping}
