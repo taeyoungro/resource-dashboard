@@ -3,7 +3,7 @@ import type {
   Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPolicy, Restriction,
 } from "../types";
 import { ActionPicker } from "./ActionPicker";
-import type { Offer } from "./ActionPicker";
+import type { Choice, Offer } from "./ActionPicker";
 
 /**
  * What the permission set will reach, and the place a restriction is chosen.
@@ -205,7 +205,15 @@ function PolicyBlock({
   referenceError: string | null;
   omitted: string[];
 }) {
-  const mine = restrictions.find((r) => r.policy === policy.identifier) ?? null;
+  // Every restriction on this policy - one per action, because generator/restriction.py writes one
+  // statement per action and each of those statements now carries its own resources. A single
+  // restriction holding several actions and one shared resource list is what made the ARN shapes
+  // collide, so the page no longer builds one.
+  const ours = restrictions.filter((r) => r.policy === policy.identifier);
+  // The checkbox cannot be derived from `ours` alone: ticked with nothing chosen yet is zero
+  // restrictions, which is also what unticked looks like.
+  const [restricting, setRestricting] = useState(false);
+  const checked = restricting || ours.length > 0;
 
   // Wildcards cannot be restricted - with NotResource a wildcard action denies everything outside the
   // list, including the baseline. What the policy literally names is offered as its own group; the
@@ -239,9 +247,9 @@ function PolicyBlock({
   const relatedServices = [...new Set(related.map((g) => g.service))].sort();
   const relatedSensitive = related.some((g) => g.sensitive_hits > 0);
 
-  const set = (next: Restriction | null) => {
+  const set = (next: Restriction[]) => {
     const others = restrictions.filter((r) => r.policy !== policy.identifier);
-    onChange(next ? [...others, next] : others);
+    onChange([...others, ...next]);
   };
 
   return (
@@ -302,22 +310,20 @@ function PolicyBlock({
           <input
             type="checkbox"
             disabled={disabled}
-            checked={Boolean(mine)}
-            onChange={(e) =>
-              set(
-                e.target.checked
-                  ? { policy: policy.identifier, intent: "allow_only", actions: [], resources: [] }
-                  : null,
-              )
-            }
+            checked={checked}
+            onChange={(e) => {
+              setRestricting(e.target.checked);
+              if (!e.target.checked) set([]);
+            }}
           />{" "}
           이 정책에 제한을 건다
         </label>
 
-        {mine && (
+        {checked && (
           <RestrictionEditor
-            restriction={mine}
-            groups={policy.affected}
+            policy={policy.identifier}
+            existing={ours}
+            affected={policy.affected}
             offerable={offerable}
             granted={policy.actions_offerable ?? []}
             protectedActions={protectedActions}
@@ -390,8 +396,9 @@ function GroupBlock({ group }: { group: ImpactGroup }) {
 }
 
 function RestrictionEditor({
-  restriction,
-  groups,
+  policy,
+  existing,
+  affected,
   offerable,
   granted,
   protectedActions,
@@ -401,20 +408,58 @@ function RestrictionEditor({
   referenceError,
   omitted,
 }: {
-  restriction: Restriction;
-  groups: ImpactGroup[];
+  policy: string;
+  existing: Restriction[];
+  affected: ImpactGroup[];
   offerable: string[];
   /** Every concrete action this policy grants, wildcards already expanded by the container. */
   granted: string[];
   protectedActions: string[];
   disabled: boolean;
-  onChange: (next: Restriction) => void;
+  onChange: (next: Restriction[]) => void;
   reference: ImpactActionReference | null;
   referenceError: string | null;
   omitted: string[];
 }) {
   const [picking, setPicking] = useState(false);
-  const everyArn = groups.flatMap((g) => g.resources.map((r) => r.arn));
+
+  // The draft, seeded once. Every change emits the whole set upward, so the parent's array stays the
+  // single source of truth for what gets submitted while this holds the parts a restriction needs
+  // before it is one - an intent with no actions yet, or a tag key half typed.
+  const [intent, setIntent] = useState<Restriction["intent"]>(
+    () => existing[0]?.intent ?? "allow_only",
+  );
+  const [choices, setChoices] = useState<Choice[]>(
+    () => existing.flatMap((r) => r.actions.map((action) => ({
+      action, resources: r.resources ?? [],
+    }))),
+  );
+  const [tagKey, setTagKey] = useState(() => existing[0]?.tag_key ?? "");
+  const [tagValues, setTagValues] = useState(() => (existing[0]?.tag_values ?? []).join(","));
+
+  /** One restriction per action, which is one statement per action once the container builds it. */
+  const emit = (
+    nextIntent: Restriction["intent"],
+    nextChoices: Choice[],
+    key = tagKey,
+    values = tagValues,
+  ) => {
+    setIntent(nextIntent);
+    setChoices(nextChoices);
+    setTagKey(key);
+    setTagValues(values);
+    onChange(nextChoices.map((choice) => ({
+      policy,
+      intent: nextIntent,
+      actions: [choice.action],
+      ...(nextIntent === "tag_condition"
+        ? {
+          tag_key: key.trim(),
+          tag_values: values.split(",").map((v) => v.trim()).filter(Boolean),
+        }
+        : { resources: choice.resources }),
+    })));
+  };
 
   // Keyed off what the policy GRANTS, never off the enumerated groups.
   //
@@ -449,13 +494,6 @@ function RestrictionEditor({
     return { covered: listed, uncovered: missing };
   }, [granted, reference]);
 
-  const toggleResource = (arn: string) => {
-    const current = restriction.resources ?? [];
-    const resources = current.includes(arn)
-      ? current.filter((a) => a !== arn)
-      : [...current, arn];
-    onChange({ ...restriction, resources });
-  };
 
   return (
     <div className="editor">
@@ -463,17 +501,16 @@ function RestrictionEditor({
         의도
         <select
           disabled={disabled}
-          value={restriction.intent}
-          onChange={(e) =>
-            onChange({
-              ...restriction,
-              intent: e.target.value as Restriction["intent"],
-              // The three forms take different inputs. Carrying a resource list into a tag condition
-              // would send something the server refuses, and refusing it here would be a worse
-              // message than simply clearing it.
-              resources: e.target.value === "tag_condition" ? [] : restriction.resources,
-            })
-          }
+          value={intent}
+          onChange={(e) => {
+            // The three forms take different inputs. A tag condition names no resources, so the
+            // per-action lists are dropped rather than sent and refused - and the actions are kept,
+            // because those are still what the condition applies to.
+            const next = e.target.value as Restriction["intent"];
+            emit(next, next === "tag_condition"
+              ? choices.map((c) => ({ ...c, resources: [] }))
+              : choices);
+          }}
         >
           {(Object.keys(INTENT_LABEL) as Restriction["intent"][]).map((intent) => (
             <option key={intent} value={intent}>
@@ -492,8 +529,8 @@ function RestrictionEditor({
 
         <div className="pick-open">
           <button type="button" disabled={disabled} onClick={() => setPicking(true)}>
-            동작 고르기
-            {restriction.actions.length > 0 && ` (${restriction.actions.length}개)`}
+            동작과 자원 고르기
+            {choices.length > 0 && ` (${choices.length}개)`}
           </button>
           <span className="muted">
             {covered.length > 0
@@ -503,15 +540,34 @@ function RestrictionEditor({
           </span>
         </div>
 
-        {restriction.actions.length > 0 ? (
-          <p className="muted chosen">
-            {restriction.actions.map((a) => (
-              <code key={a}>{a} </code>
+        {choices.length > 0 ? (
+          <ul className="chosen-list">
+            {choices.map((choice) => (
+              <li key={choice.action}>
+                <code>{choice.action}</code>
+                <span className="muted">
+                  {intent === "tag_condition"
+                    ? "태그 조건"
+                    : (choice.resources.length > 0
+                      ? `자원 ${choice.resources.length}개`
+                      : "자원 미지정")}
+                </span>
+              </li>
             ))}
-          </p>
+          </ul>
         ) : (
           <p className="warn-inline">
             동작을 하나 이상 골라야 한다. 동작 없는 제한은 목록 밖 전부를 거부한다.
+          </p>
+        )}
+
+        {/* Not refused here. For an action that reaches nothing - a List action, or one whose resource
+            type is absent from the account - having no resources is the only correct state, and it is
+            the container that knows which of those is a legitimate flat deny. */}
+        {intent !== "tag_condition" && choices.some((c) => c.resources.length === 0) && (
+          <p className="warn-inline">
+            자원을 지정하지 않은 동작이 있다. 자원을 지목하지 않는 계정 단위 동작이면 그대로 두면 되고
+            (동작 자체가 거부된다), 그렇지 않으면 서버가 이유를 말하며 거부한다.
           </p>
         )}
 
@@ -531,16 +587,17 @@ function RestrictionEditor({
 
         {picking && (
           <ActionPicker
-            policy={restriction.policy}
-            intent={restriction.intent}
-            chosen={restriction.actions}
+            policy={policy}
+            intent={intent}
+            chosen={choices}
             named={offerable}
             covered={covered}
             uncovered={uncovered}
             referenceError={referenceError}
             protectedActions={protectedActions}
-            onCommit={(actions) => {
-              onChange({ ...restriction, actions });
+            affected={affected}
+            onCommit={(next) => {
+              emit(intent, next);
               setPicking(false);
             }}
             onCancel={() => setPicking(false)}
@@ -548,64 +605,30 @@ function RestrictionEditor({
         )}
       </fieldset>
 
-      {restriction.intent === "tag_condition" ? (
+      {intent === "tag_condition" && (
         <fieldset>
           <legend>태그</legend>
           <input
             type="text"
             placeholder="env"
             disabled={disabled}
-            value={restriction.tag_key ?? ""}
-            onChange={(e) => onChange({ ...restriction, tag_key: e.target.value })}
+            value={tagKey}
+            onChange={(e) => emit(intent, choices, e.target.value, tagValues)}
           />
           <input
             type="text"
             placeholder="prod (쉼표로 여러 개)"
             disabled={disabled}
-            value={(restriction.tag_values ?? []).join(",")}
-            onChange={(e) =>
-              onChange({
-                ...restriction,
-                tag_values: e.target.value
-                  .split(",")
-                  .map((v) => v.trim())
-                  .filter(Boolean),
-              })
-            }
+            value={tagValues}
+            onChange={(e) => emit(intent, choices, tagKey, e.target.value)}
           />
         </fieldset>
-      ) : (
-        <fieldset>
-          <legend>
-            {restriction.intent === "allow_only" ? "허용할 자원 (나머지 거부)" : "거부할 자원"}
-          </legend>
-          {restriction.intent === "allow_only" && (
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={() => onChange({ ...restriction, resources: everyArn })}
-            >
-              전부 선택
-            </button>
-          )}
-          {groups.flatMap((group) =>
-            group.resources.map((resource) => (
-              <label key={resource.arn} className={resource.sensitive ? "inline sensitive" : "inline"}>
-                <input
-                  type="checkbox"
-                  disabled={disabled}
-                  checked={(restriction.resources ?? []).includes(resource.arn)}
-                  onChange={() => toggleResource(resource.arn)}
-                />{" "}
-                <code>{resource.arn}</code>
-              </label>
-            )),
-          )}
-          {(restriction.resources ?? []).length === 0 && (
-            <p className="warn-inline">자원을 하나 이상 골라야 한다.</p>
-          )}
-        </fieldset>
       )}
+
+      {/* There is no resource fieldset. Resources belong to an action, so they are chosen from the
+          action's own row - see ResourcePicker. A shared list on this page could not express
+          "kms:DescribeKey on the Lambda key only", and it silently paired every chosen action with
+          every chosen resource. */}
     </div>
   );
 }
