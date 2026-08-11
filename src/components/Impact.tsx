@@ -35,6 +35,45 @@ interface Props {
   disabled: boolean;
 }
 
+/** Vendor prefix and access suffix AWS puts around the service name in a managed policy name. */
+const VENDOR = /^(aws|amazon)/;
+const SUFFIX = /(fullaccess|readonlyaccess|readonly|poweruser|administrator|access)$/;
+
+/**
+ * Which service an AWS managed policy is ABOUT, or null when nothing says.
+ *
+ * AWSLambda_FullAccess is about lambda. It also reaches every CloudFormation stack and KMS key in the
+ * account, because a Lambda function refers to those - but an approver who opened that policy came to
+ * decide about functions, and 15 stacks above the 3 functions buries the thing they came for.
+ *
+ * Read off the name rather than from a table. The name is the only statement of what a policy is for,
+ * and AWS writes it consistently: a vendor prefix, the service, an access suffix. Stripping those three
+ * leaves the service, and it is only believed when it resolves to a service this policy actually names -
+ * so a policy whose name does not decompose (AWSLambdaBasicExecutionRole) hides nothing.
+ *
+ * Customer managed policies are named by whoever wrote them. mirror-cmp-Reporting says nothing about a
+ * service, so nothing is folded away and the panel behaves as it did.
+ */
+function primaryService(identifier: string, candidates: string[]): string | null {
+  if (!identifier.startsWith("arn:aws:iam::aws:policy/")) return null;
+  const bare = identifier.slice(identifier.lastIndexOf("/") + 1).toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  const stem = bare.replace(VENDOR, "").replace(SUFFIX, "");
+  if (!stem) return null;
+
+  // Longest first, so s3-object-lambda wins over s3 for a policy about the former.
+  const ordered = [...new Set(candidates)].sort((a, b) => b.length - a.length);
+  return (
+    ordered.find((service) => stem === service)
+    ?? ordered.find((service) => stem.startsWith(service))
+    // Loose containment only for a name long enough not to collide by accident. Two- and
+    // three-letter prefixes - es, s3, kms, sts - turn up inside unrelated words: "access" alone
+    // contains "es", which would make every policy in existence look like an Elasticsearch policy.
+    ?? ordered.find((service) => service.length >= 4 && bare.includes(service))
+    ?? null
+  );
+}
+
 const INTENT_LABEL: Record<Restriction["intent"], string> = {
   allow_only: "이 자원만 허용 — 이후 생기는 자원은 거부된다",
   deny_only: "이 자원만 거부 — 이후 생기는 자원은 허용된다",
@@ -177,6 +216,29 @@ function PolicyBlock({
   );
   const blocked = policy.actions_granted.filter((a) => protectedActions.includes(a));
 
+  // Primary first, everything else behind one click. Derived from every service this policy mentions -
+  // its actions, not only its enumerated groups - so the primary service still resolves when the
+  // account happens to hold none of its resources.
+  const { primary, shown, related } = useMemo(() => {
+    const mentioned = [
+      ...policy.actions_granted,
+      ...(policy.actions_offerable ?? []),
+    ].map((a) => a.split(":", 1)[0]).filter(Boolean);
+    const found = primaryService(
+      policy.identifier,
+      [...mentioned, ...policy.affected.map((g) => g.service)],
+    );
+    if (!found) return { primary: null, shown: policy.affected, related: [] as ImpactGroup[] };
+    return {
+      primary: found,
+      shown: policy.affected.filter((g) => g.service === found),
+      related: policy.affected.filter((g) => g.service !== found),
+    };
+  }, [policy]);
+
+  const relatedServices = [...new Set(related.map((g) => g.service))].sort();
+  const relatedSensitive = related.some((g) => g.sensitive_hits > 0);
+
   const set = (next: Restriction | null) => {
     const others = restrictions.filter((r) => r.policy !== policy.identifier);
     onChange(next ? [...others, next] : others);
@@ -188,7 +250,10 @@ function PolicyBlock({
         <code>{policy.identifier}</code>
         <span className="muted">
           {" "}
-          {policy.affected.reduce((n, g) => n + g.total, 0)}개 자원
+          {primary
+            ? `${primary} ${shown.reduce((n, g) => n + g.total, 0)}개`
+            : `${policy.affected.reduce((n, g) => n + g.total, 0)}개 자원`}
+          {related.length > 0 && ` · 연관 ${related.reduce((n, g) => n + g.total, 0)}개`}
           {policy.affected.some((g) => g.sensitive_hits > 0) && " · 민감 포함"}
           {policy.default_version_id && ` · ${policy.default_version_id}`}
         </span>
@@ -198,9 +263,33 @@ function PolicyBlock({
         <p className="muted">이 정책이 닿는 자원이 인벤토리에 없다.</p>
       )}
 
-      {policy.affected.map((group) => (
+      {shown.map((group) => (
         <GroupBlock key={`${group.service}:${group.resource_type}`} group={group} />
       ))}
+
+      {primary && shown.length === 0 && policy.affected.length > 0 && (
+        <p className="muted">
+          {primary} 자원이 인벤토리에 없다. 이 정책이 닿는 것은 아래 연관 자원뿐이다.
+        </p>
+      )}
+
+      {related.length > 0 && (
+        // Open when there is nothing above it, and open when it holds a sensitive resource. Folding a
+        // resource somebody has to see behind a click is the one thing this must not do.
+        <details className="related" open={shown.length === 0 || relatedSensitive}>
+          <summary>
+            연관 자원 {related.reduce((n, g) => n + g.total, 0)}개 — {relatedServices.join(", ")}
+            {relatedSensitive && " · 민감 포함"}
+          </summary>
+          <p className="muted">
+            {primary} 작업을 위해 함께 부여된 권한이 닿는 자원이다. 제한 대상으로 고를 수는 있다 —
+            여기 있는 것은 승인자가 이 정책을 열어 본 이유가 아니라는 뜻일 뿐이다.
+          </p>
+          {related.map((group) => (
+            <GroupBlock key={`${group.service}:${group.resource_type}`} group={group} />
+          ))}
+        </details>
+      )}
 
       {blocked.length > 0 && (
         <p className="muted">
@@ -251,8 +340,7 @@ function GroupBlock({ group }: { group: ImpactGroup }) {
         <code>{group.resource_type}</code>
         <span className="muted">
           {" "}
-          {group.total}개{group.truncated && " 이상 (잘림)"} · 범위 {group.scope} ·{" "}
-          {group.actions.join(", ")}
+          {group.total}개{group.truncated && " 이상 (잘림)"} · 범위 {group.scope}
         </span>
         {/* The actions above are the ones that reach this type. When the reference could not decide
             that, the group is every resource of the service and the actions beside it may not touch any
@@ -264,6 +352,22 @@ function GroupBlock({ group }: { group: ImpactGroup }) {
           }> 서비스 단위</span>
         )}
       </div>
+
+      {/* Folded, for every resource type. lambda:function carries 60 granted actions and printing them
+          inline pushed the resource list - the thing an approver actually picks from - off the screen.
+          The count is the part that is read at a glance; the names are what you open when you are
+          deciding. */}
+      {group.actions.length > 0 && (
+        <details className="group-actions">
+          <summary>동작 {group.actions.length}개</summary>
+          <p>
+            {group.actions.map((action) => (
+              <code key={action}>{action} </code>
+            ))}
+          </p>
+        </details>
+      )}
+
       <ul className="resources">
         {group.resources.slice(0, 50).map((resource) => (
           <li key={resource.arn} className={resource.sensitive ? "sensitive" : undefined}>

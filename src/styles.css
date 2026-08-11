@@ -322,6 +322,40 @@ pre.plan {
 .impact .resources li.sensitive code { color: #e0a03c; font-weight: 600; }
 .impact .tags { color: var(--muted); font-size: 0.72rem; }
 
+/* The related-services fold. AWSLambda_FullAccess reaches every CloudFormation stack and KMS key in
+   the account because a function refers to them, and 15 stacks above the 3 functions buries the thing
+   the approver came for. Indented and quieter than the primary groups, so the shape of the panel says
+   which is which before any of it is read. */
+.impact .related {
+  margin: 0.6rem 0 0.2rem;
+  padding: 0.35rem 0 0.1rem 0.6rem;
+  border-left: 2px solid var(--border);
+}
+.impact .related > summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.impact .related > summary:hover { color: var(--text); }
+.impact .related > p { margin: 0.3rem 0 0.5rem; font-size: 0.76rem; line-height: 1.5; }
+
+/* The actions a group's resource type is reached by, folded for every type. lambda:function carries 60
+   of them and printing them inline pushed the resource list off the screen - and the resource list is
+   what an approver picks from. */
+.impact .group-actions { margin: 0.15rem 0 0.25rem; }
+.impact .group-actions > summary {
+  cursor: pointer;
+  font-size: 0.76rem;
+  color: var(--muted);
+  list-style-position: outside;
+}
+.impact .group-actions > summary:hover { color: var(--text); }
+.impact .group-actions > p {
+  margin: 0.2rem 0 0.3rem 0.8rem;
+  font-size: 0.74rem;
+  line-height: 1.7;
+}
+
 .impact .baseline { margin-top: 0.8rem; font-size: 0.82rem; }
 .impact .baseline ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
 
