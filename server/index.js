@@ -10,6 +10,7 @@ import {
 } from './api.js';
 import { ConfigError, load } from './config.js';
 import { client } from './s3.js';
+import { load as loadActions } from './actions.js';
 import { makeImpacts } from './impacts.js';
 import { makeMarkerBodies } from './markerBodies.js';
 import { makeNotifications } from './notifications.js';
@@ -112,9 +113,12 @@ async function main() {
   // Before the store, which reads it on every sweep.
   const markerBodies = makeMarkerBodies({ limit: config.markerBodyCache });
   const impacts = makeImpacts({ limit: config.impactCache });
+  // Once, at startup. A few kilobytes that do not change while the process runs, and a request
+  // that reads a file is a request that can fail for a reason unrelated to what it asked.
+  const actions = loadActions({ log });
   const store = makeStore(s3, config, markerBodies);
   const notifications = makeNotifications({ limit: config.notificationLimit });
-  const routeTable = routes({ config, s3, store, notifications, markerBodies, impacts, log });
+  const routeTable = routes({ config, s3, store, notifications, markerBodies, impacts, actions, log });
   const serveStatic = staticHandler(config.staticDir);
 
   const server = createServer(async (req, res) => {

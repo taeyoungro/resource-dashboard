@@ -173,7 +173,7 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
   };
 }
 
-export function routes({ config, s3, store, notifications, markerBodies, impacts, log }) {
+export function routes({ config, s3, store, notifications, markerBodies, impacts, actions, log }) {
   // Announcements ask for a sweep, because learning that work started is most of what they are
   // for. Rate limited: a burst of dispatches is a normal thing (one administrator attaching five
   // policies) and would otherwise be a burst of full bucket listings.
@@ -292,6 +292,19 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // page reads it from the plan route when somebody opens the plan.
       return { recorded: entry.request_id, body_omitted: entry.body_omitted };
     },
+
+    // The IAM action catalogue, so the restriction screen offers a list instead of asking somebody
+    // to type an action name.
+    //
+    // Read from a file into memory at startup, and NOT a trust boundary. Every action chosen from it
+    // is checked in the decision route below against what the plan actually grants and against the
+    // protected set, and checked again by the inline writer. An action missing from the file can
+    // still be typed; one wrongly in it is refused with a sentence.
+    //
+    // error is carried rather than hidden: a catalogue that failed to load leaves the screen working
+    // exactly as it did before the file existed, and the page says so instead of silently showing
+    // fewer services than somebody expects.
+    'GET /api/actions': async () => actions.all(),
 
     'GET /api/plans/:id': async ({ params }) => {
       const id = planId(params.id);

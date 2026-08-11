@@ -152,8 +152,7 @@ pre.report, pre.plan {
 .btn-approve { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 600; padding: 10px 18px; }
 .btn-deny { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; padding: 10px 18px; }
 
-/* ---- added with the server-backed rewrite ------------------------------------------------ */
-
+/* ---- added with the server-backed rewrite -------------------------------------------------
    Every colour here comes from the variables at the top of this file. The first version of this
    block hard-coded values from a dark palette against a stylesheet whose theme is light, so
    pre.plan rendered near-black text on a near-black background - the plan was loaded and correct
@@ -324,3 +323,26 @@ pre.plan {
   font-size: 0.78rem;
   cursor: pointer;
 }
+
+/* Action picker. Grouped by access level because somebody restricting a queue is looking for Write,
+   and a flat list of twenty actions is a list nobody reads. */
+.impact .editor .action-group {
+  margin: 0.5rem 0;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--border);
+}
+.impact .editor .action-group:first-of-type { border-top: none; padding-top: 0; }
+.impact .editor .action-group-head {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+.impact .editor .action-access { margin: 0.2rem 0 0.3rem 0.5rem; }
+.impact .editor .action-access > span {
+  display: inline-block;
+  min-width: 9rem;
+  font-size: 0.72rem;
+  vertical-align: top;
+}
+.impact .editor .chosen { margin-top: 0.4rem; font-size: 0.76rem; }

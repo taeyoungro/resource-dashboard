@@ -1,5 +1,7 @@
 import { useState } from "react";
-import type { AssessmentState, PlanDetail as Detail, Restriction } from "../types";
+import type {
+  ActionCatalogue, AssessmentState, PlanDetail as Detail, Restriction,
+} from "../types";
 import { Impact } from "./Impact";
 
 interface Props {
@@ -8,6 +10,8 @@ interface Props {
   busy: boolean;
   /** From the sweep, so the page can tell "still assessing" from "no assessment". */
   assessmentState: AssessmentState | null;
+  /** IAM actions per service, so the restriction picker offers a list instead of asking for typing. */
+  catalogue: ActionCatalogue | null;
   onDecide: (
     decision: "approve" | "deny",
     reviewer: string,
@@ -22,7 +26,9 @@ const actionClass = (actions: string[]) => {
   return "badge badge-ok";
 };
 
-export function PlanDetail({ detail, decided, busy, assessmentState, onDecide }: Props) {
+export function PlanDetail({
+  detail, decided, busy, assessmentState, catalogue, onDecide,
+}: Props) {
   const [reviewer, setReviewer] = useState("");
   const [comment, setComment] = useState("");
   const [restrictions, setRestrictions] = useState<Restriction[]>([]);
@@ -76,6 +82,7 @@ export function PlanDetail({ detail, decided, busy, assessmentState, onDecide }:
           restrictions={restrictions}
           onChange={setRestrictions}
           disabled={busy || decided}
+          catalogue={catalogue}
         />
       ) : assessmentState === "in_progress" ? (
         <div className="notice">
