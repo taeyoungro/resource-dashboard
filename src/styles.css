@@ -409,6 +409,33 @@ pre.plan {
 .impact .editor .pick-open > span { font-size: 0.75rem; }
 .impact .editor .chosen { margin-top: 0.4rem; font-size: 0.76rem; }
 
+/* One line per chosen action, with what it is scoped to. Two columns rather than a sentence: the
+   resource count is the part that is scanned, and an action with none has to be findable at a glance. */
+.impact .editor .chosen-list { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+.impact .editor .chosen-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.1rem 0;
+  font-size: 0.76rem;
+}
+.impact .editor .chosen-list li > span { margin-left: auto; white-space: nowrap; }
+
+/* A chosen action's row in the picker: the label, then its resource button outside the label. Inside
+   one, a click on the button would also toggle the checkbox the label is for. */
+.pick-row { display: flex; align-items: center; gap: 0.4rem; }
+.pick-row > label { flex: 1; min-width: 0; }
+dialog.picker button.scope {
+  padding: 0.1rem 0.45rem;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  white-space: nowrap;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* Chosen but unscoped. Amber rather than red: for an action that reaches nothing it is correct. */
+dialog.picker button.scope.empty { color: var(--warn); border-color: var(--warn); }
+
 /* ---- the action picker dialog --------------------------------------------------------------- */
 /* Opened with showModal(), so the browser puts it in the top layer. That matters here: the editor is
    inside a <details> inside a column with overflow-y:auto, and a positioned overlay would be clipped

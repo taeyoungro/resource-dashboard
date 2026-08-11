@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ImpactAccessLevel, Restriction } from "../types";
+import type { ImpactAccessLevel, ImpactGroup, Restriction } from "../types";
+import { ResourcePicker } from "./ResourcePicker";
 
 /**
  * Choosing the actions a restriction covers, in a modal dialog.
@@ -30,6 +31,11 @@ import type { ImpactAccessLevel, Restriction } from "../types";
  * This is still an input aid and not a trust boundary. Anything ticked or typed here is checked again
  * by the decision route against what the plan grants and against the protected set, and a third time
  * by the inline writer against the fence the applier handed it.
+ *
+ * A chosen action carries its own resources, picked in a second dialog opened from its row. They used
+ * to be a separate field applying to every action at once, which made "kms:DescribeKey on the Lambda
+ * key only" inexpressible - and put back the ARN-shape mismatch that generator/restriction.py writes one
+ * statement per action to avoid. One action, its own resources, its own statement.
  *
  * The list comes from the assessment, not from a file of this server's own. It used to be the latter -
  * server/data/aws-actions.json, written by hand, covering SQS - and it was a second copy of data AWS
@@ -61,12 +67,18 @@ const INTENT_NOTE: Record<Restriction["intent"], string> = {
   tag_condition: "태그가 붙은 자원을 거부한다. 나중에 태그가 붙는 자원까지 덮는다.",
 };
 
+/** One chosen action and the resources it is scoped to. */
+export interface Choice {
+  action: string;
+  resources: string[];
+}
+
 interface Props {
   /** Which policy this restriction is on, for the heading. */
   policy: string;
   intent: Restriction["intent"];
-  /** The actions already on the restriction. The draft starts here. */
-  chosen: string[];
+  /** The actions already chosen, with their resources. The draft starts here. */
+  chosen: Choice[];
   /** Actions the policy literally names, already stripped of wildcards and protected names. */
   named: string[];
   /** Services whose actions the assessment listed, with the offers themselves. */
@@ -76,20 +88,31 @@ interface Props {
   /** Why the reference is missing, when it is. The same sentence the file error used to carry. */
   referenceError: string | null;
   protectedActions: string[];
-  onCommit: (actions: string[]) => void;
+  /** Every group the assessment enumerated for this policy, so a row can offer its own resources. */
+  affected: ImpactGroup[];
+  onCommit: (choices: Choice[]) => void;
   onCancel: () => void;
 }
 
 export function ActionPicker({
-  policy, intent, chosen, named, covered, uncovered, referenceError, protectedActions,
+  policy, intent, chosen, named, covered, uncovered, referenceError, protectedActions, affected,
   onCommit, onCancel,
 }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const search = useRef<HTMLInputElement>(null);
 
-  const [draft, setDraft] = useState<string[]>(chosen);
+  const [draft, setDraft] = useState<Choice[]>(chosen);
   const [query, setQuery] = useState("");
   const [typed, setTyped] = useState("");
+  /** The action whose resources are being picked, in a dialog above this one. */
+  const [scoping, setScoping] = useState<string | null>(null);
+
+  const held = (action: string) => draft.find((c) => c.action === action);
+
+  // What the assessment says an action reaches. group.actions is the list of actions that reach THAT
+  // resource type, which is the corrected meaning of the field - it used to be every action of the
+  // service, and scoping per action off it would have offered resources the action cannot touch.
+  const reachedBy = (action: string) => affected.filter((g) => g.actions.includes(action));
 
   // Mounted only while open, so this runs once. showModal() rather than the open attribute: the
   // attribute alone leaves the element in the page flow, unclipped by nothing and modal to nobody.
@@ -129,8 +152,16 @@ export function ActionPicker({
     || access.toLowerCase().includes(q)
     || resources.some((r) => r.toLowerCase().includes(q));
 
-  const namedShown = named.filter((action) => hit(action));
-  const strays = draft.filter((action) => !offered.has(action));
+  // An action the policy names literally is usually also in its service's block, and rendering it in
+  // both put two checkboxes and two resource buttons on screen for one action. This group is now what
+  // it is actually for: the actions the reference does not cover, which would otherwise be offered
+  // nowhere.
+  const inBlocks = useMemo(
+    () => new Set(covered.flatMap((g) => g.offers.map((o) => o.action))),
+    [covered],
+  );
+  const namedShown = named.filter((action) => !inBlocks.has(action) && hit(action));
+  const strays = draft.map((c) => c.action).filter((action) => !offered.has(action));
   const straysShown = strays.filter((action) => hit(action));
   const groups = covered.map(({ service, offers }) => {
     const offering = offers.filter(usable);
@@ -146,30 +177,63 @@ export function ActionPicker({
     };
   });
 
+  // An action with no resources yet. Reported in the footer rather than refused: for an action that
+  // reaches nothing it is the correct and only state, and the container decides which of those is a
+  // legitimate flat deny.
+  const unscoped = draft.filter((c) => c.resources.length === 0);
+
   const total = offered.size + strays.length;
   const shown = namedShown.length + straysShown.length
     + groups.reduce((n, g) => n + g.entries.length, 0);
 
   const toggle = (action: string) =>
-    setDraft((current) =>
-      current.includes(action) ? current.filter((a) => a !== action) : [...current, action]);
+    setDraft((current) => (current.some((c) => c.action === action)
+      ? current.filter((c) => c.action !== action)
+      : [...current, { action, resources: [] }]));
+
+  const scope = (action: string, resources: string[]) =>
+    setDraft((current) => current.map((c) => (c.action === action ? { ...c, resources } : c)));
 
   const add = () => {
     const action = typed.trim();
     if (!action) return;
     // Add, never toggle. A text box whose second Enter removes what the first one added is a text box
     // that punishes a double press.
-    setDraft((current) => (current.includes(action) ? current : [...current, action]));
+    setDraft((current) => (current.some((c) => c.action === action)
+      ? current
+      : [...current, { action, resources: [] }]));
     setTyped("");
   };
 
-  const item = (action: string, resource?: string) => (
-    <label key={action} className={draft.includes(action) ? "pick-item on" : "pick-item"}>
-      <input type="checkbox" checked={draft.includes(action)} onChange={() => toggle(action)} />
-      <code>{action}</code>
-      {resource && <span className="rtype">{resource}</span>}
-    </label>
-  );
+  // The resource button sits OUTSIDE the label. Inside one, a click on it would also toggle the
+  // checkbox the label is for, so ticking an action and scoping it would fight each other.
+  const item = (action: string, resource?: string) => {
+    const chosenFor = held(action);
+    const reachable = reachedBy(action);
+    return (
+      <div key={action} className="pick-row">
+        <label className={chosenFor ? "pick-item on" : "pick-item"}>
+          <input type="checkbox" checked={Boolean(chosenFor)} onChange={() => toggle(action)} />
+          <code>{action}</code>
+          {resource && <span className="rtype">{resource}</span>}
+        </label>
+        {chosenFor && intent !== "tag_condition" && (
+          <button
+            type="button"
+            className={chosenFor.resources.length === 0 ? "scope empty" : "scope"}
+            title={reachable.length === 0
+              ? "이 동작이 닿는 자원이 평가에 없다"
+              : `${action}의 자원을 고른다`}
+            onClick={() => setScoping(action)}
+          >
+            {chosenFor.resources.length > 0
+              ? `자원 ${chosenFor.resources.length}개`
+              : (reachable.length === 0 ? "자원 없음" : "자원 고르기")}
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return createPortal(
     <dialog
@@ -204,7 +268,7 @@ export function ActionPicker({
       <div className="picker-body">
         {namedShown.length > 0 && (
           <div className="pick-group">
-            <span className="pick-head">이 정책이 직접 지목한 동작</span>
+            <span className="pick-head">이 정책이 직접 지목한 동작 — 목록에 없다</span>
             <div className="pick-level">{namedShown.map((action) => item(action))}</div>
           </div>
         )}
@@ -283,7 +347,11 @@ export function ActionPicker({
       </div>
 
       <footer>
-        <span className="muted">고른 동작 {draft.length}개</span>
+        <span className="muted">
+          고른 동작 {draft.length}개
+          {intent !== "tag_condition" && unscoped.length > 0
+            && ` · 자원 미지정 ${unscoped.length}개`}
+        </span>
         <button type="button" disabled={draft.length === 0} onClick={() => setDraft([])}>
           비우기
         </button>
@@ -294,6 +362,22 @@ export function ActionPicker({
           적용
         </button>
       </footer>
+
+      {/* Above this dialog, in the same top layer. Escape closes the topmost one, which is the one the
+          person is looking at. */}
+      {scoping !== null && (
+        <ResourcePicker
+          action={scoping}
+          intent={intent}
+          groups={reachedBy(scoping)}
+          chosen={held(scoping)?.resources ?? []}
+          onCommit={(resources) => {
+            scope(scoping, resources);
+            setScoping(null);
+          }}
+          onCancel={() => setScoping(null)}
+        />
+      )}
     </dialog>,
     document.body,
   );
