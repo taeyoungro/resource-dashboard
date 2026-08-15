@@ -311,6 +311,9 @@ pre.plan {
 
 .impact .group { margin: 0.5rem 0 0.5rem 0.6rem; }
 .impact .group-head { font-size: 0.8rem; }
+/* The console list link sits beside the count it opens. A link, visibly - the rest of the head is
+   identifiers and counts, and this is the one thing there an approver can act on. */
+.impact .console-link { margin-left: 0.6em; font-size: 0.85em; white-space: nowrap; }
 .impact .resources { list-style: none; margin: 0.25rem 0 0; padding: 0; }
 .impact .resources li {
   font-size: 0.76rem;
