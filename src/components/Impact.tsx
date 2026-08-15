@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type {
   Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPolicy, Restriction,
 } from "../types";
+import { consoleListUrl } from "../../server/consoleLinks.js";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
 
@@ -170,6 +171,7 @@ export function Impact({
         <PolicyBlock
           key={`${policy.source}:${policy.identifier}`}
           policy={policy}
+          accountId={assessment.account_id}
           protectedActions={assessment.protected_actions}
           restrictions={restrictions}
           onChange={onChange}
@@ -216,6 +218,7 @@ export function Impact({
 
 function PolicyBlock({
   policy,
+  accountId,
   protectedActions,
   restrictions,
   onChange,
@@ -225,6 +228,8 @@ function PolicyBlock({
   omitted,
 }: {
   policy: ImpactPolicy;
+  /** The governed account, for the console list links. The host of those URLs carries it. */
+  accountId: string;
   protectedActions: string[];
   restrictions: Restriction[];
   onChange: (restrictions: Restriction[]) => void;
@@ -296,7 +301,7 @@ function PolicyBlock({
       )}
 
       {shown.map((group) => (
-        <GroupBlock key={`${group.service}:${group.resource_type}`} group={group} />
+        <GroupBlock key={`${group.service}:${group.resource_type}`} group={group} accountId={accountId} />
       ))}
 
       {primary && shown.length === 0 && policy.affected.length > 0 && (
@@ -318,7 +323,7 @@ function PolicyBlock({
             여기 있는 것은 승인자가 이 정책을 열어 본 이유가 아니라는 뜻일 뿐이다.
           </p>
           {related.map((group) => (
-            <GroupBlock key={`${group.service}:${group.resource_type}`} group={group} />
+            <GroupBlock key={`${group.service}:${group.resource_type}`} group={group} accountId={accountId} />
           ))}
         </details>
       )}
@@ -355,7 +360,29 @@ function PolicyBlock({
   );
 }
 
-function GroupBlock({ group }: { group: ImpactGroup }) {
+function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: string }) {
+  // The console LIST page for this resource type - the list, deliberately not any one resource's
+  // detail page: the approver is deciding about the set, and a deep link would pick one for them.
+  //
+  // One link per region the enumerated resources actually sit in, because a console list page shows
+  // a single region. Deduplicated by URL, which folds the global consoles (IAM ignores region, so
+  // every region builds the same address) down to one link. consoleListUrl answers null for an
+  // unmapped type or a malformed account/region, and null renders as nothing - no link is better
+  // than a wrong one.
+  const consoles = useMemo(() => {
+    const regions = [...new Set(group.resources.map((r) => r.region || "global"))].sort();
+    const seen = new Set<string>();
+    const links: { region: string; url: string }[] = [];
+    for (const region of regions) {
+      const url = consoleListUrl(accountId, region, group.resource_type);
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        links.push({ region, url });
+      }
+    }
+    return links;
+  }, [group, accountId]);
+
   return (
     <div className="group">
       <div className="group-head">
@@ -364,6 +391,18 @@ function GroupBlock({ group }: { group: ImpactGroup }) {
           {" "}
           {group.total}개{group.truncated && " 이상 (잘림)"} · 범위 {group.scope}
         </span>
+        {consoles.map(({ region, url }) => (
+          <a
+            key={url}
+            className="console-link"
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="관리콘솔의 자원 목록 페이지. 로그인된 Identity Center 세션이 있으면 그 세션으로 열린다."
+          >
+            관리콘솔{consoles.length > 1 ? ` ${region}` : ""} ↗
+          </a>
+        ))}
         {/* The actions above are the ones that reach this type. When the reference could not decide
             that, the group is every resource of the service and the actions beside it may not touch any
             of them - which is what this whole panel used to do silently. */}
