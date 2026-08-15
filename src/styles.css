@@ -299,6 +299,9 @@ pre.plan {
 
 .impact { margin: 1rem 0; }
 .impact > header { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+/* Two labelled lines - the date and time on one, the resource count on the next - instead of the
+   raw ISO string the document carries. */
+.impact > header .assessed { display: flex; flex-direction: column; font-size: 0.82rem; line-height: 1.5; }
 .impact > header h3 { margin: 0; }
 
 .impact .policy {

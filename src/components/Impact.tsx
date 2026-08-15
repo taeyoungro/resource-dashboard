@@ -118,6 +118,24 @@ function policyName(identifier: string): string {
   return parseArn(identifier)?.name ?? identifier;
 }
 
+/**
+ * The inventory timestamp as a person reads it, in the VIEWER's own timezone.
+ *
+ * The document carries 2026-08-15T08:51:11.495443Z - microseconds and a Z suffix that make an
+ * approver do UTC arithmetic in their head. The date and the time are split and labelled, and the
+ * conversion uses the browser's timezone because the person deciding is the reference point, not
+ * the container that wrote the document. A value that does not parse is shown raw: a wrong-looking
+ * timestamp is a prompt to ask, a hidden one is not.
+ */
+function assessedAt(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return `평가 시각: ${iso}`;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const date = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+  const time = `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+  return `평가 날짜: ${date}, 평가 시간: ${time}`;
+}
+
 const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {
   aws_managed: "AWS Managed",
   customer_managed: "Customer Managed",
@@ -149,11 +167,14 @@ export function Impact({
     <section className="impact">
       <header>
         <h3>영향도 평가</h3>
-        <span className="muted">
-          {assessment.inventory_as_of} 기준 · 자원 {assessment.allowed_resources.length}개
-          {sensitiveTotal > 0 && ` · 민감 ${sensitiveTotal}개`}
-          {source === "stored" && " · 버킷에서 읽음"}
-        </span>
+        <div className="assessed muted">
+          <span>{assessedAt(assessment.inventory_as_of)}</span>
+          <span>
+            연관 자원: {assessment.allowed_resources.length}개
+            {sensitiveTotal > 0 && ` · 민감 ${sensitiveTotal}개`}
+            {source === "stored" && " · 버킷에서 읽음"}
+          </span>
+        </div>
       </header>
 
       {!assessment.coverage.complete && (
