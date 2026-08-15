@@ -52,7 +52,13 @@ for (const entry of entries) {
     skipped += 1;
     continue;
   }
-  const name = match[1];
+  // The id is XML text, so entities arrive encoded (&amp;), and two icon names contain
+  // characters Windows refuses in filenames (AWS-re:Post). A repository that cannot be checked
+  // out on Windows is broken for half its users, so the name is decoded and sanitised before it
+  // becomes a filename. The mapping table references the sanitised names.
+  const name = match[1]
+    .replaceAll('&amp;', '&')
+    .replace(/[:*?"<>|\\/]/g, '-');
   // The same icon appears on several slides; first occurrence wins, and a name that reappears
   // with DIFFERENT bytes is reported rather than silently overwritten or dropped.
   if (seen.has(name)) {
