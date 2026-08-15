@@ -48,6 +48,15 @@ test('the shapes the assessment actually carries', () => {
       { service: 'states', region: 'us-east-1', account: '718100330247',
         name: 'order-flow', qualifier: null }],
     // A leading '/' means there is no type token to strip.
+    // The policy identifiers the impact panel renders: an AWS managed policy carries the 'aws'
+    // pseudo-account and its name is what the summary line shows. A customer managed policy
+    // arrives as a bare name, which parseArn refuses (not an ARN) - the caller shows it as-is.
+    ['arn:aws:iam::aws:policy/AWSLambda_FullAccess',
+      { service: 'iam', region: 'global', account: 'aws',
+        name: 'AWSLambda_FullAccess', qualifier: null }],
+    ['arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole',
+      { service: 'iam', region: 'global', account: 'aws',
+        name: 'service-role/AWSLambdaBasicExecutionRole', qualifier: null }],
     ['arn:aws:apigateway:us-east-1::/restapis/a1b2c3',
       { service: 'apigateway', region: 'us-east-1', account: '',
         name: '/restapis/a1b2c3', qualifier: null }],
@@ -58,6 +67,7 @@ test('the shapes the assessment actually carries', () => {
 
 test('what does not parse comes back null, so the page shows the raw string instead', () => {
   for (const bad of [
+    'mirror-cmp-Reporting', // a customer managed policy identifier is a bare name
     'not an arn',
     '',
     'arn:aws:s3',                       // five fields

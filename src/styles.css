@@ -314,6 +314,9 @@ pre.plan {
 /* The console list link sits beside the count it opens. A link, visibly - the rest of the head is
    identifiers and counts, and this is the one thing there an approver can act on. */
 .impact .console-link { margin-left: 0.6em; font-size: 0.85em; white-space: nowrap; }
+/* Where a policy came from, beside its name. The name answers "which policy"; this answers "whose"
+   - and for a customer managed one, that it is the organisation's own artifact. */
+.impact .policy-source { color: var(--muted); font-size: 0.82em; margin-left: 0.4em; }
 .impact .resources { list-style: none; margin: 0.25rem 0 0; padding: 0; }
 .impact .resources li {
   font-size: 0.76rem;
