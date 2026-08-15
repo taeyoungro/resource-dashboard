@@ -317,6 +317,10 @@ pre.plan {
 /* Where a policy came from, beside its name. The name answers "which policy"; this answers "whose"
    - and for a customer managed one, that it is the organisation's own artifact. */
 .impact .policy-source { color: var(--muted); font-size: 0.82em; margin-left: 0.4em; }
+/* The official service icon, sized to ride the text line. Baseline-aligned via vertical-align
+   rather than flex so it works in the summary line, the group head and the picker head alike. */
+.service-icon { width: 18px; height: 18px; vertical-align: -3px; margin-right: 0.35em; }
+summary > .service-icon { width: 20px; height: 20px; vertical-align: -4px; }
 .impact .resources { list-style: none; margin: 0.25rem 0 0; padding: 0; }
 .impact .resources li {
   font-size: 0.76rem;

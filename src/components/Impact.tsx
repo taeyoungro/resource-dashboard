@@ -5,6 +5,7 @@ import type {
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
 import { ResourceName, uniform } from "./ResourceName";
+import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
 
@@ -309,6 +310,7 @@ function PolicyBlock({
   return (
     <details className="policy" open={policy.affected.some((g) => g.sensitive_hits > 0)}>
       <summary>
+        {primary && <ServiceIcon service={primary} />}
         <code title={policy.identifier}>{policyName(policy.identifier)}</code>
         <span className="policy-source">({SOURCE_LABEL[policy.source]})</span>
         <span className="muted">
@@ -418,6 +420,7 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
   return (
     <div className="group">
       <div className="group-head">
+        <ServiceIcon service={group.service} />
         <code>{group.resource_type}</code>
         <span className="muted">
           {" "}

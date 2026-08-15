@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ImpactGroup, Restriction } from "../types";
 import { ResourceName, uniform } from "./ResourceName";
+import { ServiceIcon } from "./ServiceIcon";
 import { parseArn } from "../../server/arn.js";
 
 /**
@@ -191,6 +192,7 @@ function PickGroup({
   return (
     <div className="pick-group">
       <span className="pick-head">
+        <ServiceIcon service={group.service} />
         <code>{group.resource_type}</code> {group.total}개
         {group.truncated && " 이상 (잘림)"} · 범위 {group.scope}
         {groupRegion && ` · ${groupRegion}`}
