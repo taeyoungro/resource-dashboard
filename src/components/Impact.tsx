@@ -3,6 +3,8 @@ import type {
   Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPolicy, Restriction,
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
+import { parseArn } from "../../server/arn.js";
+import { ResourceName, uniform } from "./ResourceName";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
 
@@ -383,6 +385,12 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
     return links;
   }, [group, accountId]);
 
+  // The constant parts of the rows, said ONCE here so the rows can stop repeating them. null
+  // means the group is mixed for that dimension, and every row then says its own - a cross-region
+  // resource hiding in a uniform-looking list is what an approver must not miss.
+  const groupRegion = uniform(group.resources.map((r) => r.region || parseArn(r.arn)?.region));
+  const groupAccount = uniform(group.resources.map((r) => parseArn(r.arn)?.account || undefined));
+
   return (
     <div className="group">
       <div className="group-head">
@@ -390,6 +398,8 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
         <span className="muted">
           {" "}
           {group.total}개{group.truncated && " 이상 (잘림)"} · 범위 {group.scope}
+          {groupRegion && ` · ${groupRegion}`}
+          {groupAccount && ` · 계정 ${groupAccount}`}
         </span>
         {consoles.map(({ region, url }) => (
           <a
@@ -432,7 +442,11 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
       <ul className="resources">
         {group.resources.slice(0, 50).map((resource) => (
           <li key={resource.arn} className={resource.sensitive ? "sensitive" : undefined}>
-            <code>{resource.arn}</code>
+            <ResourceName
+              arn={resource.arn}
+              groupRegion={groupRegion}
+              groupAccount={groupAccount}
+            />
             {Object.entries(resource.tags).length > 0 && (
               <span className="tags">
                 {Object.entries(resource.tags)

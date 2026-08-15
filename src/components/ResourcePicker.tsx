@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ImpactGroup, Restriction } from "../types";
+import { ResourceName, uniform } from "./ResourceName";
+import { parseArn } from "../../server/arn.js";
 
 /**
  * Which resources one action is scoped to.
@@ -133,36 +135,13 @@ export function ResourcePicker({
         )}
 
         {shownGroups.map(({ group, resources }) => (
-          <div key={`${group.service}:${group.resource_type}`} className="pick-group">
-            <span className="pick-head">
-              <code>{group.resource_type}</code> {group.total}개
-              {group.truncated && " 이상 (잘림)"} · 범위 {group.scope}
-              {group.attribution === "service" && " · 서비스 단위 귀속"}
-            </span>
-            <div className="pick-level">
-              {resources.map((resource) => (
-                <label
-                  key={resource.arn}
-                  className={
-                    (draft.includes(resource.arn) ? "pick-item on" : "pick-item")
-                    + (resource.sensitive ? " sensitive" : "")
-                  }
-                >
-                  <input
-                    type="checkbox"
-                    checked={draft.includes(resource.arn)}
-                    onChange={() => toggle(resource.arn)}
-                  />
-                  <code>{resource.arn}</code>
-                  {Object.keys(resource.tags).length > 0 && (
-                    <span className="rtype">
-                      {Object.entries(resource.tags).map(([k, v]) => `${k}=${v}`).join(" ")}
-                    </span>
-                  )}
-                </label>
-              ))}
-            </div>
-          </div>
+          <PickGroup
+            key={`${group.service}:${group.resource_type}`}
+            group={group}
+            resources={resources}
+            draft={draft}
+            toggle={toggle}
+          />
         ))}
 
         {groups.length > 0 && shown === 0 && (
@@ -193,3 +172,59 @@ export function ResourcePicker({
     document.body,
   );
 }
+
+/**
+ * One resource-type group inside the picker. Split out so the group's uniform region and account -
+ * the values every row shares, printed once in the heading - are computed once per group rather
+ * than once per row: a truncated Resource Explorer group still holds a thousand rows.
+ */
+function PickGroup({
+  group, resources, draft, toggle,
+}: {
+  group: ImpactGroup;
+  resources: ImpactGroup["resources"];
+  draft: string[];
+  toggle: (arn: string) => void;
+}) {
+  const groupRegion = uniform(resources.map((r) => r.region || parseArn(r.arn)?.region));
+  const groupAccount = uniform(resources.map((r) => parseArn(r.arn)?.account || undefined));
+  return (
+    <div className="pick-group">
+      <span className="pick-head">
+        <code>{group.resource_type}</code> {group.total}개
+        {group.truncated && " 이상 (잘림)"} · 범위 {group.scope}
+        {groupRegion && ` · ${groupRegion}`}
+        {groupAccount && ` · 계정 ${groupAccount}`}
+        {group.attribution === "service" && " · 서비스 단위 귀속"}
+      </span>
+      <div className="pick-level">
+        {resources.map((resource) => (
+          <label
+            key={resource.arn}
+            className={
+              (draft.includes(resource.arn) ? "pick-item on" : "pick-item")
+              + (resource.sensitive ? " sensitive" : "")
+            }
+          >
+            <input
+              type="checkbox"
+              checked={draft.includes(resource.arn)}
+              onChange={() => toggle(resource.arn)}
+            />
+            <ResourceName
+              arn={resource.arn}
+              groupRegion={groupRegion}
+              groupAccount={groupAccount}
+            />
+            {Object.keys(resource.tags).length > 0 && (
+              <span className="rtype">
+                {Object.entries(resource.tags).map(([k, v]) => `${k}=${v}`).join(" ")}
+              </span>
+            )}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+

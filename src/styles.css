@@ -323,6 +323,15 @@ pre.plan {
   flex-wrap: wrap;
 }
 .impact .resources li.sensitive code { color: #e0a03c; font-weight: 600; }
+/* A resource row leads with the NAME; everything else on it is quieter. The qualifier is the
+   trailing UUID a CloudFormation stack id carries - present for completeness, read by nobody. The
+   context chip appears only when a row DIFFERS from its group heading (region, account), so
+   difference is louder than habit. */
+.res { min-width: 0; overflow-wrap: anywhere; }
+.res .res-name { font-weight: 600; }
+.res .res-qualifier { color: var(--muted); font-size: 0.88em; }
+.res .res-context { color: var(--muted); font-size: 0.82em; margin-left: 0.45em; white-space: nowrap; }
+label.pick-item .res .res-name { font-weight: 500; }
 .impact .tags { color: var(--muted); font-size: 0.72rem; }
 
 /* The related-services fold. AWSLambda_FullAccess reaches every CloudFormation stack and KMS key in
