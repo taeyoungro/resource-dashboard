@@ -44,6 +44,24 @@ const VENDOR = /^(aws|amazon)/;
 const SUFFIX = /(fullaccess|readonlyaccess|readonly|poweruser|administrator|access)$/;
 
 /**
+ * Brand stems whose IAM action prefix shares no spelling with them.
+ *
+ * The stem of AmazonEventBridgeReadOnlyAccess is "eventbridge", and EventBridge's actions are
+ * events:* - no prefix test, startsWith or containment connects the two, so the policy rendered
+ * with no primary service at all ("2개 자원", no icon, no related fold). Same for Step Functions
+ * (states:*), KMS (spelled out in policy names), ACM and Systems Manager. The alias is only
+ * BELIEVED when the aliased prefix is among the services this policy actually names - the same
+ * rule every other resolution path here follows.
+ */
+const BRAND_STEM: Record<string, string> = {
+  eventbridge: "events",
+  stepfunctions: "states",
+  keymanagementservice: "kms",
+  certificatemanager: "acm",
+  systemsmanager: "ssm",
+};
+
+/**
  * Which service an AWS managed policy is ABOUT, or null when nothing says.
  *
  * AWSLambda_FullAccess is about lambda. It also reaches every CloudFormation stack and KMS key in the
@@ -74,7 +92,7 @@ function primaryService(identifier: string, candidates: string[]): string | null
     // three-letter prefixes - es, s3, kms, sts - turn up inside unrelated words: "access" alone
     // contains "es", which would make every policy in existence look like an Elasticsearch policy.
     ?? ordered.find((service) => service.length >= 4 && bare.includes(service))
-    ?? null
+    ?? (BRAND_STEM[stem] && ordered.includes(BRAND_STEM[stem]) ? BRAND_STEM[stem] : null)
   );
 }
 
