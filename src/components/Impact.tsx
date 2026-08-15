@@ -341,7 +341,7 @@ function PolicyBlock({
             : `${policy.affected.reduce((n, g) => n + g.total, 0)}개 자원`}
           {related.length > 0 && ` · 연관 ${related.reduce((n, g) => n + g.total, 0)}개`}
           {policy.affected.some((g) => g.sensitive_hits > 0) && " · 민감 포함"}
-          {policy.default_version_id && ` · ${policy.default_version_id}`}
+          {policy.default_version_id && ` · 정책 버전 ${policy.default_version_id}`}
         </span>
       </summary>
 
