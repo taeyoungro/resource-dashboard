@@ -81,6 +81,36 @@ export const SERVICE_ICONS = {
   shield: 'AWS-Shield',
 };
 
+// Resource types whose PRODUCT is not the product their IAM prefix names.
+//
+// IAM files VPC under ec2 - the actions are ec2:*, Resource Explorer types the resources
+// ec2:vpc - but AWS brands VPC as its own product with its own icon, and an approver reading
+// "ec2:vpc" under an EC2 icon is being told the wrong product. The same split holds for the rest
+// of the networking family that lives inside the ec2 prefix (PrivateLink, Transit Gateway,
+// Site-to-Site VPN) and for EBS volumes.
+//
+// Keyed by the group's resource_type, consulted BEFORE the service table, and carrying ONLY the
+// types whose brand differs from their prefix - a type absent here falls back to its service icon,
+// which is the right answer for ec2:instance. The console-links table stays keyed as it is: an
+// icon says what a thing IS, a link says where its list is, and volumes genuinely list in the EC2
+// console while being branded EBS.
+export const RESOURCE_TYPE_ICONS = {
+  'ec2:vpc': 'Amazon-Virtual-Private-Cloud',
+  'ec2:subnet': 'Amazon-Virtual-Private-Cloud',
+  'ec2:route-table': 'Amazon-Virtual-Private-Cloud',
+  'ec2:internet-gateway': 'Amazon-Virtual-Private-Cloud',
+  'ec2:natgateway': 'Amazon-Virtual-Private-Cloud',
+  'ec2:network-acl': 'Amazon-Virtual-Private-Cloud',
+  'ec2:vpc-peering-connection': 'Amazon-Virtual-Private-Cloud',
+  'ec2:vpc-endpoint': 'AWS-PrivateLink',
+  'ec2:transit-gateway': 'AWS-Transit-Gateway',
+  'ec2:transit-gateway-attachment': 'AWS-Transit-Gateway',
+  'ec2:vpn-connection': 'AWS-Site-to-Site-VPN',
+  'ec2:vpn-gateway': 'AWS-Site-to-Site-VPN',
+  'ec2:volume': 'Amazon-Elastic-Block-Store',
+  'ec2:snapshot': 'Amazon-Elastic-Block-Store',
+};
+
 /**
  * The static path of the icon for one IAM service prefix, or null.
  *
@@ -90,4 +120,15 @@ export const SERVICE_ICONS = {
 export function serviceIconPath(servicePrefix) {
   const name = SERVICE_ICONS[String(servicePrefix).toLowerCase()];
   return name ? `/aws-icons/${name}.svg` : null;
+}
+
+/**
+ * The icon for one resource-type group: the TYPE's own product when the brand differs from the
+ * IAM prefix, the service's icon otherwise. resourceType may be absent - a policy summary line has
+ * a service and no type - and then this is exactly serviceIconPath.
+ */
+export function resourceIconPath(servicePrefix, resourceType) {
+  const byType = resourceType && RESOURCE_TYPE_ICONS[String(resourceType).toLowerCase()];
+  if (byType) return `/aws-icons/${byType}.svg`;
+  return serviceIconPath(servicePrefix);
 }

@@ -2,4 +2,11 @@
 
 export declare const SERVICE_ICONS: Record<string, string>;
 
+export declare const RESOURCE_TYPE_ICONS: Record<string, string>;
+
 export declare function serviceIconPath(servicePrefix: string): string | null;
+
+export declare function resourceIconPath(
+  servicePrefix: string,
+  resourceType?: string | null,
+): string | null;

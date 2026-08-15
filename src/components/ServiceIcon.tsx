@@ -1,4 +1,4 @@
-import { serviceIconPath } from "../../server/serviceIcons.js";
+import { resourceIconPath } from "../../server/serviceIcons.js";
 
 /**
  * The AWS service icon beside a service's name - the official one, extracted from the
@@ -10,8 +10,13 @@ import { serviceIconPath } from "../../server/serviceIcons.js";
  * and a file that fails to load hides itself rather than leaving a broken-image glyph beside
  * every row of a policy.
  */
-export function ServiceIcon({ service }: { service: string }) {
-  const src = serviceIconPath(service);
+export function ServiceIcon({ service, resourceType }: {
+  service: string;
+  /** When given, the type's own PRODUCT wins over the prefix: IAM files VPC under ec2, and an
+   *  approver reading ec2:vpc under an EC2 icon is being told the wrong product. */
+  resourceType?: string;
+}) {
+  const src = resourceIconPath(service, resourceType);
   if (!src) return null;
   return (
     <img

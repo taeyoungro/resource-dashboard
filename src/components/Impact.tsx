@@ -459,7 +459,7 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
   return (
     <div className="group">
       <div className="group-head">
-        <ServiceIcon service={group.service} />
+        <ServiceIcon service={group.service} resourceType={group.resource_type} />
         <code>{group.resource_type}</code>
         <span className="muted">
           {" "}

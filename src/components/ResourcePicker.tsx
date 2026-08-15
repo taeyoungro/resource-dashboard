@@ -192,7 +192,7 @@ function PickGroup({
   return (
     <div className="pick-group">
       <span className="pick-head">
-        <ServiceIcon service={group.service} />
+        <ServiceIcon service={group.service} resourceType={group.resource_type} />
         <code>{group.resource_type}</code> {group.total}개
         {group.truncated && " 이상 (잘림)"} · 범위 {group.scope}
         {groupRegion && ` · ${groupRegion}`}

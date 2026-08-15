@@ -10,7 +10,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { SERVICE_ICONS, serviceIconPath } from './serviceIcons.js';
+import {
+  RESOURCE_TYPE_ICONS, SERVICE_ICONS, resourceIconPath, serviceIconPath,
+} from './serviceIcons.js';
 
 const ICON_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'aws-icons');
 
@@ -19,6 +21,29 @@ test('every mapped icon exists among the extracted files', () => {
   for (const [prefix, name] of Object.entries(SERVICE_ICONS)) {
     assert.ok(files.has(`${name}.svg`), `${prefix} -> ${name}.svg is not in public/aws-icons - `
       + 're-run tools/extract-aws-icons.mjs or fix the entry');
+  }
+  for (const [type, name] of Object.entries(RESOURCE_TYPE_ICONS)) {
+    assert.ok(files.has(`${name}.svg`), `${type} -> ${name}.svg is not in public/aws-icons`);
+  }
+});
+
+test('a type whose brand differs from its prefix gets its own product icon', () => {
+  // The reported case: ec2:vpc rendered with the EC2 icon because IAM files VPC under ec2.
+  assert.equal(resourceIconPath('ec2', 'ec2:vpc'), '/aws-icons/Amazon-Virtual-Private-Cloud.svg');
+  assert.equal(resourceIconPath('ec2', 'ec2:volume'), '/aws-icons/Amazon-Elastic-Block-Store.svg');
+  // A type that IS its prefix's product falls back to the service icon.
+  assert.equal(resourceIconPath('ec2', 'ec2:instance'), '/aws-icons/Amazon-EC2.svg');
+  // No type at all - the policy summary line - is exactly the service lookup.
+  assert.equal(resourceIconPath('ec2'), '/aws-icons/Amazon-EC2.svg');
+  assert.equal(resourceIconPath('quantum', 'quantum:thing'), null);
+});
+
+test('the override table carries only types that change the answer', () => {
+  // An entry equal to its service icon is dead weight that hides the real overrides.
+  for (const [type, name] of Object.entries(RESOURCE_TYPE_ICONS)) {
+    const service = type.split(':', 1)[0];
+    assert.notEqual(name, SERVICE_ICONS[service],
+      `${type} maps to its own service icon - remove the entry, the fallback already does this`);
   }
 });
 
