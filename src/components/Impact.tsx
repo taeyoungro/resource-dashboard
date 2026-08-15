@@ -105,6 +105,23 @@ function estimateBytes(intent: Restriction["intent"], choices: Choice[], tag: st
   return JSON.stringify({ Version: "2012-10-17", Statement: statements }).length;
 }
 
+/**
+ * The policy as a person names it, with where it came from beside it.
+ *
+ * The two sources write identifier differently - the assessment carries the full ARN for an AWS
+ * managed policy and the BARE NAME for a customer managed one (the container builds the member ARN
+ * itself) - so the ARN is parsed down to its name and a non-ARN passes through untouched. The full
+ * identifier stays on the hover title: it is what a restriction is keyed by.
+ */
+function policyName(identifier: string): string {
+  return parseArn(identifier)?.name ?? identifier;
+}
+
+const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {
+  aws_managed: "AWS Managed",
+  customer_managed: "Customer Managed",
+};
+
 const INTENT_LABEL: Record<Restriction["intent"], string> = {
   allow_only: "이 자원만 허용 — 이후 생기는 자원은 거부된다",
   deny_only: "이 자원만 거부 — 이후 생기는 자원은 허용된다",
@@ -152,7 +169,10 @@ export function Impact({
               </li>
             )}
             {assessment.coverage.policies_unreadable.length > 0 && (
-              <li>읽을 수 없는 정책: {assessment.coverage.policies_unreadable.join(", ")}</li>
+              <li>
+                읽을 수 없는 정책:{" "}
+                {assessment.coverage.policies_unreadable.map(policyName).join(", ")}
+              </li>
             )}
           </ul>
         </div>
@@ -195,7 +215,8 @@ export function Impact({
           <ul>
             {baseline.map((p) => (
               <li key={p.identifier}>
-                <code>{p.identifier}</code>
+                <code title={p.identifier}>{policyName(p.identifier)}</code>
+                <span className="policy-source">({SOURCE_LABEL[p.source]})</span>
               </li>
             ))}
           </ul>
@@ -208,7 +229,9 @@ export function Impact({
           <ul>
             {unreadable.map((p) => (
               <li key={p.identifier}>
-                <code>{p.identifier}</code> — {p.unreadable}
+                <code title={p.identifier}>{policyName(p.identifier)}</code>
+                <span className="policy-source">({SOURCE_LABEL[p.source]})</span>
+                {" "}— {p.unreadable}
               </li>
             ))}
           </ul>
@@ -286,7 +309,8 @@ function PolicyBlock({
   return (
     <details className="policy" open={policy.affected.some((g) => g.sensitive_hits > 0)}>
       <summary>
-        <code>{policy.identifier}</code>
+        <code title={policy.identifier}>{policyName(policy.identifier)}</code>
+        <span className="policy-source">({SOURCE_LABEL[policy.source]})</span>
         <span className="muted">
           {" "}
           {primary
