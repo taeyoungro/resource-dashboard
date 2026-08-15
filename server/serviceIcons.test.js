@@ -24,7 +24,8 @@ test('every mapped icon exists among the extracted files', () => {
 
 test('the services the impact panel showed in real assessments all resolve', () => {
   for (const prefix of ['lambda', 'ec2', 's3', 'cloudformation', 'kms', 'iam', 'logs',
-    'cloudwatch', 'states', 'xray', 'athena', 'bedrock', 'elasticache', 'dynamodb']) {
+    'cloudwatch', 'states', 'xray', 'athena', 'bedrock', 'elasticache', 'dynamodb',
+    'securityhub', 'events']) {
     assert.ok(serviceIconPath(prefix), prefix);
   }
 });

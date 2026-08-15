@@ -44,6 +44,24 @@ const VENDOR = /^(aws|amazon)/;
 const SUFFIX = /(fullaccess|readonlyaccess|readonly|poweruser|administrator|access)$/;
 
 /**
+ * Brand stems whose IAM action prefix shares no spelling with them.
+ *
+ * The stem of AmazonEventBridgeReadOnlyAccess is "eventbridge", and EventBridge's actions are
+ * events:* - no prefix test, startsWith or containment connects the two, so the policy rendered
+ * with no primary service at all ("2개 자원", no icon, no related fold). Same for Step Functions
+ * (states:*), KMS (spelled out in policy names), ACM and Systems Manager. The alias is only
+ * BELIEVED when the aliased prefix is among the services this policy actually names - the same
+ * rule every other resolution path here follows.
+ */
+const BRAND_STEM: Record<string, string> = {
+  eventbridge: "events",
+  stepfunctions: "states",
+  keymanagementservice: "kms",
+  certificatemanager: "acm",
+  systemsmanager: "ssm",
+};
+
+/**
  * Which service an AWS managed policy is ABOUT, or null when nothing says.
  *
  * AWSLambda_FullAccess is about lambda. It also reaches every CloudFormation stack and KMS key in the
@@ -74,7 +92,7 @@ function primaryService(identifier: string, candidates: string[]): string | null
     // three-letter prefixes - es, s3, kms, sts - turn up inside unrelated words: "access" alone
     // contains "es", which would make every policy in existence look like an Elasticsearch policy.
     ?? ordered.find((service) => service.length >= 4 && bare.includes(service))
-    ?? null
+    ?? (BRAND_STEM[stem] && ordered.includes(BRAND_STEM[stem]) ? BRAND_STEM[stem] : null)
   );
 }
 
@@ -118,6 +136,24 @@ function policyName(identifier: string): string {
   return parseArn(identifier)?.name ?? identifier;
 }
 
+/**
+ * The inventory timestamp as a person reads it, in the VIEWER's own timezone.
+ *
+ * The document carries 2026-08-15T08:51:11.495443Z - microseconds and a Z suffix that make an
+ * approver do UTC arithmetic in their head. The date and the time are split and labelled, and the
+ * conversion uses the browser's timezone because the person deciding is the reference point, not
+ * the container that wrote the document. A value that does not parse is shown raw: a wrong-looking
+ * timestamp is a prompt to ask, a hidden one is not.
+ */
+function assessedAt(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return `평가 시각: ${iso}`;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const date = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+  const time = `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+  return `평가 날짜: ${date}, 평가 시간: ${time}`;
+}
+
 const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {
   aws_managed: "AWS Managed",
   customer_managed: "Customer Managed",
@@ -149,11 +185,14 @@ export function Impact({
     <section className="impact">
       <header>
         <h3>영향도 평가</h3>
-        <span className="muted">
-          {assessment.inventory_as_of} 기준 · 자원 {assessment.allowed_resources.length}개
-          {sensitiveTotal > 0 && ` · 민감 ${sensitiveTotal}개`}
-          {source === "stored" && " · 버킷에서 읽음"}
-        </span>
+        <div className="assessed muted">
+          <span>{assessedAt(assessment.inventory_as_of)}</span>
+          <span>
+            연관 자원: {assessment.allowed_resources.length}개
+            {sensitiveTotal > 0 && ` · 민감 ${sensitiveTotal}개`}
+            {source === "stored" && " · 버킷에서 읽음"}
+          </span>
+        </div>
       </header>
 
       {!assessment.coverage.complete && (
@@ -320,7 +359,7 @@ function PolicyBlock({
             : `${policy.affected.reduce((n, g) => n + g.total, 0)}개 자원`}
           {related.length > 0 && ` · 연관 ${related.reduce((n, g) => n + g.total, 0)}개`}
           {policy.affected.some((g) => g.sensitive_hits > 0) && " · 민감 포함"}
-          {policy.default_version_id && ` · ${policy.default_version_id}`}
+          {policy.default_version_id && ` · 정책 버전 ${policy.default_version_id}`}
         </span>
       </summary>
 
