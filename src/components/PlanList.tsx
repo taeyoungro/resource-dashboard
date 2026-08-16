@@ -1,4 +1,5 @@
 import type { PlanSummary } from "../types";
+import { planLinks } from "../../server/consoleLinks.js";
 
 interface Props {
   items: PlanSummary[];
@@ -48,6 +49,40 @@ export function PlanList({ items, selectedId, onSelect }: Props) {
           <div className="meta small">
             {it.planned_at ? new Date(it.planned_at).toLocaleString() : "시각 없음"}
           </div>
+          {/* The two ends of the projection. Spec is the resource the user edited and exists for
+              every plan; the governed artifact only exists once an apply has run, so its link only
+              shows on applied plans - a link to a thing that is not there yet teaches people to
+              stop clicking. stopPropagation: the row's own click selects the plan. */}
+          {(() => {
+            const links = planLinks(it.account_id, it.resource);
+            if (!links.spec && !links.governed) return null;
+            return (
+              <div className="meta small plan-links" onClick={(e) => e.stopPropagation()}>
+                {links.spec && (
+                  <a
+                    className="console-link"
+                    href={links.spec}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="원본(spec/source) 자원의 관리콘솔 페이지"
+                  >
+                    Spec ↗
+                  </a>
+                )}
+                {it.state === "applied" && links.governed && (
+                  <a
+                    className="console-link"
+                    href={links.governed}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="거버넌스 산출물의 관리콘솔 페이지. 권한 세트는 Identity Center 콘솔에서 찾는다."
+                  >
+                    Governed ↗
+                  </a>
+                )}
+              </div>
+            );
+          })()}
         </li>
       ))}
     </ul>

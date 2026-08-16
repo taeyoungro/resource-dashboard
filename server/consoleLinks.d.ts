@@ -9,3 +9,16 @@ export declare function consoleListUrl(
   region: string,
   resourceType: string,
 ): string | null;
+
+export declare function iamRoleUrl(accountId: string, roleName: string): string | null;
+
+export declare function iamPolicyUrl(accountId: string, policyName: string): string | null;
+
+export declare function identityCenterUrl(accountId: string, region?: string): string | null;
+
+export declare function planLinks(
+  accountId: string | null,
+  resource: string | null,
+  region?: string,
+): { spec: string | null; governed: string | null };
+

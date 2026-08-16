@@ -91,3 +91,77 @@ export function consoleListUrl(accountId, region, resourceType) {
 
   return `https://${accountId}.${where}.console.aws.amazon.com${path.replaceAll('{region}', where)}`;
 }
+
+// ---- the plan list's two links: the SOURCE resource and the GOVERNED one ----
+//
+// A plan is keyed by the governed resource, and both ends of the projection have a console page:
+// the source the user edited (a ps-*/service-* IAM role, or a cmp-* policy) and the artifact the
+// pipeline manages from it (the permission set, the mirror-* role, the mirror-cmp-* twin). The
+// governed side only EXISTS after an apply, which is why the caller shows it only on applied
+// plans.
+//
+// IAM detail pages are stable deep links: /iam/home#/roles/details/<name> and
+// /iam/home#/policies/details/<url-encoded policy ARN>. The permission set is the exception - its
+// console page lives under an Identity Center instance id (ssoins-...) that nothing client-side
+// can know, so the Governed link for a ps-* plan opens the Identity Center console itself and the
+// permission set is one click further. A wrong deep link that 404s would cost the trust the right
+// ones earn.
+
+// IAM names as this pipeline issues them - no paths, the documented IAM character set.
+const IAM_NAME = /^[\w+=,.@-]+$/;
+
+// The prefixes the pipeline governs, from GeneratorConfig: the source-role namespaces, the
+// permission set namespace and the spec policy namespace. A resource outside them gets no links.
+const SERVICE_PREFIXES = ['lambda-', 'ec2-', 'ecs-', 'eks-', 'glue-'];
+
+function iamDetailUrl(accountId, hash) {
+  if (!ACCOUNT.test(String(accountId))) return null;
+  return `https://${accountId}.us-east-1.console.aws.amazon.com/iam/home#${hash}`;
+}
+
+export function iamRoleUrl(accountId, roleName) {
+  if (!IAM_NAME.test(String(roleName))) return null;
+  return iamDetailUrl(accountId, `/roles/details/${encodeURIComponent(roleName)}`);
+}
+
+export function iamPolicyUrl(accountId, policyName) {
+  if (!IAM_NAME.test(String(policyName)) || !ACCOUNT.test(String(accountId))) return null;
+  const arn = `arn:aws:iam::${accountId}:policy/${policyName}`;
+  return iamDetailUrl(accountId, `/policies/details/${encodeURIComponent(arn)}`);
+}
+
+export function identityCenterUrl(accountId, region) {
+  if (!ACCOUNT.test(String(accountId))) return null;
+  const where = REGION.test(String(region)) ? region : 'us-east-1';
+  return `https://${accountId}.${where}.console.aws.amazon.com/singlesignon/home?region=${where}`;
+}
+
+/**
+ * Both links for one plan, or null where one cannot be built. The governed artifact's name is the
+ * pipeline's own naming rule - mirror-<source> for roles and twins - and the permission set case
+ * links the Identity Center console (see above).
+ */
+export function planLinks(accountId, resource, region = 'us-east-1') {
+  const name = String(resource ?? '');
+  if (!name || !ACCOUNT.test(String(accountId))) return { spec: null, governed: null };
+
+  if (name.startsWith('ps-')) {
+    return {
+      spec: iamRoleUrl(accountId, name),
+      governed: identityCenterUrl(accountId, region),
+    };
+  }
+  if (SERVICE_PREFIXES.some((prefix) => name.startsWith(prefix))) {
+    return {
+      spec: iamRoleUrl(accountId, name),
+      governed: iamRoleUrl(accountId, `mirror-${name}`),
+    };
+  }
+  if (name.startsWith('cmp-')) {
+    return {
+      spec: iamPolicyUrl(accountId, name),
+      governed: iamPolicyUrl(accountId, `mirror-${name}`),
+    };
+  }
+  return { spec: null, governed: null };
+}

@@ -320,6 +320,8 @@ pre.plan {
 /* The labelled resource row: 리소스명/계정/리전 as quiet labels in front of their values, the
    console link at the end. The label text is furniture; the values are the information. */
 .res .res-label { color: var(--muted); font-size: 0.9em; }
+/* The plan item's console links. First-child margin off so Spec aligns with the text above it. */
+.approval-list .plan-links .console-link:first-child { margin-left: 0; }
 .res .res-value { font-size: 0.95em; }
 /* Where a policy came from, beside its name. The name answers "which policy"; this answers "whose"
    - and for a customer managed one, that it is the organisation's own artifact. */
