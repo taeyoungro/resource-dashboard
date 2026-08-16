@@ -4,7 +4,7 @@ import type {
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
-import { ResourceName, uniform } from "./ResourceName";
+import { ResourceName } from "./ResourceName";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
@@ -430,12 +430,6 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
     return links;
   }, [group, accountId]);
 
-  // The constant parts of the rows, said ONCE here so the rows can stop repeating them. null
-  // means the group is mixed for that dimension, and every row then says its own - a cross-region
-  // resource hiding in a uniform-looking list is what an approver must not miss.
-  const groupRegion = uniform(group.resources.map((r) => r.region || parseArn(r.arn)?.region));
-  const groupAccount = uniform(group.resources.map((r) => parseArn(r.arn)?.account || undefined));
-
   return (
     <div className="group">
       <div className="group-head">
@@ -444,21 +438,7 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
         <span className="muted">
           {" "}
           {group.total}개{group.truncated && " 이상 (잘림)"} · 범위 {group.scope}
-          {groupRegion && ` · ${groupRegion}`}
-          {groupAccount && ` · 계정 ${groupAccount}`}
         </span>
-        {consoles.map(({ region, url }) => (
-          <a
-            key={url}
-            className="console-link"
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="관리콘솔의 자원 목록 페이지. 로그인된 Identity Center 세션이 있으면 그 세션으로 열린다."
-          >
-            관리콘솔{consoles.length > 1 ? ` ${region}` : ""} ↗
-          </a>
-        ))}
         {/* The actions above are the ones that reach this type. When the reference could not decide
             that, the group is every resource of the service and the actions beside it may not touch any
             of them - which is what this whole panel used to do silently. */}
@@ -470,29 +450,41 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
         )}
       </div>
 
-      {/* Folded, for every resource type. lambda:function carries 60 granted actions and printing them
-          inline pushed the resource list - the thing an approver actually picks from - off the screen.
-          The count is the part that is read at a glance; the names are what you open when you are
-          deciding. */}
-      {group.actions.length > 0 && (
-        <details className="group-actions">
-          <summary>동작 {group.actions.length}개</summary>
-          <p>
-            {group.actions.map((action) => (
-              <code key={action}>{action} </code>
-            ))}
-          </p>
-        </details>
+      {/* The second line, off the heading on the operator's direction: the heading says WHAT and
+          HOW MANY, this line holds what you can DO - open the actions, open the console list. The
+          actions stay folded: lambda:function carries 60 granted actions and printing them inline
+          pushed the resource list - the thing an approver actually picks from - off the screen. */}
+      {(group.actions.length > 0 || consoles.length > 0) && (
+        <div className="group-tools">
+          {group.actions.length > 0 && (
+            <details className="group-actions">
+              <summary>동작 {group.actions.length}개</summary>
+              <p>
+                {group.actions.map((action) => (
+                  <code key={action}>{action} </code>
+                ))}
+              </p>
+            </details>
+          )}
+          {consoles.map(({ region, url }) => (
+            <a
+              key={url}
+              className="console-link"
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="관리콘솔의 자원 목록 페이지. 로그인된 Identity Center 세션이 있으면 그 세션으로 열린다."
+            >
+              관리콘솔{consoles.length > 1 ? ` ${region}` : ""} ↗
+            </a>
+          ))}
+        </div>
       )}
 
       <ul className="resources">
         {group.resources.slice(0, 50).map((resource) => (
           <li key={resource.arn} className={resource.sensitive ? "sensitive" : undefined}>
-            <ResourceName
-              arn={resource.arn}
-              groupRegion={groupRegion}
-              groupAccount={groupAccount}
-            />
+            <ResourceName arn={resource.arn} groupRegion={null} groupAccount={null} />
             {Object.entries(resource.tags).length > 0 && (
               <span className="tags">
                 {Object.entries(resource.tags)

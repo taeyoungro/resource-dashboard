@@ -316,7 +316,11 @@ pre.plan {
 .impact .group-head { font-size: 0.8rem; }
 /* The console list link sits beside the count it opens. A link, visibly - the rest of the head is
    identifiers and counts, and this is the one thing there an approver can act on. */
-.impact .console-link { margin-left: 0.6em; font-size: 0.85em; white-space: nowrap; }
+.impact .console-link { font-size: 0.85em; white-space: nowrap; }
+/* The group's second line: the actions fold and the console list link, side by side. The heading
+   above says what and how many; this line holds what you can DO with it. */
+.impact .group-tools { display: flex; align-items: baseline; gap: 0.9rem; margin-top: 2px; }
+.impact .group-tools .group-actions { margin: 0; }
 /* Where a policy came from, beside its name. The name answers "which policy"; this answers "whose"
    - and for a customer managed one, that it is the organisation's own artifact. */
 .impact .policy-source { color: var(--muted); font-size: 0.82em; margin-left: 0.4em; }
