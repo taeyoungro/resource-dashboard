@@ -4,7 +4,11 @@ import { MarkerPage } from "./components/MarkerPage";
 import { PlanPage } from "./components/PlanPage";
 import type { SweepState } from "./types";
 
-type Tab = "plans" | "markers";
+// The marker list splits by the server's own classification: a marker younger than the grace
+// period (OPT_MARKER_GRACE_SECONDS, default 15 minutes) is presumed running, an older one is
+// presumed dead. One tab per answer, so "what is broken" and "what is merely busy" are different
+// clicks rather than two badge colors in one table.
+type Tab = "plans" | "failed" | "running";
 
 // The server sweeps the buckets on startup and every 24 hours; this only asks it what it last
 // saw. Cheap - no S3 call unless the refresh button is pressed - so it can be frequent enough
@@ -64,10 +68,16 @@ export default function App() {
             승인 {counts ? `(${counts.awaiting_decision})` : ""}
           </button>
           <button
-            className={tab === "markers" ? "tab active" : "tab"}
-            onClick={() => setTab("markers")}
+            className={tab === "failed" ? "tab active" : "tab"}
+            onClick={() => setTab("failed")}
           >
             실패 {counts ? `(${counts.failed})` : ""}
+          </button>
+          <button
+            className={tab === "running" ? "tab active" : "tab"}
+            onClick={() => setTab("running")}
+          >
+            진행 {counts ? `(${counts.running})` : ""}
           </button>
         </div>
         <div className="api-key topbar-key">
@@ -116,7 +126,7 @@ export default function App() {
       {tab === "plans" ? (
         <PlanPage state={state} error={error} onRefresh={sweepNow} />
       ) : (
-        <MarkerPage state={state} error={error} onRefresh={sweepNow} />
+        <MarkerPage state={state} error={error} onRefresh={sweepNow} filter={tab} />
       )}
     </div>
   );
