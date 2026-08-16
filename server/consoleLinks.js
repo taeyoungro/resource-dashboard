@@ -63,6 +63,7 @@ export const CONSOLE_LIST_PAGES = {
   'states:stateMachine': '/states/home?region={region}#/statemachines',
   'events:rule': '/events/home?region={region}#/rules',
   'athena:workgroup': '/athena/home?region={region}#/workgroups',
+  'athena:datacatalog': '/athena/home?region={region}#/data-sources',
 };
 
 // Both go into the HOSTNAME, so both are validated as narrowly as the real values allow, not

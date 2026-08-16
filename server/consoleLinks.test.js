@@ -18,6 +18,12 @@ test('the hand-verified example builds byte for byte', () => {
     consoleListUrl(ACCOUNT, 'us-east-1', 'ec2:instance'),
     'https://718100330247.us-east-1.console.aws.amazon.com/ec2/home?region=us-east-1#Instances:',
   );
+  // Same verification story for the Athena data source list: AwsDataCatalog surfaced in a live
+  // assessment with no link, and this URL was checked by hand in that console session.
+  assert.equal(
+    consoleListUrl(ACCOUNT, 'us-east-1', 'athena:datacatalog'),
+    'https://718100330247.us-east-1.console.aws.amazon.com/athena/home?region=us-east-1#/data-sources',
+  );
 });
 
 test('the region reaches both the host and the query', () => {
