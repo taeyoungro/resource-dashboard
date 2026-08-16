@@ -410,14 +410,13 @@ function PolicyBlock({
 }
 
 /**
- * One resource as a labelled sentence: 리소스명, 계정, 리전, and the console list link for ITS
- * account and region - per row on the operator's direction, because the group heading no longer
- * speaks for the rows. The full ARN stays on the hover title; an ARN that does not parse shows
- * whole in the name slot rather than hiding.
+ * One resource as a labelled sentence: 리소스명, 계정, 리전. The console link is NOT here - it
+ * lives on the group heading, once per region, because the list page it opens is the same for
+ * every row of the group and a repeated link is furniture. The full ARN stays on the hover title;
+ * an ARN that does not parse shows whole in the name slot rather than hiding.
  */
-function LabeledResource({ resource, resourceType, accountId }: {
+function LabeledResource({ resource, accountId }: {
   resource: ImpactResource;
-  resourceType: string;
   /** The governed account, used only when the ARN itself carries none (S3). */
   accountId: string;
 }) {
@@ -425,7 +424,6 @@ function LabeledResource({ resource, resourceType, accountId }: {
   const name = parsed?.name ?? resource.arn;
   const account = parsed?.account || accountId;
   const region = resource.region || parsed?.region || "global";
-  const url = consoleListUrl(account, region, resourceType);
   return (
     <span className="res labeled" title={resource.arn}>
       <span className="res-label">리소스명: </span>
@@ -435,22 +433,30 @@ function LabeledResource({ resource, resourceType, accountId }: {
       <span className="res-value">{account}</span>
       <span className="res-label">, 리전: </span>
       <span className="res-value">{region}</span>
-      {url && (
-        <a
-          className="console-link"
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          title="관리콘솔의 자원 목록 페이지. 로그인된 Identity Center 세션이 있으면 그 세션으로 열린다."
-        >
-          관리콘솔 ↗
-        </a>
-      )}
     </span>
   );
 }
 
 function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: string }) {
+  // The console LIST page for this type, on the heading - one link per region the rows actually
+  // sit in, deduplicated by URL so the region-blind consoles (IAM) fold to one. Not on the rows:
+  // the list page is the same for every row of the group, and a repeated link is furniture.
+  const consoles = useMemo(() => {
+    const regions = [...new Set(group.resources.map(
+      (r) => r.region || parseArn(r.arn)?.region || "global",
+    ))].sort();
+    const seen = new Set<string>();
+    const links: { region: string; url: string }[] = [];
+    for (const region of regions) {
+      const url = consoleListUrl(accountId, region, group.resource_type);
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        links.push({ region, url });
+      }
+    }
+    return links;
+  }, [group, accountId]);
+
   return (
     <div className="group">
       <div className="group-head">
@@ -460,6 +466,18 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
           {" "}
           {group.total}개{group.truncated && " 이상 (잘림)"} · 범위 {group.scope}
         </span>
+        {consoles.map(({ region, url }) => (
+          <a
+            key={url}
+            className="console-link"
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="관리콘솔의 자원 목록 페이지. 로그인된 Identity Center 세션이 있으면 그 세션으로 열린다."
+          >
+            관리콘솔{consoles.length > 1 ? ` ${region}` : ""} ↗
+          </a>
+        ))}
         {/* The actions above are the ones that reach this type. When the reference could not decide
             that, the group is every resource of the service and the actions beside it may not touch any
             of them - which is what this whole panel used to do silently. */}
@@ -478,11 +496,7 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
       <ul className="resources">
         {group.resources.slice(0, 50).map((resource) => (
           <li key={resource.arn} className={resource.sensitive ? "sensitive" : undefined}>
-            <LabeledResource
-              resource={resource}
-              resourceType={group.resource_type}
-              accountId={accountId}
-            />
+            <LabeledResource resource={resource} accountId={accountId} />
             {Object.entries(resource.tags).length > 0 && (
               <span className="tags">
                 {Object.entries(resource.tags)
