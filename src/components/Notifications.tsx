@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type { Notification } from "../types";
+import { clock } from "../time";
 
 /** What the listener has announced recently.
  *
@@ -17,7 +18,7 @@ const relative = (iso: string): string => {
   if (seconds < 60) return `${seconds}초 전`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}분 전`;
   if (seconds < 86400) return `${Math.round(seconds / 3600)}시간 전`;
-  return new Date(iso).toLocaleString();
+  return clock(iso);
 };
 
 function Row({ item }: { item: Notification }) {

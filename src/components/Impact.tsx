@@ -5,6 +5,7 @@ import type {
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
+import { localDate, localTime } from "../time";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
@@ -158,10 +159,7 @@ function policyName(identifier: string): string {
 function assessedAt(iso: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return `평가 시각: ${iso}`;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const date = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
-  const time = `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
-  return `평가 날짜: ${date}, 평가 시간: ${time}`;
+  return `평가 날짜: ${localDate(at)}, 평가 시간: ${localTime(at)}`;
 }
 
 const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {

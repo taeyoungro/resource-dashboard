@@ -3,6 +3,7 @@ import type {
   AssessmentState, PlanDetail as Detail, Restriction,
 } from "../types";
 import { Impact } from "./Impact";
+import { clock } from "../time";
 
 interface Props {
   detail: Detail;
@@ -65,7 +66,7 @@ export function PlanDetail({
             the governed resource - but it is what the approval marker gets named by. */}
         <span>요청: {detail.request_id ?? "—"}</span>
         <span>
-          계획 시각: {detail.planned_at ? new Date(detail.planned_at).toLocaleString() : "—"}
+          계획 시각: {detail.planned_at ? clock(detail.planned_at) : "—"}
         </span>
       </div>
 
@@ -165,7 +166,7 @@ export function PlanDetail({
           {detail.outcome.reviewer ?? "검토자 미상"}
           {detail.outcome.decision === "deny" ? " 이(가) 거부했습니다." : " 의 승인."}
           {detail.outcome.finished_at
-            ? ` (${new Date(detail.outcome.finished_at).toLocaleString()})`
+            ? ` (${clock(detail.outcome.finished_at)})`
             : ""}
           {detail.outcome.detail ? <pre className="plan">{detail.outcome.detail}</pre> : null}
           다시 결정하려면 자원을 변경해 새 계획을 받으십시오.

@@ -1,5 +1,6 @@
 import type { PlanSummary } from "../types";
 import { planLinks } from "../../server/consoleLinks.js";
+import { clock } from "../time";
 
 interface Props {
   items: PlanSummary[];
@@ -47,7 +48,7 @@ export function PlanList({ items, selectedId, onSelect }: Props) {
             <span>계정: {it.account_id ?? "—"}</span>
           </div>
           <div className="meta small">
-            {it.planned_at ? new Date(it.planned_at).toLocaleString() : "시각 없음"}
+            {it.planned_at ? clock(it.planned_at) : "시각 없음"}
           </div>
           {/* The two ends of the projection. Spec is the resource the user edited and exists for
               every plan; the governed artifact only exists once an apply has run, so its link only
