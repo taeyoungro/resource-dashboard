@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
 import type {
-  Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPolicy, Restriction,
+  Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPolicy, ImpactResource,
+  Restriction,
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
-import { ResourceName } from "./ResourceName";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
@@ -375,12 +375,6 @@ function PolicyBlock({
         </details>
       )}
 
-      {blocked.length > 0 && (
-        <p className="muted">
-          제한할 수 없는 동작: {blocked.map((a) => <code key={a}>{a} </code>)} — 선언 경로다.
-        </p>
-      )}
-
       {/* No checkbox in front of this. There used to be one - "이 정책에 제한을 건다" - and it was a
           second door in front of a door: the policy block is already collapsed, so opening it is the
           statement of intent, and a tick inside it only asked the same question again. What a
@@ -402,34 +396,61 @@ function PolicyBlock({
           referenceError={referenceError}
           omitted={omitted}
         />
+        {/* At the BOTTOM of the restriction area, on the operator's direction: it says what the
+            picker above will not offer, so it reads as a footnote to the choosing, not a headline
+            above it. The declaration path stays unrestrictable either way. */}
+        {blocked.length > 0 && (
+          <p className="muted">
+            제한할 수 없는 동작: {blocked.map((a) => <code key={a}>{a} </code>)} — 선언 경로다.
+          </p>
+        )}
       </div>
     </details>
   );
 }
 
-function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: string }) {
-  // The console LIST page for this resource type - the list, deliberately not any one resource's
-  // detail page: the approver is deciding about the set, and a deep link would pick one for them.
-  //
-  // One link per region the enumerated resources actually sit in, because a console list page shows
-  // a single region. Deduplicated by URL, which folds the global consoles (IAM ignores region, so
-  // every region builds the same address) down to one link. consoleListUrl answers null for an
-  // unmapped type or a malformed account/region, and null renders as nothing - no link is better
-  // than a wrong one.
-  const consoles = useMemo(() => {
-    const regions = [...new Set(group.resources.map((r) => r.region || "global"))].sort();
-    const seen = new Set<string>();
-    const links: { region: string; url: string }[] = [];
-    for (const region of regions) {
-      const url = consoleListUrl(accountId, region, group.resource_type);
-      if (url && !seen.has(url)) {
-        seen.add(url);
-        links.push({ region, url });
-      }
-    }
-    return links;
-  }, [group, accountId]);
+/**
+ * One resource as a labelled sentence: 리소스명, 계정, 리전, and the console list link for ITS
+ * account and region - per row on the operator's direction, because the group heading no longer
+ * speaks for the rows. The full ARN stays on the hover title; an ARN that does not parse shows
+ * whole in the name slot rather than hiding.
+ */
+function LabeledResource({ resource, resourceType, accountId }: {
+  resource: ImpactResource;
+  resourceType: string;
+  /** The governed account, used only when the ARN itself carries none (S3). */
+  accountId: string;
+}) {
+  const parsed = parseArn(resource.arn);
+  const name = parsed?.name ?? resource.arn;
+  const account = parsed?.account || accountId;
+  const region = resource.region || parsed?.region || "global";
+  const url = consoleListUrl(account, region, resourceType);
+  return (
+    <span className="res labeled" title={resource.arn}>
+      <span className="res-label">리소스명: </span>
+      <code className="res-name">{name}</code>
+      {parsed?.qualifier && <span className="res-qualifier">/{parsed.qualifier}</span>}
+      <span className="res-label">, 계정: </span>
+      <span className="res-value">{account}</span>
+      <span className="res-label">, 리전: </span>
+      <span className="res-value">{region}</span>
+      {url && (
+        <a
+          className="console-link"
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="관리콘솔의 자원 목록 페이지. 로그인된 Identity Center 세션이 있으면 그 세션으로 열린다."
+        >
+          관리콘솔 ↗
+        </a>
+      )}
+    </span>
+  );
+}
 
+function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: string }) {
   return (
     <div className="group">
       <div className="group-head">
@@ -450,41 +471,18 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
         )}
       </div>
 
-      {/* The second line, off the heading on the operator's direction: the heading says WHAT and
-          HOW MANY, this line holds what you can DO - open the actions, open the console list. The
-          actions stay folded: lambda:function carries 60 granted actions and printing them inline
-          pushed the resource list - the thing an approver actually picks from - off the screen. */}
-      {(group.actions.length > 0 || consoles.length > 0) && (
-        <div className="group-tools">
-          {group.actions.length > 0 && (
-            <details className="group-actions">
-              <summary>동작 {group.actions.length}개</summary>
-              <p>
-                {group.actions.map((action) => (
-                  <code key={action}>{action} </code>
-                ))}
-              </p>
-            </details>
-          )}
-          {consoles.map(({ region, url }) => (
-            <a
-              key={url}
-              className="console-link"
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="관리콘솔의 자원 목록 페이지. 로그인된 Identity Center 세션이 있으면 그 세션으로 열린다."
-            >
-              관리콘솔{consoles.length > 1 ? ` ${region}` : ""} ↗
-            </a>
-          ))}
-        </div>
-      )}
-
+      {/* The list FIRST, the actions fold under it - the operator's ordering, and the right one:
+          the rows are what an approver picks from, the fold is reference material. Each row is a
+          labelled sentence carrying its own account, region and console link, because the heading
+          above no longer speaks for the rows. */}
       <ul className="resources">
         {group.resources.slice(0, 50).map((resource) => (
           <li key={resource.arn} className={resource.sensitive ? "sensitive" : undefined}>
-            <ResourceName arn={resource.arn} groupRegion={null} groupAccount={null} />
+            <LabeledResource
+              resource={resource}
+              resourceType={group.resource_type}
+              accountId={accountId}
+            />
             {Object.entries(resource.tags).length > 0 && (
               <span className="tags">
                 {Object.entries(resource.tags)
@@ -498,6 +496,19 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
           <li className="muted">…그리고 {group.resources.length - 50}개 더</li>
         )}
       </ul>
+
+      {/* Folded: lambda:function carries 60 granted actions and printing them inline pushed the
+          resource list off the screen. */}
+      {group.actions.length > 0 && (
+        <details className="group-actions">
+          <summary>동작 {group.actions.length}개</summary>
+          <p>
+            {group.actions.map((action) => (
+              <code key={action}>{action} </code>
+            ))}
+          </p>
+        </details>
+      )}
     </div>
   );
 }
