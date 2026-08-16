@@ -401,8 +401,19 @@ label.pick-item .res .res-name { font-weight: 500; }
   font-weight: 700;
 }
 .impact .editor { margin-top: 0.4rem; }
-.impact .editor .none-chosen { margin: 0.4rem 0 0; font-size: 0.78rem; }
 .impact .editor label { display: block; margin-bottom: 0.4rem; }
+
+/* The editor's two rows, one form each: the label word, then its control beside it on the same
+   line. 의도 carries the intent box, 동작 carries the button that opens the picker dialog -
+   everything about what there is to choose from lives in the dialog, so each row is one line. */
+.impact .editor label.control-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+/* Let the intent box give way instead of overflowing the column - flex items refuse to shrink
+   below content width without this, and the longest intent label is a sentence. */
+.impact .editor label.control-row > select { min-width: 0; }
 .impact .editor label.inline {
   display: inline-flex;
   align-items: center;
@@ -439,10 +450,6 @@ label.pick-item .res .res-name { font-weight: 500; }
   cursor: pointer;
 }
 
-/* What the page keeps of the action picker: a button, a note about where the list comes from, and the
-   actions chosen. The offering itself is in the dialog below. */
-.impact .editor .pick-open { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
-.impact .editor .pick-open > span { font-size: 0.75rem; }
 .impact .editor .chosen { margin-top: 0.4rem; font-size: 0.76rem; }
 
 /* One line per chosen action, with what it is scoped to. Two columns rather than a sentence: the
