@@ -316,7 +316,13 @@ pre.plan {
 .impact .group-head { font-size: 0.8rem; }
 /* The console list link sits beside the count it opens. A link, visibly - the rest of the head is
    identifiers and counts, and this is the one thing there an approver can act on. */
-.impact .console-link { margin-left: 0.6em; font-size: 0.85em; white-space: nowrap; }
+.impact .console-link { font-size: 0.85em; white-space: nowrap; margin-left: 0.5em; }
+/* The labelled resource row: 리소스명/계정/리전 as quiet labels in front of their values, the
+   console link at the end. The label text is furniture; the values are the information. */
+.res .res-label { color: var(--muted); font-size: 0.9em; }
+/* The plan item's console links. First-child margin off so Spec aligns with the text above it. */
+.approval-list .plan-links .console-link:first-child { margin-left: 0; }
+.res .res-value { font-size: 0.95em; }
 /* Where a policy came from, beside its name. The name answers "which policy"; this answers "whose"
    - and for a customer managed one, that it is the organisation's own artifact. */
 .impact .policy-source { color: var(--muted); font-size: 0.82em; margin-left: 0.4em; }

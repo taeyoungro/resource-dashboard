@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
 import type {
-  Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPolicy, Restriction,
+  Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPolicy, ImpactResource,
+  Restriction,
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
-import { ResourceName, uniform } from "./ResourceName";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
@@ -26,9 +26,19 @@ import type { Choice, Offer } from "./ActionPicker";
  *   it does not build a policy document only decisions travel. A defect here must not be able to
  *                                      write Allow where somebody clicked Deny, so the container
  *                                      composes the statements and refuses anything impossible
- *   it does not hide an incomplete run  a truncated enumeration or a policy that could not be read
- *                                      is said out loud, because a number that reads as complete
- *                                      when it is not is worse than an obvious gap
+ *   it does not hide an incomplete run  a truncated enumeration is marked on its own group
+ *                                      ("이상 (잘림)") and an unreadable policy is listed with its
+ *                                      reason at the bottom, because a number that reads as
+ *                                      complete when it is not is worse than an obvious gap
+ *
+ * Two banners this panel USED to show were removed on the operator's direction: the coverage
+ * summary ("이 평가는 완전하지 않다") and the existing-admin-deny replacement warning. The second
+ * described the current inline writer, which replaces AdminDeny* statements wholesale; the planned
+ * terraform-managed inline structure preserves what is already written, and the warning would then
+ * assert a behavior the pipeline no longer has. Until that lands, the replacement behavior still
+ * exists - it is just no longer announced here. The per-group truncation mark and the bottom
+ * unreadable-policy block carry what the coverage banner carried, except failed service lookups,
+ * which now have no display.
  */
 
 interface Props {
@@ -194,36 +204,6 @@ export function Impact({
           </span>
         </div>
       </header>
-
-      {!assessment.coverage.complete && (
-        <div className="warn">
-          <strong>이 평가는 완전하지 않다.</strong>
-          <ul>
-            {assessment.coverage.services_failed.length > 0 && (
-              <li>조회 실패: {assessment.coverage.services_failed.join(", ")}</li>
-            )}
-            {assessment.coverage.truncated_groups.length > 0 && (
-              <li>
-                열거가 잘림 {assessment.coverage.truncated_groups.length}건 — 표시된 개수는 최소값이다
-                (Resource Explorer가 질의당 1,000건까지만 반환한다)
-              </li>
-            )}
-            {assessment.coverage.policies_unreadable.length > 0 && (
-              <li>
-                읽을 수 없는 정책:{" "}
-                {assessment.coverage.policies_unreadable.map(policyName).join(", ")}
-              </li>
-            )}
-          </ul>
-        </div>
-      )}
-
-      {assessment.current_admin_deny.length > 0 && (
-        <div className="warn">
-          이 권한 세트에는 이미 관리자 제한 {assessment.current_admin_deny.length}건이 있다.
-          <strong> 새 제한은 그것을 대체한다</strong> — 유지할 것은 다시 골라야 한다.
-        </div>
-      )}
 
       {restrictable.length === 0 && (
         <p className="muted">제한할 수 있는 정책이 없다. 기반 정책만 붙어 있다.</p>
@@ -395,12 +375,6 @@ function PolicyBlock({
         </details>
       )}
 
-      {blocked.length > 0 && (
-        <p className="muted">
-          제한할 수 없는 동작: {blocked.map((a) => <code key={a}>{a} </code>)} — 선언 경로다.
-        </p>
-      )}
-
       {/* No checkbox in front of this. There used to be one - "이 정책에 제한을 건다" - and it was a
           second door in front of a door: the policy block is already collapsed, so opening it is the
           statement of intent, and a tick inside it only asked the same question again. What a
@@ -422,22 +396,55 @@ function PolicyBlock({
           referenceError={referenceError}
           omitted={omitted}
         />
+        {/* At the BOTTOM of the restriction area, on the operator's direction: it says what the
+            picker above will not offer, so it reads as a footnote to the choosing, not a headline
+            above it. The declaration path stays unrestrictable either way. */}
+        {blocked.length > 0 && (
+          <p className="muted">
+            제한할 수 없는 동작: {blocked.map((a) => <code key={a}>{a} </code>)} — 선언 경로다.
+          </p>
+        )}
       </div>
     </details>
   );
 }
 
+/**
+ * One resource as a labelled sentence: 리소스명, 계정, 리전. The console link is NOT here - it
+ * lives on the group heading, once per region, because the list page it opens is the same for
+ * every row of the group and a repeated link is furniture. The full ARN stays on the hover title;
+ * an ARN that does not parse shows whole in the name slot rather than hiding.
+ */
+function LabeledResource({ resource, accountId }: {
+  resource: ImpactResource;
+  /** The governed account, used only when the ARN itself carries none (S3). */
+  accountId: string;
+}) {
+  const parsed = parseArn(resource.arn);
+  const name = parsed?.name ?? resource.arn;
+  const account = parsed?.account || accountId;
+  const region = resource.region || parsed?.region || "global";
+  return (
+    <span className="res labeled" title={resource.arn}>
+      <span className="res-label">리소스명: </span>
+      <code className="res-name">{name}</code>
+      {parsed?.qualifier && <span className="res-qualifier">/{parsed.qualifier}</span>}
+      <span className="res-label">, 계정: </span>
+      <span className="res-value">{account}</span>
+      <span className="res-label">, 리전: </span>
+      <span className="res-value">{region}</span>
+    </span>
+  );
+}
+
 function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: string }) {
-  // The console LIST page for this resource type - the list, deliberately not any one resource's
-  // detail page: the approver is deciding about the set, and a deep link would pick one for them.
-  //
-  // One link per region the enumerated resources actually sit in, because a console list page shows
-  // a single region. Deduplicated by URL, which folds the global consoles (IAM ignores region, so
-  // every region builds the same address) down to one link. consoleListUrl answers null for an
-  // unmapped type or a malformed account/region, and null renders as nothing - no link is better
-  // than a wrong one.
+  // The console LIST page for this type, on the heading - one link per region the rows actually
+  // sit in, deduplicated by URL so the region-blind consoles (IAM) fold to one. Not on the rows:
+  // the list page is the same for every row of the group, and a repeated link is furniture.
   const consoles = useMemo(() => {
-    const regions = [...new Set(group.resources.map((r) => r.region || "global"))].sort();
+    const regions = [...new Set(group.resources.map(
+      (r) => r.region || parseArn(r.arn)?.region || "global",
+    ))].sort();
     const seen = new Set<string>();
     const links: { region: string; url: string }[] = [];
     for (const region of regions) {
@@ -450,12 +457,6 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
     return links;
   }, [group, accountId]);
 
-  // The constant parts of the rows, said ONCE here so the rows can stop repeating them. null
-  // means the group is mixed for that dimension, and every row then says its own - a cross-region
-  // resource hiding in a uniform-looking list is what an approver must not miss.
-  const groupRegion = uniform(group.resources.map((r) => r.region || parseArn(r.arn)?.region));
-  const groupAccount = uniform(group.resources.map((r) => parseArn(r.arn)?.account || undefined));
-
   return (
     <div className="group">
       <div className="group-head">
@@ -464,8 +465,6 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
         <span className="muted">
           {" "}
           {group.total}개{group.truncated && " 이상 (잘림)"} · 범위 {group.scope}
-          {groupRegion && ` · ${groupRegion}`}
-          {groupAccount && ` · 계정 ${groupAccount}`}
         </span>
         {consoles.map(({ region, url }) => (
           <a
@@ -490,29 +489,14 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
         )}
       </div>
 
-      {/* Folded, for every resource type. lambda:function carries 60 granted actions and printing them
-          inline pushed the resource list - the thing an approver actually picks from - off the screen.
-          The count is the part that is read at a glance; the names are what you open when you are
-          deciding. */}
-      {group.actions.length > 0 && (
-        <details className="group-actions">
-          <summary>동작 {group.actions.length}개</summary>
-          <p>
-            {group.actions.map((action) => (
-              <code key={action}>{action} </code>
-            ))}
-          </p>
-        </details>
-      )}
-
+      {/* The list FIRST, the actions fold under it - the operator's ordering, and the right one:
+          the rows are what an approver picks from, the fold is reference material. Each row is a
+          labelled sentence carrying its own account, region and console link, because the heading
+          above no longer speaks for the rows. */}
       <ul className="resources">
         {group.resources.slice(0, 50).map((resource) => (
           <li key={resource.arn} className={resource.sensitive ? "sensitive" : undefined}>
-            <ResourceName
-              arn={resource.arn}
-              groupRegion={groupRegion}
-              groupAccount={groupAccount}
-            />
+            <LabeledResource resource={resource} accountId={accountId} />
             {Object.entries(resource.tags).length > 0 && (
               <span className="tags">
                 {Object.entries(resource.tags)
@@ -526,6 +510,19 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
           <li className="muted">…그리고 {group.resources.length - 50}개 더</li>
         )}
       </ul>
+
+      {/* Folded: lambda:function carries 60 granted actions and printing them inline pushed the
+          resource list off the screen. */}
+      {group.actions.length > 0 && (
+        <details className="group-actions">
+          <summary>동작 {group.actions.length}개</summary>
+          <p>
+            {group.actions.map((action) => (
+              <code key={action}>{action} </code>
+            ))}
+          </p>
+        </details>
+      )}
     </div>
   );
 }

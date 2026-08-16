@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CONSOLE_LIST_PAGES, consoleListUrl } from './consoleLinks.js';
+import { CONSOLE_LIST_PAGES, consoleListUrl, planLinks } from './consoleLinks.js';
 
 const ACCOUNT = '718100330247';
 
@@ -81,3 +81,33 @@ test('every table entry produces a complete URL with nothing left unsubstituted'
     assert.ok(!url.includes('{region}'), `${type}: placeholder left in ${url}`);
   }
 });
+
+test('a plan gets its Spec and Governed links by resource prefix', () => {
+  // ps-*: the spec is the IAM role the user edits; the governed artifact is a permission set,
+  // whose console page lives under an Identity Center instance id nothing client-side can know -
+  // so Governed opens the Identity Center console rather than a deep link that would 404.
+  assert.deepEqual(planLinks(ACCOUNT, 'ps-Prod-Admin'), {
+    spec: `https://${ACCOUNT}.us-east-1.console.aws.amazon.com/iam/home#/roles/details/ps-Prod-Admin`,
+    governed: `https://${ACCOUNT}.us-east-1.console.aws.amazon.com/singlesignon/home?region=us-east-1`,
+  });
+  // service roles: both ends are IAM roles, the governed one under the pipeline's mirror- prefix.
+  assert.deepEqual(planLinks(ACCOUNT, 'lambda-x'), {
+    spec: `https://${ACCOUNT}.us-east-1.console.aws.amazon.com/iam/home#/roles/details/lambda-x`,
+    governed: `https://${ACCOUNT}.us-east-1.console.aws.amazon.com/iam/home#/roles/details/mirror-lambda-x`,
+  });
+  // spec policies: policy detail pages take the URL-ENCODED policy ARN, not the name.
+  const policy = planLinks(ACCOUNT, 'cmp-Reporting');
+  assert.ok(policy.spec.endsWith(
+    `/iam/home#/policies/details/${encodeURIComponent(`arn:aws:iam::${ACCOUNT}:policy/cmp-Reporting`)}`,
+  ), policy.spec);
+  assert.ok(policy.governed.includes(encodeURIComponent('policy/mirror-cmp-Reporting')), policy.governed);
+});
+
+test('a plan outside the governed namespaces, or with bad inputs, gets no links', () => {
+  assert.deepEqual(planLinks(ACCOUNT, 'random-role'), { spec: null, governed: null });
+  assert.deepEqual(planLinks(ACCOUNT, null), { spec: null, governed: null });
+  assert.deepEqual(planLinks('123', 'ps-x'), { spec: null, governed: null });
+  // a resource name that is not an IAM name must not reach a URL
+  assert.equal(planLinks(ACCOUNT, 'ps-a/b').spec, null);
+});
+
