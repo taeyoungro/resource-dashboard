@@ -26,9 +26,19 @@ import type { Choice, Offer } from "./ActionPicker";
  *   it does not build a policy document only decisions travel. A defect here must not be able to
  *                                      write Allow where somebody clicked Deny, so the container
  *                                      composes the statements and refuses anything impossible
- *   it does not hide an incomplete run  a truncated enumeration or a policy that could not be read
- *                                      is said out loud, because a number that reads as complete
- *                                      when it is not is worse than an obvious gap
+ *   it does not hide an incomplete run  a truncated enumeration is marked on its own group
+ *                                      ("이상 (잘림)") and an unreadable policy is listed with its
+ *                                      reason at the bottom, because a number that reads as
+ *                                      complete when it is not is worse than an obvious gap
+ *
+ * Two banners this panel USED to show were removed on the operator's direction: the coverage
+ * summary ("이 평가는 완전하지 않다") and the existing-admin-deny replacement warning. The second
+ * described the current inline writer, which replaces AdminDeny* statements wholesale; the planned
+ * terraform-managed inline structure preserves what is already written, and the warning would then
+ * assert a behavior the pipeline no longer has. Until that lands, the replacement behavior still
+ * exists - it is just no longer announced here. The per-group truncation mark and the bottom
+ * unreadable-policy block carry what the coverage banner carried, except failed service lookups,
+ * which now have no display.
  */
 
 interface Props {
@@ -194,36 +204,6 @@ export function Impact({
           </span>
         </div>
       </header>
-
-      {!assessment.coverage.complete && (
-        <div className="warn">
-          <strong>이 평가는 완전하지 않다.</strong>
-          <ul>
-            {assessment.coverage.services_failed.length > 0 && (
-              <li>조회 실패: {assessment.coverage.services_failed.join(", ")}</li>
-            )}
-            {assessment.coverage.truncated_groups.length > 0 && (
-              <li>
-                열거가 잘림 {assessment.coverage.truncated_groups.length}건 — 표시된 개수는 최소값이다
-                (Resource Explorer가 질의당 1,000건까지만 반환한다)
-              </li>
-            )}
-            {assessment.coverage.policies_unreadable.length > 0 && (
-              <li>
-                읽을 수 없는 정책:{" "}
-                {assessment.coverage.policies_unreadable.map(policyName).join(", ")}
-              </li>
-            )}
-          </ul>
-        </div>
-      )}
-
-      {assessment.current_admin_deny.length > 0 && (
-        <div className="warn">
-          이 권한 세트에는 이미 관리자 제한 {assessment.current_admin_deny.length}건이 있다.
-          <strong> 새 제한은 그것을 대체한다</strong> — 유지할 것은 다시 골라야 한다.
-        </div>
-      )}
 
       {restrictable.length === 0 && (
         <p className="muted">제한할 수 있는 정책이 없다. 기반 정책만 붙어 있다.</p>
