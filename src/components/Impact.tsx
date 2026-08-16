@@ -38,8 +38,10 @@ import type { Choice, Offer } from "./ActionPicker";
  * terraform-managed inline structure preserves what is already written, and the warning would then
  * assert a behavior the pipeline no longer has. Until that lands, the replacement behavior still
  * exists - it is just no longer announced here. The per-group truncation mark and the bottom
- * unreadable-policy block carry what the coverage banner carried, except failed service lookups,
- * which now have no display.
+ * unreadable-policy block carry what the coverage banner carried - and failed service lookups get
+ * one conditional line below the header, because a service whose enumeration THREW renders
+ * identically to a service with nothing reachable, and that is a difference an approver has to
+ * see. It is not the removed banner returning: it renders only when a lookup actually failed.
  */
 
 interface Props {
@@ -202,6 +204,13 @@ export function Impact({
           </span>
         </div>
       </header>
+
+      {(assessment.coverage.services_failed?.length ?? 0) > 0 && (
+        <p className="warn-inline">
+          자원 조회 실패: {assessment.coverage.services_failed.join(", ")} — 이 서비스들의 자원은
+          평가에 없다. 계정이 비어 있다는 뜻이 아니라 조회가 실패했다는 뜻이다.
+        </p>
+      )}
 
       {restrictable.length === 0 && (
         <p className="muted">제한할 수 있는 정책이 없다. 기반 정책만 붙어 있다.</p>
