@@ -95,6 +95,13 @@ export interface PlanOutcome {
   /** terraform's own summary line, or why it was not applied. */
   detail: string;
   finished_at: string | null;
+  /**
+   * The applied permission set's ARN, from the document's terraform outputs - the value every
+   * plan-time artifact writes as "(known after apply)", readable only once the applier has run.
+   * Null on non-permission-set plans, on denials, and on outcomes recorded before the applier
+   * captured outputs; the Governed link falls back to the Identity Center console home then.
+   */
+  permission_set_arn: string | null;
 }
 
 export interface PlanChange {
