@@ -63,6 +63,7 @@ export const CONSOLE_LIST_PAGES = {
   'states:stateMachine': '/states/home?region={region}#/statemachines',
   'events:rule': '/events/home?region={region}#/rules',
   'athena:workgroup': '/athena/home?region={region}#/workgroups',
+  'athena:datacatalog': '/athena/home?region={region}#/data-sources',
 };
 
 // Both go into the HOSTNAME, so both are validated as narrowly as the real values allow, not
@@ -101,10 +102,13 @@ export function consoleListUrl(accountId, region, resourceType) {
 // plans.
 //
 // IAM detail pages are stable deep links: /iam/home#/roles/details/<name> and
-// /iam/home#/policies/details/<url-encoded policy ARN>. The permission set is the exception - its
-// console page lives under an Identity Center instance id (ssoins-...) that nothing client-side
-// can know, so the Governed link for a ps-* plan opens the Identity Center console itself and the
-// permission set is one click further. A wrong deep link that 404s would cost the trust the right
+// /iam/home#/policies/details/<url-encoded policy ARN>. The permission set's page needs more: it
+// lives under an Identity Center instance id (ssoins-...) that nothing client-side can derive.
+// Both ids are in the permission set's ARN, which exists only after an apply - the plan writes
+// "(known after apply)" where it will be - so the applier reads it back from state and records it
+// in outcome.json, and the Governed link deep-links with it. An outcome without one (a plan
+// applied before the applier recorded outputs) falls back to the Identity Center console home,
+// one click short rather than a deep link that 404s - a wrong link would cost the trust the right
 // ones earn.
 
 // IAM names as this pipeline issues them - no paths, the documented IAM character set.
@@ -136,19 +140,44 @@ export function identityCenterUrl(accountId, region) {
   return `https://${accountId}.${where}.console.aws.amazon.com/singlesignon/home?region=${where}`;
 }
 
+// The permission set ARN as Identity Center issues it. Its two ids are exactly what the console
+// detail page is addressed by - #/instances/<instance id WITHOUT the ssoins- prefix>/
+// permission-sets/details/<ps-id> - verified by hand against a live session. Both segments are
+// written into the URL, so both are held to a narrow character set even though the ARN comes from
+// the applier's own record: this page renders data produced elsewhere.
+const PERMISSION_SET_ARN =
+  /^arn:aws:sso:::permissionSet\/ssoins-([A-Za-z0-9._-]+)\/(ps-[A-Za-z0-9._-]+)$/;
+
+/**
+ * The permission set's console detail page, from its ARN, or null. Null when the ARN does not
+ * parse - the caller falls back to identityCenterUrl, one click short of the permission set,
+ * rather than offering a deep link built from a value that is not what it claims to be.
+ */
+export function permissionSetUrl(accountId, permissionSetArn, region) {
+  if (!ACCOUNT.test(String(accountId))) return null;
+  const match = PERMISSION_SET_ARN.exec(String(permissionSetArn ?? ''));
+  if (!match) return null;
+  const where = REGION.test(String(region)) ? region : 'us-east-1';
+  return `https://${accountId}.${where}.console.aws.amazon.com/singlesignon/home`
+    + `?region=${where}#/instances/${match[1]}/permission-sets/details/${match[2]}`;
+}
+
 /**
  * Both links for one plan, or null where one cannot be built. The governed artifact's name is the
- * pipeline's own naming rule - mirror-<source> for roles and twins - and the permission set case
- * links the Identity Center console (see above).
+ * pipeline's own naming rule - mirror-<source> for roles and twins. The permission set case links
+ * its console detail page when the applier recorded the ARN in outcome.json, and the Identity
+ * Center console home without it (see above).
  */
-export function planLinks(accountId, resource, region = 'us-east-1') {
+export function planLinks(accountId, resource,
+                          { region = 'us-east-1', permissionSetArn = null } = {}) {
   const name = String(resource ?? '');
   if (!name || !ACCOUNT.test(String(accountId))) return { spec: null, governed: null };
 
   if (name.startsWith('ps-')) {
     return {
       spec: iamRoleUrl(accountId, name),
-      governed: identityCenterUrl(accountId, region),
+      governed: permissionSetUrl(accountId, permissionSetArn, region)
+        ?? identityCenterUrl(accountId, region),
     };
   }
   if (SERVICE_PREFIXES.some((prefix) => name.startsWith(prefix))) {

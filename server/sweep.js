@@ -349,6 +349,13 @@ function outcomeFor(outcome, requestId) {
     applied: outcome.applied === true,
     detail: typeof outcome.detail === 'string' ? outcome.detail : '',
     finished_at: outcome.finished_at ?? null,
+    // The one terraform output the page renders: the applied permission set's ARN, which the
+    // applier reads back from state - it exists only after the apply - and records under
+    // outcome.outputs. The Governed link deep-links the permission set's console page with it.
+    // Read narrowly: an outcome written before the applier captured outputs simply has none,
+    // and the link falls back to the Identity Center console home.
+    permission_set_arn: typeof outcome.outputs?.permission_set_arn === 'string'
+      ? outcome.outputs.permission_set_arn : null,
   };
 }
 

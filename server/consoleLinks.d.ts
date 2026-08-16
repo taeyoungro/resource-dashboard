@@ -16,9 +16,15 @@ export declare function iamPolicyUrl(accountId: string, policyName: string): str
 
 export declare function identityCenterUrl(accountId: string, region?: string): string | null;
 
+export declare function permissionSetUrl(
+  accountId: string,
+  permissionSetArn: string | null,
+  region?: string,
+): string | null;
+
 export declare function planLinks(
   accountId: string | null,
   resource: string | null,
-  region?: string,
+  options?: { region?: string; permissionSetArn?: string | null },
 ): { spec: string | null; governed: string | null };
 

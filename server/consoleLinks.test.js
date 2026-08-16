@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CONSOLE_LIST_PAGES, consoleListUrl, planLinks } from './consoleLinks.js';
+import { CONSOLE_LIST_PAGES, consoleListUrl, permissionSetUrl, planLinks } from './consoleLinks.js';
 
 const ACCOUNT = '718100330247';
 
@@ -17,6 +17,12 @@ test('the hand-verified example builds byte for byte', () => {
   assert.equal(
     consoleListUrl(ACCOUNT, 'us-east-1', 'ec2:instance'),
     'https://718100330247.us-east-1.console.aws.amazon.com/ec2/home?region=us-east-1#Instances:',
+  );
+  // Same verification story for the Athena data source list: AwsDataCatalog surfaced in a live
+  // assessment with no link, and this URL was checked by hand in that console session.
+  assert.equal(
+    consoleListUrl(ACCOUNT, 'us-east-1', 'athena:datacatalog'),
+    'https://718100330247.us-east-1.console.aws.amazon.com/athena/home?region=us-east-1#/data-sources',
   );
 });
 
@@ -84,8 +90,9 @@ test('every table entry produces a complete URL with nothing left unsubstituted'
 
 test('a plan gets its Spec and Governed links by resource prefix', () => {
   // ps-*: the spec is the IAM role the user edits; the governed artifact is a permission set,
-  // whose console page lives under an Identity Center instance id nothing client-side can know -
-  // so Governed opens the Identity Center console rather than a deep link that would 404.
+  // whose console page lives under an Identity Center instance id nothing client-side can derive.
+  // Without the ARN from the applier's outcome record, Governed opens the Identity Center console
+  // rather than a deep link that would 404.
   assert.deepEqual(planLinks(ACCOUNT, 'ps-Prod-Admin'), {
     spec: `https://${ACCOUNT}.us-east-1.console.aws.amazon.com/iam/home#/roles/details/ps-Prod-Admin`,
     governed: `https://${ACCOUNT}.us-east-1.console.aws.amazon.com/singlesignon/home?region=us-east-1`,
@@ -101,6 +108,55 @@ test('a plan gets its Spec and Governed links by resource prefix', () => {
     `/iam/home#/policies/details/${encodeURIComponent(`arn:aws:iam::${ACCOUNT}:policy/cmp-Reporting`)}`,
   ), policy.spec);
   assert.ok(policy.governed.includes(encodeURIComponent('policy/mirror-cmp-Reporting')), policy.governed);
+});
+
+// The ARN the applier recorded for a live permission set, and the console URL that was opened by
+// hand from it: the instance segment is the ssoins- id WITHOUT its prefix.
+const PS_ARN = 'arn:aws:sso:::permissionSet/ssoins-7223da1aa8587c47/ps-7223bc011e9f4d36';
+const PS_DETAIL_URL =
+  `https://${ACCOUNT}.us-east-1.console.aws.amazon.com/singlesignon/home?region=us-east-1`
+  + '#/instances/7223da1aa8587c47/permission-sets/details/ps-7223bc011e9f4d36';
+
+test('the hand-verified permission set detail page builds byte for byte from the ARN', () => {
+  assert.equal(permissionSetUrl(ACCOUNT, PS_ARN), PS_DETAIL_URL);
+  // And through planLinks, which is how the page asks: an applied ps-* plan whose outcome carries
+  // the ARN deep-links the permission set instead of the console home.
+  assert.equal(planLinks(ACCOUNT, 'ps-DataOps-Analyst', { permissionSetArn: PS_ARN }).governed,
+               PS_DETAIL_URL);
+});
+
+test('an ARN that does not parse falls back to the console home, never a guessed deep link', () => {
+  const home =
+    `https://${ACCOUNT}.us-east-1.console.aws.amazon.com/singlesignon/home?region=us-east-1`;
+  for (const bad of [
+    null,
+    '',
+    `arn:aws:iam::${ACCOUNT}:role/ps-x`, // a role ARN is not a permission set ARN
+    'arn:aws:sso:::permissionSet/ssoins-7223da1aa8587c47', // no ps segment
+    'arn:aws:sso:::permissionSet/ins-7223da1aa8587c47/ps-7223bc011e9f4d36', // not ssoins-
+    'arn:aws:sso:::permissionSet/ssoins-a/ps-b/extra', // trailing segment
+    'arn:aws:sso:::permissionSet/ssoins-a"quote/ps-b', // characters that do not belong in a URL
+  ]) {
+    assert.equal(permissionSetUrl(ACCOUNT, bad), null, String(bad));
+    assert.equal(planLinks(ACCOUNT, 'ps-x', { permissionSetArn: bad }).governed, home,
+                 String(bad));
+  }
+});
+
+test('the permission set ARN is validated with the same account and region rules as everything', () => {
+  assert.equal(permissionSetUrl('12345', PS_ARN), null);
+  // The region reaches the host and the query; a malformed one falls back to us-east-1.
+  assert.ok(permissionSetUrl(ACCOUNT, PS_ARN, 'ap-northeast-2').startsWith(
+    `https://${ACCOUNT}.ap-northeast-2.console.aws.amazon.com/singlesignon/home?region=ap-northeast-2#`,
+  ));
+  assert.equal(permissionSetUrl(ACCOUNT, PS_ARN, 'AP-NORTHEAST-2'), PS_DETAIL_URL);
+});
+
+test('a recorded ARN changes nothing outside the permission set namespace', () => {
+  // A mirror-role plan's Governed link is the mirror role, whatever the outcome carries - the
+  // ARN belongs to one domain and must not leak into the others.
+  assert.equal(planLinks(ACCOUNT, 'lambda-x', { permissionSetArn: PS_ARN }).governed,
+               `https://${ACCOUNT}.us-east-1.console.aws.amazon.com/iam/home#/roles/details/mirror-lambda-x`);
 });
 
 test('a plan outside the governed namespaces, or with bad inputs, gets no links', () => {

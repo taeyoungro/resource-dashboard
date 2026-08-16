@@ -292,6 +292,32 @@ test('a plan the applier finished with is not awaiting a decision', async () => 
   assert.equal(state.plans[0].outcome.applied, true);
 });
 
+test('the permission set ARN travels from the outcome to the plan, and only as a string', async () => {
+  // The applier reads the document's outputs back from state after the apply - the ARN exists
+  // only then - and records them under outcome.outputs. The page deep-links the permission set's
+  // console page with it, so it is exposed on the plan; everything else in outputs is not.
+  const arn = 'arn:aws:sso:::permissionSet/ssoins-7223da1aa8587c47/ps-7223bc011e9f4d36';
+  const plan = planFixture('644701781058', 'ps-DataOps-Analyst',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa7',
+                             outcome: { outputs: { permission_set_arn: arn,
+                                                   name_truncated: false } } });
+  const s3 = fakeS3({ [BUCKET]: plan.objects }, plan.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  assert.equal(state.plans[0].outcome.permission_set_arn, arn);
+
+  // An outcome recorded before the applier captured outputs, or with a shape that is not the
+  // ARN's, yields null - the Governed link falls back to the console home rather than rendering
+  // whatever was in the bucket.
+  for (const outputs of [undefined, {}, { permission_set_arn: 42 }, 'not-an-object']) {
+    const older = planFixture('644701781058', 'ps-DataOps-Analyst',
+                              { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa8',
+                                outcome: outputs === undefined ? {} : { outputs } });
+    const olderState = await sweep(fakeS3({ [BUCKET]: older.objects }, older.bodies),
+                                   CONFIG, { now: NOW });
+    assert.equal(olderState.plans[0].outcome.permission_set_arn, null, JSON.stringify(outputs));
+  }
+});
+
 test('a denial the applier closed is shown as closed, not as applied', async () => {
   const plan = planFixture('644701781058', 'cmp-WebHosting',
                            { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa3',

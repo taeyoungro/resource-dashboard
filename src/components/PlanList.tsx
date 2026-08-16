@@ -52,9 +52,13 @@ export function PlanList({ items, selectedId, onSelect }: Props) {
           {/* The two ends of the projection. Spec is the resource the user edited and exists for
               every plan; the governed artifact only exists once an apply has run, so its link only
               shows on applied plans - a link to a thing that is not there yet teaches people to
-              stop clicking. stopPropagation: the row's own click selects the plan. */}
+              stop clicking. The permission set ARN travels from the applier's outcome record: with
+              it the Governed link is the permission set's own detail page, without it the Identity
+              Center console home. stopPropagation: the row's own click selects the plan. */}
           {(() => {
-            const links = planLinks(it.account_id, it.resource);
+            const links = planLinks(it.account_id, it.resource, {
+              permissionSetArn: it.outcome?.permission_set_arn ?? null,
+            });
             if (!links.spec && !links.governed) return null;
             return (
               <div className="meta small plan-links" onClick={(e) => e.stopPropagation()}>
@@ -75,7 +79,7 @@ export function PlanList({ items, selectedId, onSelect }: Props) {
                     href={links.governed}
                     target="_blank"
                     rel="noopener noreferrer"
-                    title="거버넌스 산출물의 관리콘솔 페이지. 권한 세트는 Identity Center 콘솔에서 찾는다."
+                    title="거버넌스 산출물의 관리콘솔 페이지"
                   >
                     Governed ↗
                   </a>
