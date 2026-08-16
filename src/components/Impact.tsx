@@ -5,6 +5,7 @@ import type {
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
+import { localDate, localTime } from "../time";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
@@ -37,8 +38,10 @@ import type { Choice, Offer } from "./ActionPicker";
  * terraform-managed inline structure preserves what is already written, and the warning would then
  * assert a behavior the pipeline no longer has. Until that lands, the replacement behavior still
  * exists - it is just no longer announced here. The per-group truncation mark and the bottom
- * unreadable-policy block carry what the coverage banner carried, except failed service lookups,
- * which now have no display.
+ * unreadable-policy block carry what the coverage banner carried - and failed service lookups get
+ * one conditional line below the header, because a service whose enumeration THREW renders
+ * identically to a service with nothing reachable, and that is a difference an approver has to
+ * see. It is not the removed banner returning: it renders only when a lookup actually failed.
  */
 
 interface Props {
@@ -158,10 +161,7 @@ function policyName(identifier: string): string {
 function assessedAt(iso: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return `평가 시각: ${iso}`;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const date = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
-  const time = `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
-  return `평가 날짜: ${date}, 평가 시간: ${time}`;
+  return `평가 날짜: ${localDate(at)}, 평가 시간: ${localTime(at)}`;
 }
 
 const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {
@@ -204,6 +204,13 @@ export function Impact({
           </span>
         </div>
       </header>
+
+      {(assessment.coverage.services_failed?.length ?? 0) > 0 && (
+        <p className="warn-inline">
+          자원 조회 실패: {assessment.coverage.services_failed.join(", ")} — 이 서비스들의 자원은
+          평가에 없다. 계정이 비어 있다는 뜻이 아니라 조회가 실패했다는 뜻이다.
+        </p>
+      )}
 
       {restrictable.length === 0 && (
         <p className="muted">제한할 수 있는 정책이 없다. 기반 정책만 붙어 있다.</p>
@@ -640,7 +647,13 @@ function RestrictionEditor({
 
   return (
     <div className="editor">
-      <label>
+      {/* Two rows, one form: the label word, then the control beside it. The 동작 row used to be a
+          bordered fieldset carrying an enumeration of what there is to choose from and a sentence
+          for the empty state; both repeated what the dialog says where the choosing happens
+          (per-service groups, and which names must be typed by hand), so the page keeps one line
+          per row. What is CHOSEN still renders below, because it is part of the decision and has
+          to be readable without opening anything. */}
+      <label className="control-row">
         의도
         <select
           disabled={disabled}
@@ -665,107 +678,93 @@ function RestrictionEditor({
 
       {/* A button, not a list. The offering is in a dialog with its own search and scroll: this page
           is where a plan is read and approved, and one service with several hundred actions would
-          push the plan off the screen. What is chosen stays here, because it is part of the decision
-          and has to be readable without opening anything. */}
-      <fieldset>
-        <legend>동작</legend>
+          push the plan off the screen. */}
+      <label className="control-row">
+        동작
+        <button type="button" disabled={disabled} onClick={() => setPicking(true)}>
+          동작과 자원 고르기
+          {choices.length > 0 && ` (${choices.length}개)`}
+        </button>
+      </label>
 
-        <div className="pick-open">
-          <button type="button" disabled={disabled} onClick={() => setPicking(true)}>
-            동작과 자원 고르기
-            {choices.length > 0 && ` (${choices.length}개)`}
-          </button>
-          <span className="muted">
-            {covered.length > 0
-              && `${covered.map((c) => `${c.service} ${c.offers.length}개`).join(", ")} 중에서 고른다`}
-            {covered.length > 0 && uncovered.length > 0 && " · "}
-            {uncovered.length > 0 && `${uncovered.join(", ")}는 이름을 직접 적는다`}
-          </span>
-        </div>
+      {choices.length > 0 && (
+        <ul className="chosen-list">
+          {choices.map((choice) => (
+            <li key={choice.action}>
+              <code>{choice.action}</code>
+              <span className="muted">
+                {intent === "tag_condition"
+                  ? "태그 조건"
+                  : (choice.resources.length > 0
+                    ? `자원 ${choice.resources.length}개`
+                    : "자원 미지정")}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
 
-        {choices.length > 0 ? (
-          <ul className="chosen-list">
-            {choices.map((choice) => (
-              <li key={choice.action}>
-                <code>{choice.action}</code>
-                <span className="muted">
-                  {intent === "tag_condition"
-                    ? "태그 조건"
-                    : (choice.resources.length > 0
-                      ? `자원 ${choice.resources.length}개`
-                      : "자원 미지정")}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="muted none-chosen">
-            고른 동작이 없다 — 이 정책에는 제한이 걸리지 않는다.
+      {(() => {
+        // Estimated, and said so. The exact number depends on statements this write preserves, which
+        // only the container can see - but a restriction that is going to be refused for size should
+        // not get as far as an approval marker to find that out.
+        const bytes = estimateBytes(intent, choices, tagKey);
+        if (choices.length === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
+        return (
+          <p className={bytes > INLINE_LIMIT ? "error" : "warn-inline"}>
+            인라인 정책 예상 크기 약 {bytes.toLocaleString()}바이트
+            {bytes > INLINE_LIMIT
+              ? ` — 권한 세트 한도 ${INLINE_LIMIT.toLocaleString()}바이트를 넘는다. 이대로면 인라인
+                 작성기가 거부한다. 동작을 줄이거나 태그 조건을 쓰면 된다 — 태그 조건은 몇 개를 덮든
+                 문장 하나다.`
+              : ` (한도 ${INLINE_LIMIT.toLocaleString()}바이트)`}
           </p>
-        )}
+        );
+      })()}
 
-        {(() => {
-          // Estimated, and said so. The exact number depends on statements this write preserves, which
-          // only the container can see - but a restriction that is going to be refused for size should
-          // not get as far as an approval marker to find that out.
-          const bytes = estimateBytes(intent, choices, tagKey);
-          if (choices.length === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
-          return (
-            <p className={bytes > INLINE_LIMIT ? "error" : "warn-inline"}>
-              인라인 정책 예상 크기 약 {bytes.toLocaleString()}바이트
-              {bytes > INLINE_LIMIT
-                ? ` — 권한 세트 한도 ${INLINE_LIMIT.toLocaleString()}바이트를 넘는다. 이대로면 인라인
-                   작성기가 거부한다. 동작을 줄이거나 태그 조건을 쓰면 된다 — 태그 조건은 몇 개를 덮든
-                   문장 하나다.`
-                : ` (한도 ${INLINE_LIMIT.toLocaleString()}바이트)`}
-            </p>
-          );
-        })()}
+      {/* Not refused here. For an action that reaches nothing - a List action, or one whose resource
+          type is absent from the account - having no resources is the only correct state, and it is
+          the container that knows which of those is a legitimate flat deny. */}
+      {intent !== "tag_condition" && choices.some((c) => c.resources.length === 0) && (
+        <p className="warn-inline">
+          자원을 지정하지 않은 동작이 있다. 자원을 지목하지 않는 계정 단위 동작이면 그대로 두면 되고
+          (동작 자체가 거부된다), 그렇지 않으면 서버가 이유를 말하며 거부한다.
+        </p>
+      )}
 
-        {/* Not refused here. For an action that reaches nothing - a List action, or one whose resource
-            type is absent from the account - having no resources is the only correct state, and it is
-            the container that knows which of those is a legitimate flat deny. */}
-        {intent !== "tag_condition" && choices.some((c) => c.resources.length === 0) && (
-          <p className="warn-inline">
-            자원을 지정하지 않은 동작이 있다. 자원을 지목하지 않는 계정 단위 동작이면 그대로 두면 되고
-            (동작 자체가 거부된다), 그렇지 않으면 서버가 이유를 말하며 거부한다.
-          </p>
-        )}
+      {referenceError && (
+        <p className="warn-inline">
+          평가가 동작 목록을 싣지 못했다 ({referenceError}). 목록 대신 이름을 직접 적으면 된다 —
+          서버와 인라인 작성기가 어차피 검사한다.
+        </p>
+      )}
 
-        {referenceError && (
-          <p className="warn-inline">
-            평가가 동작 목록을 싣지 못했다 ({referenceError}). 목록 대신 이름을 직접 적으면 된다 —
-            서버와 인라인 작성기가 어차피 검사한다.
-          </p>
-        )}
+      {omitted.length > 0 && (
+        <p className="warn-inline">
+          {omitted.join(", ")}의 동작 목록은 크기 제한을 넘어 평가에 실리지 않았다. 이름을 직접
+          적으면 된다.
+        </p>
+      )}
 
-        {omitted.length > 0 && (
-          <p className="warn-inline">
-            {omitted.join(", ")}의 동작 목록은 크기 제한을 넘어 평가에 실리지 않았다. 이름을 직접
-            적으면 된다.
-          </p>
-        )}
-
-        {picking && (
-          <ActionPicker
-            policy={policy}
-            intent={intent}
-            chosen={choices}
-            named={offerable}
-            covered={covered}
-            uncovered={uncovered}
-            referenceError={referenceError}
-            protectedActions={protectedActions}
-            affected={affected}
-            primary={primary}
-            onCommit={(next) => {
-              emit(intent, next);
-              setPicking(false);
-            }}
-            onCancel={() => setPicking(false)}
-          />
-        )}
-      </fieldset>
+      {picking && (
+        <ActionPicker
+          policy={policy}
+          intent={intent}
+          chosen={choices}
+          named={offerable}
+          covered={covered}
+          uncovered={uncovered}
+          referenceError={referenceError}
+          protectedActions={protectedActions}
+          affected={affected}
+          primary={primary}
+          onCommit={(next) => {
+            emit(intent, next);
+            setPicking(false);
+          }}
+          onCancel={() => setPicking(false)}
+        />
+      )}
 
       {intent === "tag_condition" && (
         <fieldset>

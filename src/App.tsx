@@ -3,6 +3,7 @@ import { api, apiKey } from "./api";
 import { MarkerPage } from "./components/MarkerPage";
 import { PlanPage } from "./components/PlanPage";
 import type { SweepState } from "./types";
+import { clock } from "./time";
 
 // The marker list splits by the server's own classification: a marker younger than the grace
 // period (OPT_MARKER_GRACE_SECONDS, default 15 minutes) is presumed running, an older one is
@@ -95,7 +96,7 @@ export default function App() {
       {state ? (
         <div className="sweep-bar">
           <span>
-            마지막 조회 {new Date(state.swept_at).toLocaleString()}
+            마지막 조회 {clock(state.swept_at)}
             {state.stale ? " — 실패했습니다. 아래는 그 이전 상태입니다." : ""}
           </span>
           {counts ? (

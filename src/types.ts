@@ -389,6 +389,16 @@ export interface ImpactResource {
 
 export interface ImpactCoverage {
   services_failed: string[];
+  /**
+   * Every enumeration the assessment performed, by service, whatever came of it. "searched and
+   * kept nothing" and "excluded before the search" render identically as an absent group, and
+   * this is what tells them apart from the stored document. Absent on assessments written before
+   * the querier recorded it.
+   */
+  services_enumerated?: Record<
+    string,
+    { seen: number; kept: number; truncated: boolean; error: string | null }
+  >;
   truncated_groups: string[];
   policies_unreadable: string[];
   /** Actions the reference did not know. Their groups fall back to service level attribution. */
