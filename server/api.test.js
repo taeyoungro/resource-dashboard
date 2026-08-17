@@ -175,7 +175,11 @@ function stubS3(objects) {
   return s3;
 }
 
-function harness({ pushed = null } = {}) {
+function harness({ pushed = null, riskAnalysis = false, assessment = null,
+                   makeModelClient = async () => { throw new Error('not configured'); },
+                 } = {}) {
+  const document = assessment ? JSON.stringify(assessment) : ASSESSMENT_JSON;
+  const sha = createHash('sha256').update(document).digest('hex');
   const s3 = stubS3({
     [`${PREFIX}plan.txt`]: 'Terraform will perform the following actions:',
     [`${PREFIX}main.tf.json`]: JSON.stringify({ resource: {} }),
@@ -186,14 +190,24 @@ function harness({ pushed = null } = {}) {
     [`${PREFIX}changes.sha256`]: CHANGES,
     [`${PREFIX}tfplan`]: 'binary-plan-bytes',
     [`${PREFIX}plan.json`]: JSON.stringify({ resource_changes: [{ change: { actions: ['update'] } }] }),
-    [`${PREFIX}impact.json`]: ASSESSMENT_JSON,
-    [`${PREFIX}impact.sha256`]: ASSESSMENT_SHA,
+    [`${PREFIX}impact.json`]: document,
+    [`${PREFIX}impact.sha256`]: sha,
   });
   const route = routes({
     config: {
       markerBucket: 'opt-solution-markers', stateBucket: 'state',
       applierPrefix: 'applier/', planSuffix: 'plan/', release: 'test',
+      region: 'us-east-1',
+      // What this deployment's own resources are called, for the risk analysis. Defaults here
+      // rather than undefined so controlPlane() is exercised the way it runs.
+      approvalTable: 'opt-approval-store', lockTable: 'opt-tf-state-lock',
+      inlineStateBucket: 'opt-inlinepolicy-terraform', eventQueue: 'opt-iam-event-queue',
+      cluster: 'opt-solution-cluster', solutionPrefix: 'opt-', mirrorPrefix: 'mirror-',
+      specPolicyPrefix: 'cmp-', controlPlaneArns: [],
+      riskAnalysis, bedrockModelId: 'us.anthropic.claude-sonnet-5',
+      riskAnalysisMaxTokens: 16000, riskAnalysisBatch: 10,
     },
+    makeModelClient,
     s3,
     store: {
       state: () => ({ plans: [], markers: [], counts: {}, errors: [] }),
@@ -206,7 +220,7 @@ function harness({ pushed = null } = {}) {
     actions: { all: () => ({ schema: 1, services: {}, error: null }) },
     log: { info: () => {}, warn: () => {}, error: () => {} },
   });
-  return { route, s3 };
+  return { route, s3, impactSha256: sha };
 }
 
 const PUSHED = { impact: ASSESSMENT, impact_sha256: ASSESSMENT_SHA, body_omitted: false };
@@ -407,4 +421,257 @@ test('an action with resource types is unaffected by the account-level checks', 
     }),
   });
   assert.ok(s3.puts.some((p) => p.key.startsWith('applier/')));
+});
+
+// ---- the risk analysis route ------------------------------------------------------------------
+//
+// The route is one call with two halves. The rules are deterministic and always run; the model is
+// asked only when a deployment turned it on. What is tested here is that the halves do not depend
+// on each other - a deployment with no Bedrock still gets rule findings, and a model that fails
+// does not take them down with it.
+
+/** An assessment holding one policy that produces a candidate path and fires a rule. */
+const ANALYSABLE = {
+  ...ASSESSMENT,
+  policies: [{
+    identifier: 'arn:aws:iam::aws:policy/AWSLambda_FullAccess',
+    source: 'aws_managed',
+    default_version_id: 'v7',
+    is_baseline: false,
+    restrictable: true,
+    unreadable: null,
+    actions_granted: ['lambda:UpdateFunctionCode', 'lambda:InvokeFunction'],
+    actions_offerable: ['lambda:UpdateFunctionCode', 'lambda:InvokeFunction'],
+    actions_non_restrictable: [],
+    affected: [{
+      service: 'lambda',
+      resource_type: 'lambda:function',
+      actions: ['lambda:UpdateFunctionCode', 'lambda:InvokeFunction'],
+      scope: '*',
+      total: 2,
+      truncated: false,
+      sensitive_hits: 0,
+      attribution: 'resource_type',
+      resources: [
+        { arn: `arn:aws:lambda:us-east-1:${ACCOUNT}:function:report-writer`, region: 'us-east-1',
+          tags: {}, sensitive: false },
+        { arn: `arn:aws:lambda:us-east-1:${ACCOUNT}:function:order-sync`, region: 'us-east-1',
+          tags: {}, sensitive: false },
+      ],
+    }],
+  }],
+  action_reference: {
+    reference_version: 'a'.repeat(64),
+    retrieved_at: '2026-08-11T00:00:00Z',
+    services: {
+      lambda: { UpdateFunctionCode: ['Write', ['function']], InvokeFunction: ['Write', ['function']] },
+    },
+  },
+};
+
+/** A model that answers every candidate it is given, citing the actions it was given. */
+function modelStub(over = {}) {
+  const calls = [];
+  return {
+    calls,
+    make: async () => ({
+      messages: {
+        async create(body) {
+          calls.push(body);
+          // Parsed out of the block rather than scraped with a regular expression. A first
+          // attempt scraped every lambda:* token and picked up 'lambda:function', the resource
+          // TYPE - which the validator correctly called a fabricated action and discarded the whole
+          // run for. The stub has to cite what a candidate offers, exactly as the frame requires.
+          const text = body.messages[0].content[1].text;
+          const block = text.slice(text.indexOf('<candidates>') + 12, text.indexOf('</candidates>'));
+          const batch = JSON.parse(block);
+          const ids = batch.map((c) => c.id);
+          const cited = [...new Set(batch.flatMap(
+            (c) => [...c.steps, ...c.also_granted].flatMap((s) => s.actions)))];
+          return {
+            content: [{ type: 'text', text: JSON.stringify({
+              verdicts: ids.map((id) => ({
+                candidate_id: id, real: true, human_error: true, mechanism: 'existing_resource',
+                preconditions: [], final_impact: '함수에 부착된 역할로 코드가 실행된다.',
+                evidence_sufficient: true, cited_actions: cited, category: 'ESCALATION',
+                proposed_grade: 'HIGH', title: '실행 코드 교체', 
+                narrative: '코드를 교체한 뒤 호출하면 부착된 역할로 실행된다.',
+                ...over,
+              })),
+            }) }],
+            usage: { input_tokens: 500, output_tokens: 200, cache_read_input_tokens: 4000,
+                     cache_creation_input_tokens: 0 },
+          };
+        },
+      },
+    }),
+  };
+}
+
+test('the rules run with no model, and the route says the model was not asked', async () => {
+  // The half an approver can rely on without trusting a model at all. A deployment that never
+  // enables Bedrock still gets the twelve rules fired against the assessment.
+  const { route } = harness({ assessment: ANALYSABLE });
+  const answer = await route['POST /api/plans/:id/analysis']({ params: { id: PLAN_ID }, body: {} });
+  assert.ok(answer.rule_findings.length > 0, 'no rule fired on a grant that rewrites function code');
+  assert.ok(answer.rule_findings.some((f) => f.id === 'E-3'));
+  assert.equal(answer.analysis, null);
+  assert.match(answer.analysis_error, /OPT_RISK_ANALYSIS is not on/);
+  assert.ok(answer.digest_bytes > 0);
+  assert.ok(answer.candidates > 0);
+  assert.equal(answer.rules_sha256.length, 64);
+});
+
+test('with the analysis on, the model judges the candidates the code proposed', async () => {
+  const model = modelStub();
+  const { route, impactSha256 } = harness({
+    assessment: ANALYSABLE, riskAnalysis: true, makeModelClient: model.make,
+  });
+  const answer = await route['POST /api/plans/:id/analysis']({ params: { id: PLAN_ID }, body: {} });
+  assert.equal(model.calls.length, 1);
+  assert.ok(answer.analysis.findings.length > 0);
+  assert.equal(answer.analysis.impact_sha256, impactSha256);
+  assert.equal(answer.analysis.findings_sha256.length, 64);
+  assert.equal(answer.analysis.usage.cacheRead, 4000);
+  assert.equal(answer.analysis_error, null);
+  // The rules ran too, and the two lists are kept apart - one is a rule firing, the other is a
+  // model's judgement of a proposed path, and an approver reads them differently.
+  assert.ok(answer.rule_findings.length > 0);
+  assert.ok(answer.analysis.findings.every((f) => f.source === 'model'));
+});
+
+test('a model that fails leaves the rule findings standing', async () => {
+  // An analysis outage is not an approval outage - the same rule the assessment itself follows.
+  const { route } = harness({
+    assessment: ANALYSABLE, riskAnalysis: true,
+    makeModelClient: async () => { throw new Error('AccessDeniedException'); },
+  });
+  const answer = await route['POST /api/plans/:id/analysis']({ params: { id: PLAN_ID }, body: {} });
+  assert.ok(answer.rule_findings.length > 0);
+  assert.equal(answer.analysis, null);
+  assert.match(answer.analysis_error, /AccessDenied/);
+});
+
+test('there is nothing to analyse without a stored assessment, and it says so', async () => {
+  const s3 = stubS3({
+    [`${PREFIX}plan.txt`]: 'Terraform will perform the following actions:',
+    [`${PREFIX}request.json`]: JSON.stringify({
+      request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice', kind: 'ps_role',
+      has_changes: true,
+    }),
+    [`${PREFIX}changes.sha256`]: CHANGES,
+    [`${PREFIX}tfplan`]: 'binary-plan-bytes',
+  });
+  const route = routes({
+    config: {
+      markerBucket: 'opt-solution-markers', stateBucket: 'state', applierPrefix: 'applier/',
+      planSuffix: 'plan/', release: 'test', region: 'us-east-1', controlPlaneArns: [],
+      riskAnalysis: false,
+    },
+    s3,
+    store: { state: () => ({}), refresh: async () => ({}) },
+    notifications: { recent: () => [], enabled: true },
+    markerBodies: { put: () => {}, get: () => null },
+    impacts: { get: () => null },
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+  });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/analysis']({ params: { id: PLAN_ID }, body: {} }),
+    /no stored impact assessment/,
+  );
+});
+
+test('an assessment describing another inspection is refused rather than analysed', async () => {
+  // The same drift check the restriction path makes. A prefix is overwritten in place by every
+  // inspection, so a stale assessment beside a fresh plan is a true-looking description of
+  // something that no longer exists.
+  const { route } = harness({
+    assessment: { ...ANALYSABLE, request_id: `${ACCOUNT}-0000000000000000` },
+  });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/analysis']({ params: { id: PLAN_ID }, body: {} }),
+    /reload the plan/,
+  );
+});
+
+// ---- citing the analysis on the marker --------------------------------------------------------
+
+const citation = (over = {}) => ({
+  findings_sha256: 'f'.repeat(64),
+  model_id: 'us.anthropic.claude-sonnet-5',
+  prompt_version: 'v1-abcdef123456',
+  ...over,
+});
+
+test('an approval cites the analysis it was taken against', async () => {
+  const { route, s3, impactSha256 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      expected_impact_sha256: impactSha256,
+      risk_analysis: citation({ impact_sha256: impactSha256 }),
+    }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.deepEqual(marker.risk_analysis, {
+    findings_sha256: 'f'.repeat(64),
+    model_id: 'us.anthropic.claude-sonnet-5',
+    prompt_version: 'v1-abcdef123456',
+    impact_sha256: impactSha256,
+  });
+  // Cited, not copied. The findings are advisory text and the applier has no use for them.
+  assert.equal(marker.risk_analysis.findings, undefined);
+});
+
+test('a citation naming another assessment is refused', async () => {
+  // The screen and the bucket had drifted apart, which is what every digest check here is for.
+  const { route, impactSha256 } = harness({ pushed: PUSHED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        expected_impact_sha256: impactSha256,
+        risk_analysis: citation({ impact_sha256: 'b'.repeat(64) }),
+      }),
+    }),
+    /does not match the stored assessment/,
+  );
+});
+
+test('a citation without a verified assessment digest is refused', async () => {
+  const { route, impactSha256 } = harness({ pushed: PUSHED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({ risk_analysis: citation({ impact_sha256: impactSha256 }) }),
+    }),
+    /without a verified assessment digest/,
+  );
+});
+
+test('a malformed citation is refused rather than recorded', async () => {
+  const { route, impactSha256 } = harness({ pushed: PUSHED });
+  for (const bad of [{ findings_sha256: 'short' }, { model_id: '' }, { prompt_version: '' }]) {
+    await assert.rejects(
+      () => route['POST /api/plans/:id/decision']({
+        params: { id: PLAN_ID },
+        body: decision({
+          expected_impact_sha256: impactSha256,
+          risk_analysis: citation({ impact_sha256: impactSha256, ...bad }),
+        }),
+      }),
+      /risk_analysis/,
+      JSON.stringify(bad),
+    );
+  }
+});
+
+test('an approval with no analysis carries no citation', async () => {
+  const { route, s3, impactSha256 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({ expected_impact_sha256: impactSha256 }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal('risk_analysis' in marker, false);
 });

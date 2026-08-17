@@ -16,6 +16,12 @@ import { NotificationError, parse as parseNotification } from './notifications.j
 import { putJson } from './s3.js';
 import { ImpactError, parse as parseImpact } from './impacts.js';
 import { planPrefixFromId, readImpact, readPlan } from './sweep.js';
+import { controlPlane } from './controlPlane.js';
+import { condense, digestBytes } from './riskDigest.js';
+import { candidates as proposeCandidates } from './candidatePaths.js';
+import { findings as ruleFindings, sections, summary } from './findings.js';
+import { RULES_SHA256, RULE_ACTIONS } from './rules.js';
+import { AnalysisError, PROMPT_VERSION, analyse, bedrockClient } from './riskAnalysis.js';
 
 // A plan is identified by the governed resource it belongs to, not by the request that produced
 // it: <12 digit account>:<resource>. One resource has one state and one plan, and a second edit
@@ -112,7 +118,44 @@ function planId(raw) {
   return value;
 }
 
-function decisionMarker({ config, plan, prefix, payload, now, restrictions = [], impactDigest = '' }) {
+/**
+ * The analysis the approver read, as a citation on the marker.
+ *
+ * Four values and no content. The findings themselves are not carried: they are advisory text and
+ * the applier has no use for them, whereas "this decision was taken while looking at analysis
+ * <findings_sha256> of assessment <impact_sha256>, produced by <model> under prompt <version>" is
+ * the sentence that makes the record answerable later. impact_sha256 is checked against the stored
+ * digest before it gets here, so the citation cannot name an assessment nobody assessed.
+ */
+function analysisCitation(claim, impactDigest) {
+  if (!claim || typeof claim !== 'object') return null;
+  const findings = String(claim.findings_sha256 ?? '').trim();
+  const model = String(claim.model_id ?? '').trim();
+  const prompt = String(claim.prompt_version ?? '').trim();
+  const impact = String(claim.impact_sha256 ?? '').trim();
+  if (!/^[0-9a-f]{64}$/.test(findings)) {
+    throw new HttpError(400, 'risk_analysis.findings_sha256 must be a sha256 hex digest');
+  }
+  if (!model || model.length > 128) throw new HttpError(400, 'risk_analysis.model_id is required');
+  if (!prompt || prompt.length > 64) {
+    throw new HttpError(400, 'risk_analysis.prompt_version is required');
+  }
+  if (!impactDigest) {
+    throw new HttpError(400, 'risk_analysis cannot be recorded without a verified assessment digest');
+  }
+  if (impact !== impactDigest) {
+    // The page is claiming an analysis of a different assessment from the one this decision is
+    // being taken against. Refused rather than dropped: it means the screen and the bucket had
+    // drifted apart, which is the one thing every digest check here exists to catch.
+    throw new HttpError(409,
+      'risk_analysis.impact_sha256 does not match the stored assessment; reload the plan');
+  }
+  return { findings_sha256: findings, model_id: model, prompt_version: prompt,
+           impact_sha256: impact };
+}
+
+function decisionMarker({ config, plan, prefix, payload, now, restrictions = [], impactDigest = '',
+                         analysis = null }) {
   return {
     // What the applier is being asked to do, and to what.
     request_id: plan.request_id,
@@ -170,6 +213,11 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
     ...(restrictions.length > 0 ? { restrictions } : {}),
     ...(impactDigest ? { expected_impact_sha256: impactDigest } : {}),
 
+    // What the approver was looking at, if an analysis was run. Advisory, and cited rather than
+    // copied - the applier does nothing with it, and a record that cannot be traced to the analysis
+    // it was taken against is the thing worth avoiding.
+    ...(analysis ? { risk_analysis: analysis } : {}),
+
     // What produced this record, so a marker that turns up unexplained can be traced to a build.
     issued_by: {
       component: 'opt-SolutionDashboard',
@@ -179,11 +227,21 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
   };
 }
 
-export function routes({ config, s3, store, notifications, markerBodies, impacts, log }) {
+export function routes({ config, s3, store, notifications, markerBodies, impacts, log,
+                         makeModelClient = bedrockClient }) {
   // Announcements ask for a sweep, because learning that work started is most of what they are
   // for. Rate limited: a burst of dispatches is a normal thing (one administrator attaching five
   // policies) and would otherwise be a burst of full bucket listings.
   let lastNotificationSweep = 0;
+
+  // Built on first use and kept. Built lazily because the package it needs is only there for a
+  // deployment that enabled the analysis, and injectable because the tests must be able to exercise
+  // this route without Bedrock.
+  let client = null;
+  async function modelClient() {
+    if (!client) client = await makeModelClient({ region: config.region });
+    return client;
+  }
 
   return {
     // No authentication: a health check that needs a secret is a health check that reports the
@@ -340,6 +398,91 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
 
       // The digest the page has to send back with a restriction. Not computed here - see readImpact.
       return { ...plan, assessment, assessment_source: source, assessment_sha256: digest };
+    },
+
+    /**
+     * The risk analysis: the rules always, the model when it is switched on.
+     *
+     * POST rather than GET, and that is not a REST quibble. Running this costs money and takes
+     * seconds, so it happens when somebody asks for it - never as a side effect of opening a plan.
+     *
+     * The rule findings come back either way. They are deterministic, they cost nothing, and a
+     * deployment that never enables Bedrock still gets the twelve rules fired against the
+     * assessment - which is the half an approver can rely on without trusting a model at all.
+     */
+    'POST /api/plans/:id/analysis': async ({ params, body }) => {
+      const id = planId(params.id);
+      const plan = await readPlan(s3, config, id);
+      if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
+
+      // The stored object, never the pushed body. The analysis is cited on an approval marker, and
+      // a citation has to name bytes that exist in the bucket with a digest beside them.
+      const stored = await readImpact(s3, config, id);
+      if (!stored?.document) {
+        throw new HttpError(409, `${id} has no stored impact assessment, so there is nothing to `
+          + 'analyse. Wait for the assessment or reload.');
+      }
+      if (plan.request_id && stored.document.request_id !== plan.request_id) {
+        throw new HttpError(409, `the stored assessment describes ${stored.document.request_id} and `
+          + `this plan is ${plan.request_id}; reload the plan`);
+      }
+
+      const digest = condense(stored.document, {
+        controlPlane: controlPlane(config),
+        ruleActions: RULE_ACTIONS,
+        rulesSha256: RULES_SHA256,
+        impactSha256: stored.digest ?? null,
+      });
+      const rules = ruleFindings(digest);
+      const candidates = proposeCandidates(digest);
+
+      const answer = {
+        plan_id: id,
+        request_id: stored.document.request_id,
+        impact_sha256: stored.digest ?? null,
+        rules_sha256: RULES_SHA256,
+        prompt_version: PROMPT_VERSION,
+        digest_bytes: digestBytes(digest),
+        dropped: digest.budget?.dropped ?? [],
+        rule_findings: rules,
+        rule_sections: sections(rules),
+        rule_summary: summary(rules),
+        candidates: candidates.length,
+        analysis: null,
+        analysis_error: null,
+      };
+
+      if (!config.riskAnalysis) {
+        // Not an error. The rules ran, and the page says which half it is showing rather than
+        // implying the model agreed with them.
+        answer.analysis_error = 'OPT_RISK_ANALYSIS is not on, so no model was asked';
+        return answer;
+      }
+
+      try {
+        const client = await modelClient();
+        answer.analysis = await analyse({
+          digest, client, candidates,
+          model: config.bedrockModelId,
+          maxTokens: config.riskAnalysisMaxTokens,
+          batchSize: config.riskAnalysisBatch,
+        });
+        const a = answer.analysis;
+        log.info(
+          'analysis plan=%s candidates=%d answered=%d findings=%d rejected=%d dropped=%d failed=%d '
+          + 'digest=%dB in=%d out=%d cached=%d',
+          id, a.candidates, a.answered ?? 0, a.findings.length, a.rejected.length, a.dropped.length,
+          a.failures.length, answer.digest_bytes, a.usage.input, a.usage.output, a.usage.cacheRead,
+        );
+      } catch (error) {
+        // The rules still stand. An analysis outage is not an approval outage - the same rule the
+        // assessment itself follows.
+        answer.analysis_error = error instanceof AnalysisError || error instanceof HttpError
+          ? error.message
+          : `the model call failed: ${error.message ?? String(error)}`;
+        log.warn('analysis plan=%s failed: %s', id, answer.analysis_error);
+      }
+      return answer;
     },
 
     'POST /api/plans/:id/decision': async ({ params, body }) => {
@@ -610,6 +753,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         config, plan, prefix: planPrefixFromId(id),
         payload: { ...body, reviewer, comment }, now: Date.now(),
         restrictions, impactDigest,
+        analysis: body.risk_analysis ? analysisCitation(body.risk_analysis, impactDigest) : null,
       });
       const key = `${config.applierPrefix}${requestId}.json`;
       const bytes = await putJson(s3, config.markerBucket, key, marker);

@@ -277,8 +277,13 @@ export function candidates(digest) {
           policy: grant.name,
           policy_id: grant.p,
           // Same unit: this is the co-location the outcome depends on.
+          //
+          // truncated travels with the target so a finding built from this candidate can carry it
+          // as a field and not only as a reservation (T-6). Unknown stays null - writing false
+          // here would let a finding be shown as complete when nothing established that.
           target: { type: unit.t, count: unit.n, scope: unit.scope, sample: unit.sample,
-                    sample_complete: unit.sample_complete },
+                    sample_complete: unit.sample_complete,
+                    truncated: typeof unit.truncated === 'boolean' ? unit.truncated : null },
           // The pipeline's own resources in the blast radius, by configuration - never by name.
           control_plane: unit.cp ?? [],
           steps,
