@@ -322,7 +322,23 @@ export interface Impact {
    * which is how it worked for an uncovered service all along.
    */
   action_reference?: ImpactActionReference;
+  /**
+   * Which restrictable policies grant iam:PassRole and to which services, read from the granting
+   * statements themselves. The inline writer composes the PassRole fence from this; the page uses
+   * it to say WHY a policy is getting a fence, and to count the fence's bytes against the inline
+   * quota. Absent on assessments written before the querier recorded it.
+   */
+  passrole_grants?: ImpactPassRoleGrant[];
   coverage: ImpactCoverage;
+}
+
+export interface ImpactPassRoleGrant {
+  identifier: string;
+  source: ImpactPolicy["source"];
+  /** iam:PassedToService values of the granting statement - one fence statement per service. */
+  services: string[];
+  /** True when the grant carries no iam:PassedToService at all. The writer refuses those by name. */
+  unconditioned: boolean;
 }
 
 export interface ImpactActionReference {
