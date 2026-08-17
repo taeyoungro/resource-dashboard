@@ -99,17 +99,26 @@ export function controlPlane(config) {
     // An operator's explicit declaration wins: it is the most direct statement of fact available,
     // and it is the only way an EC2 instance can be known at all.
     const stated = declared.get(text);
-    if (stated) return stated;
+    if (stated) return { role: stated, basis: 'declared' };
 
     const parsed = parseArn(text);
     if (!parsed) return null;
 
     const names = byService.get(parsed.service);
     const exact = names && parsed.name ? names.get(parsed.name) : undefined;
-    if (exact) return exact;
+    if (exact) return { role: exact, basis: 'configured' };
 
     for (const { on, prefix, role } of prefixes) {
-      if (parsed.service === on && parsed.name && parsed.name.startsWith(prefix)) return role;
+      if (parsed.service === on && parsed.name && parsed.name.startsWith(prefix)) {
+        // Deliberately a weaker basis than the two above, and the difference is load-bearing.
+        //
+        // A configured value is this deployment saying "the lock table is called this". A prefix is
+        // this deployment saying "I issue names beginning with this" - which is still a match
+        // against a NAME, and T-4 forbids a name moving a grade. So the hit is reported, with its
+        // basis, and findings.js grades on 'declared' and 'configured' only. A reader gets the
+        // label; the number does not move.
+        return { role, basis: 'prefix' };
+      }
     }
     return null;
   }

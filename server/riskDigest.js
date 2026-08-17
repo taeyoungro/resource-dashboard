@@ -150,8 +150,11 @@ function sampleOf(resources, controlPlane) {
   const arns = resources.map((r) => r.arn).filter(Boolean);
   const hits = [];
   for (const arn of arns) {
-    const role = controlPlane.classify(arn);
-    if (role) hits.push({ arn, role });
+    const hit = controlPlane.classify(arn);
+    // basis travels with the hit. A prefix match is a match against a name and may not move a
+    // grade (T-4); findings.js grades on 'configured' and 'declared' only, and it can only make
+    // that distinction if the digest carried it.
+    if (hit) hits.push({ arn, role: hit.role, basis: hit.basis });
   }
   if (arns.length <= SAMPLE_CAP) {
     return { sample: arns, sample_complete: true, cp: hits };

@@ -33,8 +33,19 @@ export interface ControlPlaneConfig {
   controlPlaneArns: string[];
 }
 
+/**
+ * How the match was made. Only 'declared' and 'configured' may move a grade - a 'prefix' hit is a
+ * statement about a name, and T-4 forbids a name moving a grade. See controlPlane.js.
+ */
+export type ControlPlaneBasis = 'declared' | 'configured' | 'prefix';
+
+export interface ControlPlaneHit {
+  role: ControlPlaneRole;
+  basis: ControlPlaneBasis;
+}
+
 export interface ControlPlane {
-  classify(arn: string | null | undefined): ControlPlaneRole | null;
+  classify(arn: string | null | undefined): ControlPlaneHit | null;
   /** How many EC2 instances an operator declared. Zero means instance takeover cannot be ranked. */
   declaredInstances(): number;
   declaredCount: number;

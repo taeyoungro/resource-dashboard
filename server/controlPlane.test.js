@@ -38,14 +38,22 @@ const arn = {
   instance: `arn:aws:ec2:us-east-1:${ACCOUNT}:instance/i-0e439b855ef55dea0`,
 };
 
+/** The label alone, for the assertions that are about which resource was recognised. */
+function role(cp, value) {
+  return cp.classify(value)?.role ?? null;
+}
+
 test('the resources this deployment is configured with are recognised, by kind', () => {
   const cp = controlPlane(CONFIG);
-  assert.equal(cp.classify(arn.approval), ROLES.APPROVAL_STORE);
-  assert.equal(cp.classify(arn.lock), ROLES.STATE_LOCK);
-  assert.equal(cp.classify(arn.state), ROLES.TERRAFORM_STATE);
-  assert.equal(cp.classify(arn.inline), ROLES.INLINE_STATE);
-  assert.equal(cp.classify(arn.queue), ROLES.EVENT_QUEUE);
-  assert.equal(cp.classify(arn.cluster), ROLES.TASK_CLUSTER);
+  assert.equal(role(cp, arn.approval), ROLES.APPROVAL_STORE);
+  assert.equal(role(cp, arn.lock), ROLES.STATE_LOCK);
+  assert.equal(role(cp, arn.state), ROLES.TERRAFORM_STATE);
+  assert.equal(role(cp, arn.inline), ROLES.INLINE_STATE);
+  assert.equal(role(cp, arn.queue), ROLES.EVENT_QUEUE);
+  assert.equal(role(cp, arn.cluster), ROLES.TASK_CLUSTER);
+  // Every one of these is a configured value, and only a configured or declared basis may move a
+  // grade. See findings.js.
+  assert.equal(cp.classify(arn.approval).basis, 'configured');
 });
 
 test('names the pipeline issues are its own; names it merely governs are marked apart', () => {
@@ -53,8 +61,17 @@ test('names the pipeline issues are its own; names it merely governs are marked 
   // machinery. mirror-*/cmp-* are what it manages ON A USER'S BEHALF, which is a different
   // severity and therefore a different label.
   const cp = controlPlane(CONFIG);
-  assert.equal(cp.classify(arn.applierRole), ROLES.PIPELINE_ROLE);
-  assert.equal(cp.classify(arn.mirrorRole), ROLES.GOVERNED_ARTIFACT);
+  assert.equal(role(cp, arn.applierRole), ROLES.PIPELINE_ROLE);
+  assert.equal(role(cp, arn.mirrorRole), ROLES.GOVERNED_ARTIFACT);
+});
+
+test('a prefix hit is reported as a prefix hit, so it cannot move a grade', () => {
+  // T-4: a grade may not be derived from a name. opt-*/mirror-*/cmp-* are names this pipeline
+  // issues, which makes the label worth showing and still makes the match a name match - so the
+  // basis says so and findings.js grades on 'configured' and 'declared' only.
+  const cp = controlPlane(CONFIG);
+  assert.equal(cp.classify(arn.applierRole).basis, 'prefix');
+  assert.equal(cp.classify(arn.mirrorRole).basis, 'prefix');
 });
 
 test('an ordinary workload is not the control plane', () => {
@@ -75,7 +92,7 @@ test('a name that merely LOOKS like the pipeline is not matched', () => {
   assert.equal(renamed.classify(arn.approval), null,
                'matched a name this deployment was not configured with');
   assert.equal(
-    renamed.classify(`arn:aws:dynamodb:us-east-1:${ACCOUNT}:table/acme-approvals`),
+    role(renamed, `arn:aws:dynamodb:us-east-1:${ACCOUNT}:table/acme-approvals`),
     ROLES.APPROVAL_STORE,
   );
   const cp = controlPlane(CONFIG);
@@ -90,8 +107,9 @@ test('an operator can declare what no configuration can name, and it wins', () =
     ...CONFIG,
     controlPlaneArns: [`${arn.instance}|listener_host`, arn.orders],
   });
-  assert.equal(cp.classify(arn.instance), 'listener_host');
-  assert.equal(cp.classify(arn.orders), ROLES.OPERATOR_DECLARED);
+  assert.equal(role(cp, arn.instance), 'listener_host');
+  assert.equal(cp.classify(arn.instance).basis, 'declared');
+  assert.equal(role(cp, arn.orders), ROLES.OPERATOR_DECLARED);
   assert.equal(cp.declaredInstances(), 1);
 });
 

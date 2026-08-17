@@ -271,7 +271,8 @@ test('the pipeline own resources are marked on the unit and never sampled out', 
   })]));
   const u = d.grants[0].units[0];
   assert.ok(u.sample.includes(approval), 'the control-plane resource was sampled out');
-  assert.deepEqual(u.cp, [{ arn: approval, role: 'approval_store' }]);
+  // basis travels with the hit: only 'configured' and 'declared' may move a grade (T-4).
+  assert.deepEqual(u.cp, [{ arn: approval, role: 'approval_store', basis: 'configured' }]);
   assert.equal(u.sample_complete, false);
 });
 
