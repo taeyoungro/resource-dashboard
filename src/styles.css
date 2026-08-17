@@ -653,3 +653,91 @@ dialog.picker button.commit {
   color: #fff;
   font-weight: 600;
 }
+
+/* ---- the risk analysis ------------------------------------------------------------------------ */
+
+/* A grade badge, and the four grades are four colours because the first thing an approver does is
+   scan for the top one. CRITICAL is filled rather than outlined: at a glance it has to be a
+   different KIND of mark, not a redder version of the same one. */
+.grade {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.grade-critical { background: var(--danger); color: #fff; border-color: var(--danger); }
+.grade-high { color: var(--danger); border-color: var(--danger); }
+.grade-medium { color: var(--warn); border-color: var(--warn); }
+.grade-low { color: var(--muted); }
+
+.finding-summary { margin: 12px 0 4px; }
+.metrics { display: flex; flex-wrap: wrap; gap: 8px; }
+.metric {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.metric strong { font-size: 15px; }
+
+.finding-section { margin-top: 20px; }
+.finding-section h4 { margin: 0 0 8px; font-size: 14px; }
+
+/* The card. The left edge carries the grade, because a list of cards is read down its edge. */
+.finding {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.finding.grade-critical { border-left-color: var(--danger); }
+.finding.grade-high { border-left-color: var(--danger); }
+.finding.grade-medium { border-left-color: var(--warn); }
+.finding.grade-low { border-left-color: var(--border); }
+
+.finding-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.finding-id { color: var(--muted); }
+.finding-title { flex: 1 1 auto; }
+.finding-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.finding-narrative { margin: 8px 0; line-height: 1.55; }
+
+.finding-row { display: flex; gap: 8px; padding: 3px 0; align-items: baseline; }
+.finding-label { flex: 0 0 5.5rem; color: var(--muted); font-size: 12px; }
+
+/* Every action, wrapped. This is the one list on the page that is never truncated or summarised -
+   an approver has to be able to see what made the card appear, and a count is not that. */
+.finding-actions { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.finding-actions code {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.finding-list { margin: 2px 0; padding-left: 18px; }
+.finding-list li { padding: 1px 0; line-height: 1.5; }
+
+/* Why a finding is not confirmed. Inside the card, not a footnote: the status badge says WHICH
+   state it is in and this says why, and the two being apart is how a reader ends up trusting a
+   grade whose evidence nobody could establish. */
+.finding-blocked {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.finding-blocked strong { display: block; margin-bottom: 2px; color: var(--warn); }
+
+/* The asset axis is a second grade on the same card and must not compete with the first. Outlined
+   whatever its value, so the filled badge stays the one an approver's eye lands on. */
+.grade-asset { background: transparent; color: var(--danger); font-weight: 600; }

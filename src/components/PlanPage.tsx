@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import type { PlanDetail as Detail, Restriction, SweepState } from "../types";
+import type {
+  PlanDetail as Detail, Restriction, RiskAnalysisCitation, SweepState,
+} from "../types";
 import { PlanDetail } from "./PlanDetail";
 import { PlanList } from "./PlanList";
 import { Notifications } from "./Notifications";
@@ -74,6 +76,7 @@ export function PlanPage({ state, error, onRefresh }: Props) {
     reviewer: string,
     comment: string,
     restrictions: Restriction[],
+    analysis: RiskAnalysisCitation | null,
   ) => {
     if (!selectedId || !detail) return;
     setBusy(true);
@@ -98,6 +101,13 @@ export function PlanPage({ state, error, onRefresh }: Props) {
           ? { expected_impact_sha256: detail.assessment_sha256 }
           : {}),
         ...(restrictions.length > 0 ? { restrictions } : {}),
+        // The analysis the reviewer had on screen, cited by digest. Sent only when a model answered
+        // and the digest it answered about is the one this decision carries - the server refuses a
+        // citation naming any other assessment, which is what makes the record answerable rather
+        // than merely decorated.
+        ...(analysis && analysis.impact_sha256 === detail.assessment_sha256
+          ? { risk_analysis: analysis }
+          : {}),
       });
       window.alert(`기록했습니다.\n${result.written}`);
       onRefresh();

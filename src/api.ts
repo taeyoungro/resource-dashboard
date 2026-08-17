@@ -1,5 +1,5 @@
 import type {
-  DecisionPayload, DecisionResult, NotificationFeed, PlanDetail, SweepState,
+  DecisionPayload, DecisionResult, NotificationFeed, PlanDetail, RiskAnalysisAnswer, SweepState,
 } from "./types";
 
 // Same origin. The server that serves this page is the server that answers these calls, so there
@@ -58,6 +58,22 @@ export const api = {
 
   plan: async (planId: string): Promise<PlanDetail> =>
     handle(await fetch(`${BASE}/plans/${encodeURIComponent(planId)}`, { headers: headers() })),
+
+  /**
+   * Run the risk analysis for a plan.
+   *
+   * POST because running it costs money and takes seconds, so it happens when somebody asks - never
+   * as a side effect of opening a plan. The rules come back either way; the model half is present
+   * only where the deployment enabled it.
+   */
+  analyse: async (planId: string): Promise<RiskAnalysisAnswer> =>
+    handle(
+      await fetch(`${BASE}/plans/${encodeURIComponent(planId)}/analysis`, {
+        method: "POST",
+        headers: headers(),
+        body: "{}",
+      }),
+    ),
 
   decide: async (planId: string, payload: DecisionPayload): Promise<DecisionResult> =>
     handle(
