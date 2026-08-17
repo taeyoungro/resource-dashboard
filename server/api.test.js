@@ -253,6 +253,33 @@ test('an approval carrying a restriction is written, from either assessment path
   }
 });
 
+test('a plain approval carries the digest when it matches, so the fence can be dispatched', async () => {
+  // No restriction - but the applier now needs the digest for the PassRole fence: only a
+  // digest-named assessment may be the source of the passrole_grants it copies into the dispatch.
+  const { route, s3 } = harness({});
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({ expected_impact_sha256: ASSESSMENT_SHA }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal(marker.expected_impact_sha256, ASSESSMENT_SHA);
+  assert.equal('restrictions' in marker, false, 'an empty restriction list must not travel');
+});
+
+test('a plain approval with a stale or missing digest proceeds without one', async () => {
+  // The asymmetry is deliberate: a restriction REQUIRES the digest, the fence merely rides it.
+  // Approval was never blocked on the assessment, and must not start being now.
+  for (const extra of [{}, { expected_impact_sha256: 'f'.repeat(64) }]) {
+    const { route, s3 } = harness({});
+    const answer = await route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID }, body: decision(extra),
+    });
+    assert.ok(answer.written);
+    const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+    assert.equal('expected_impact_sha256' in marker, false, JSON.stringify(extra));
+  }
+});
+
 test('a restriction naming a resource the assessment did not enumerate is refused', async () => {
   const { route } = harness({ pushed: PUSHED });
   await assert.rejects(

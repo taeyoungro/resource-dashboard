@@ -162,11 +162,13 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
     // is what was chosen, and the inline writer builds the statements and refuses anything that
     // cannot become one.
     //
-    // Both fields are omitted when there is no restriction, which keeps an ordinary approval byte
-    // for byte what it was before this existed.
-    ...(restrictions.length > 0
-      ? { restrictions, expected_impact_sha256: impactDigest }
-      : {}),
+    // restrictions is omitted when empty. The digest travels whenever a stored assessment was
+    // verified to be the one the page displayed - with a restriction it is REQUIRED (the
+    // restriction is validated against that assessment), and without one it is what lets the
+    // applier read the assessment's passrole_grants and dispatch the PassRole fence. An approval
+    // with neither carries neither, exactly as before.
+    ...(restrictions.length > 0 ? { restrictions } : {}),
+    ...(impactDigest ? { expected_impact_sha256: impactDigest } : {}),
 
     // What produced this record, so a marker that turns up unexplained can be traced to a build.
     issued_by: {
@@ -585,6 +587,23 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // Carried, never computed here. The querier wrote it; the applier recomputes over the
         // object and compares.
         impactDigest = stored.digest;
+      } else if (body.decision === 'approve') {
+        // No restriction - but the digest still travels when it can, because the applier needs it
+        // for more than restrictions now: the PassRole fence is composed from the assessment's
+        // passrole_grants, and only a digest-named assessment may be its source. The asymmetry
+        // with the branch above is deliberate: a restriction REQUIRES the digest and a mismatch
+        // is a 409, while the fence merely rides it - approval was never blocked on the
+        // assessment ("an assessment outage is not a pipeline outage"), so a missing, stale or
+        // mismatched assessment omits the digest and the approval proceeds. The applier then
+        // records not_required, and the next assessed approval of the resource fences it.
+        const claimed = String(body.expected_impact_sha256 ?? '').trim();
+        if (claimed) {
+          const stored = await readImpact(s3, config, id);
+          if (stored?.digest && stored.digest === claimed
+              && (!requestId || stored.document?.request_id === requestId)) {
+            impactDigest = stored.digest;
+          }
+        }
       }
 
       const marker = decisionMarker({

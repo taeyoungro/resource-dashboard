@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type {
-  Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPolicy, ImpactResource,
-  Restriction,
+  Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPassRoleGrant, ImpactPolicy,
+  ImpactResource, Restriction,
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
@@ -119,8 +119,15 @@ function primaryService(identifier: string, candidates: string[]): string | null
  */
 const INLINE_LIMIT = 10240;
 
-/** Roughly what these choices will serialise to. The same statement shape restriction.py builds. */
-function estimateBytes(intent: Restriction["intent"], choices: Choice[], tag: string): number {
+/**
+ * Roughly what these choices will serialise to. The same statement shape restriction.py builds,
+ * plus `reserved` - the bytes the document spends before any restriction is chosen, which today
+ * means the PassRole fence statements the inline writer composes for policies that grant
+ * iam:PassRole. Without the reserve the estimate undercounts and a restriction that fits the
+ * number here fails at provisioning, after the approval.
+ */
+function estimateBytes(intent: Restriction["intent"], choices: Choice[], tag: string,
+                       reserved: number): number {
   const statements = choices.map((choice, n) => (intent === "tag_condition"
     ? {
       Sid: `AdminDeny${n + 1}`, Effect: "Deny", Action: choice.action, Resource: "*",
@@ -134,7 +141,27 @@ function estimateBytes(intent: Restriction["intent"], choices: Choice[], tag: st
         ? { NotResource: choice.resources }
         : { Resource: choice.resources.length > 0 ? choice.resources : "*" }),
     }));
-  return JSON.stringify({ Version: "2012-10-17", Statement: statements }).length;
+  return JSON.stringify({ Version: "2012-10-17", Statement: statements }).length + reserved;
+}
+
+/**
+ * The bytes the PassRole fence will occupy in the inline document - the exact statement shape the
+ * writer composes: one Deny per service any restrictable policy's own PassRole grant names, with
+ * the unreachable placeholder as the whole exemption list. Approved mirror ARNs added later widen
+ * this, which is one more reason the estimate stays an estimate and the writer measures exactly.
+ */
+function fenceBytes(grants: Assessment["passrole_grants"], accountId: string): number {
+  const services = [...new Set((grants ?? []).flatMap((g) => g.services))].sort();
+  if (services.length === 0) return 0;
+  const statements = services.map((service, n) => ({
+    Sid: `PassRoleAllowlistFence${n + 1}`,
+    Effect: "Deny",
+    Action: "iam:PassRole",
+    NotResource: [`arn:aws:iam::${accountId}:role/mirror-denyrole`],
+    Condition: { StringEquals: { "iam:PassedToService": service } },
+  }));
+  // Statement bytes plus the comma that joins them to the AdminDeny list.
+  return JSON.stringify(statements).length - 2 + statements.length;
 }
 
 /**
@@ -228,6 +255,9 @@ export function Impact({
           reference={assessment.action_reference ?? null}
           referenceError={assessment.coverage.reference ?? null}
           omitted={assessment.coverage.action_lists_omitted ?? []}
+          passroleGrant={(assessment.passrole_grants ?? [])
+            .find((g) => g.identifier === policy.identifier) ?? null}
+          reservedBytes={fenceBytes(assessment.passrole_grants, assessment.account_id)}
         />
       ))}
 
@@ -278,6 +308,8 @@ function PolicyBlock({
   reference,
   referenceError,
   omitted,
+  passroleGrant,
+  reservedBytes,
 }: {
   policy: ImpactPolicy;
   /** The governed account, for the console list links. The host of those URLs carries it. */
@@ -289,6 +321,10 @@ function PolicyBlock({
   reference: ImpactActionReference | null;
   referenceError: string | null;
   omitted: string[];
+  /** This policy's own PassRole grant, when it has one - what earns it a fence. */
+  passroleGrant: ImpactPassRoleGrant | null;
+  /** Bytes the fence will spend in the inline document, counted against the restriction budget. */
+  reservedBytes: number;
 }) {
   // Every restriction on this policy - one per action, because generator/restriction.py writes one
   // statement per action and each of those statements now carries its own resources. A single
@@ -350,6 +386,17 @@ function PolicyBlock({
         </span>
       </summary>
 
+      {passroleGrant && (
+        <p className="warn-inline">
+          이 정책은 iam:PassRole을
+          {passroleGrant.unconditioned
+            ? " 서비스 조건 없이 모든 리소스에 부여한다 — 인라인 작성기가 이름을 들어 거부하는"
+            : ` ${passroleGrant.services.join(", ")} 대상 모든 리소스에 부여한다 — 승인 목록 밖
+               역할의 전달을 막는 PassRole 울타리가 함께 기록되는`}{" "}
+          형태다.
+        </p>
+      )}
+
       {policy.affected.length === 0 && (
         <p className="muted">이 정책이 닿는 자원이 인벤토리에 없다.</p>
       )}
@@ -402,6 +449,7 @@ function PolicyBlock({
           reference={reference}
           referenceError={referenceError}
           omitted={omitted}
+          reservedBytes={reservedBytes}
         />
         {/* At the BOTTOM of the restriction area, on the operator's direction: it says what the
             picker above will not offer, so it reads as a footnote to the choosing, not a headline
@@ -547,6 +595,7 @@ function RestrictionEditor({
   reference,
   referenceError,
   omitted,
+  reservedBytes,
 }: {
   policy: string;
   /** The service this policy is named for, or null. Its actions go first; the rest fold away. */
@@ -562,6 +611,8 @@ function RestrictionEditor({
   reference: ImpactActionReference | null;
   referenceError: string | null;
   omitted: string[];
+  /** Bytes the PassRole fence spends in the same document, counted against the size estimate. */
+  reservedBytes: number;
 }) {
   const [picking, setPicking] = useState(false);
 
@@ -708,7 +759,7 @@ function RestrictionEditor({
         // Estimated, and said so. The exact number depends on statements this write preserves, which
         // only the container can see - but a restriction that is going to be refused for size should
         // not get as far as an approval marker to find that out.
-        const bytes = estimateBytes(intent, choices, tagKey);
+        const bytes = estimateBytes(intent, choices, tagKey, reservedBytes);
         if (choices.length === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
         return (
           <p className={bytes > INLINE_LIMIT ? "error" : "warn-inline"}>
