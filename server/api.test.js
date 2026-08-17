@@ -110,6 +110,7 @@ test('the release is read from the file the installer writes, not only from the 
 // been visible from a smaller test.
 
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { routes } from './api.js';
 
 const ACCOUNT = '644701781058';
@@ -251,6 +252,23 @@ test('an approval carrying a restriction is written, from either assessment path
     // must not author the value that authorises its own approval.
     assert.equal(marker.expected_impact_sha256, ASSESSMENT_SHA);
   }
+});
+
+test('the page sends the assessment digest whether or not there is a restriction', async () => {
+  // Structural, because the runner cannot load the .tsx - and because the test below passes the
+  // digest in the body directly, so it proves the SERVER accepts it and says nothing about
+  // whether the page ever sends one. That gap shipped once: the server was taught to carry the
+  // digest on a plain approval while the page still had it nested inside the restriction
+  // conditional, so the PassRole fence was never dispatched and nothing anywhere said why.
+  const source = readFileSync(
+    new URL('../src/components/PlanPage.tsx', import.meta.url), 'utf8',
+  );
+  assert.match(
+    source,
+    /\.\.\.\(detail\.assessment_sha256\s*\n?\s*\?\s*\{\s*expected_impact_sha256:/,
+    'PlanPage no longer sends expected_impact_sha256 guarded by having one - if it is nested '
+    + 'under restrictions again, a plain approval carries no digest and no fence is ever composed',
+  );
 });
 
 test('a plain approval carries the digest when it matches, so the fence can be dispatched', async () => {

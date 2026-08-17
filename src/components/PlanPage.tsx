@@ -83,19 +83,21 @@ export function PlanPage({ state, error, onRefresh }: Props) {
       // the stored plan is no longer it. The prefix holds one plan per governed resource and a new
       // inspection overwrites it, so the plan can change under a page that is sitting open.
       //
-      // A restriction carries a second digest for the same reason: it names resources that came from
-      // the assessment on screen, and a later inspection can have replaced that too.
+      // The assessment digest travels the same way and for the same reason, and it is NOT tied to
+      // the restriction. A restriction needs it because it names resources that came from the
+      // assessment on screen, which a later inspection can have replaced - but the applier needs it
+      // even without one, to read that assessment's passrole_grants and dispatch the PassRole
+      // fence. Sent whenever the page has one; the server keeps it only if it still matches, and an
+      // approval with no assessment at all proceeds without it.
       const result = await api.decide(selectedId, {
         decision,
         reviewer,
         comment,
         expected_changes_sha256: detail.changes_sha256 ?? "",
-        ...(restrictions.length > 0
-          ? {
-              restrictions,
-              expected_impact_sha256: detail.assessment_sha256 ?? "",
-            }
+        ...(detail.assessment_sha256
+          ? { expected_impact_sha256: detail.assessment_sha256 }
           : {}),
+        ...(restrictions.length > 0 ? { restrictions } : {}),
       });
       window.alert(`기록했습니다.\n${result.written}`);
       onRefresh();
