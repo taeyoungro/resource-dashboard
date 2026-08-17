@@ -221,12 +221,14 @@ test('a service granted whole is folded, and the fold says more than the names i
   for (const action of ['ec2:StopInstances', 'ec2:CreateRoute', 'ec2:GetConsoleOutput']) {
     assert.ok(grant.risk_actions.includes(action), action);
   }
-  // A mutating action no rule names is folded away by NAME - and stays reachable, because
-  // complete_services says every ec2 action is granted. That is the whole trade.
-  assert.ok(!grant.risk_actions.includes('ec2:AssociateIamInstanceProfile'));
+  // An action the CAPABILITY table knows survives the fold even though no rule names it - the
+  // instance-profile swap is a path, and a folded name is a chain that cannot be proposed.
+  assert.ok(grant.risk_actions.includes('ec2:AssociateIamInstanceProfile'));
+  // One that nothing knows is folded away, and complete_services keeps it reachable.
+  assert.ok(!grant.risk_actions.includes('ec2:CreateVolume'));
   assert.ok(grant.complete_services.includes('ec2'));
   // The unit counts what the fold covers rather than going quiet about it.
-  assert.equal(grant.units[0].folded, 2);
+  assert.equal(grant.units[0].folded, 1);
   // And the fold is recorded, not silent.
   assert.ok(d.budget.dropped.some((entry) => entry.what.includes('ec2') && entry.recoverable));
 });

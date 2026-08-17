@@ -43,6 +43,7 @@
 // few.
 
 import { parseArn } from './arn.js';
+import { CURATED } from './capabilities.js';
 
 export const DIGEST_VERSION = 1;
 
@@ -59,20 +60,30 @@ export const DIGEST_VERSION = 1;
  * of it no rule has claimed yet.
  */
 export const SENSITIVE_READS = new Set([
-  // Boot output and disk copies - what the instance printed, and what its volume holds.
+  // Boot output, boot INPUT, and disk copies. DescribeInstanceAttribute and
+  // DescribeLaunchTemplateVersions return userData, which is where bootstrap credentials live -
+  // and AWS classifies both as List, which is the clearest case for why the access level cannot
+  // answer this question.
   'ec2:GetConsoleOutput', 'ec2:GetConsoleScreenshot', 'ec2:GetPasswordData',
+  'ec2:DescribeInstanceAttribute', 'ec2:DescribeLaunchTemplateVersions',
   // The contents of a secret, a parameter, or a key's plaintext.
   'secretsmanager:GetSecretValue', 'ssm:GetParameter', 'ssm:GetParameters',
-  'ssm:GetParametersByPath', 'kms:Decrypt',
-  // Item and stream reads. A table read is ordinary; reading the change stream is continuous.
-  'dynamodb:GetRecords', 'dynamodb:Scan', 'dynamodb:ExportTableToPointInTime',
-  // Code and configuration of running things. GetFunction returns a pre-signed URL to the code.
+  'ssm:GetParametersByPath', 'kms:Decrypt', 'states:RevealSecrets',
+  // Bulk contents, and the stream that keeps giving them. A table read is not "a read" in the
+  // sense the access level means: it IS the exfiltration, not a step toward one.
+  'dynamodb:GetRecords', 'dynamodb:Scan', 'dynamodb:Query', 'dynamodb:GetItem',
+  'dynamodb:BatchGetItem', 'dynamodb:PartiQLSelect', 'dynamodb:ExportTableToPointInTime',
+  's3:GetObject', 's3:GetObjectVersion', 'sqs:ReceiveMessage',
+  'logs:GetLogEvents', 'logs:FilterLogEvents', 'logs:StartQuery', 'logs:GetQueryResults',
+  // Code and configuration of running things. GetFunction returns a pre-signed URL to the code,
+  // and the registry token is a credential behind a Get.
   'lambda:GetFunction', 'lambda:GetFunctionConfiguration', 'ecs:DescribeTaskDefinition',
+  'ecr:GetAuthorizationToken', 'ecr:GetDownloadUrlForLayer',
   // Who may assume what, and with what. The reconnaissance that makes an escalation aimable.
   'iam:GetRole', 'iam:GetRolePolicy', 'iam:GetPolicyVersion', 'iam:ListAttachedRolePolicies',
   'iam:ListRoles', 'iam:ListRolePolicies', 'iam:SimulatePrincipalPolicy',
   // The pipeline's own evidence.
-  's3:GetObject', 'cloudformation:GetTemplate',
+  'cloudformation:GetTemplate',
 ]);
 
 /** Access levels that are not, by themselves, a change to anything. */
@@ -211,7 +222,18 @@ export function condense(assessment, {
     const risk = all.filter((action) => {
       const service = action.slice(0, action.indexOf(':'));
       if (!complete.includes(service)) return true;
-      if (ruleActions.has(action) || SENSITIVE_READS.has(action)) return true;
+      // Three things survive the fold, and the third is the one that is easy to leave out.
+      // A rule names it - the engine matches exact strings.
+      if (ruleActions.has(action)) return true;
+      // It is a read that is itself the attack.
+      if (SENSITIVE_READS.has(action)) return true;
+      // The capability table knows it. Without this clause the fold silently deletes every action
+      // that carries a path nobody has written a rule for yet - measured: item writes on the
+      // approval store and the state lock, and the whole boot-rewrite takeover, all of which are
+      // in a service granted with a wildcard and none of which any shipped rule names. The unit's
+      // action set is what a same-resource chain is proposed from, so an action missing here is a
+      // chain that cannot be proposed at all.
+      if (CURATED[action]) return true;
       folded.set(service, (folded.get(service) ?? 0) + 1);
       return false;
     });
