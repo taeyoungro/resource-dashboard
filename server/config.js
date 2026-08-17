@@ -93,6 +93,34 @@ export function load() {
     markerBucket: required('OPT_MARKER_BUCKET'),
     stateBucket: required('OPT_STATE_BUCKET'),
 
+    // ---- what this deployment's own resources are called -------------------------------------
+    //
+    // Used by the risk analysis to tell a write against the governance machinery apart from a
+    // write against an ordinary workload - see server/controlPlane.js for why naming them here is
+    // a statement of configuration rather than an inference from a name.
+    //
+    // Defaulted to the names the CloudFormation templates default to, so a stock deployment needs
+    // no extra environment. A deployment that renamed a resource must set the matching value here,
+    // and the cost of not doing so is one grade of analysis quality, never a wrong write.
+    approvalTable: (process.env.OPT_APPROVAL_TABLE ?? 'opt-approval-store').trim(),
+    lockTable: (process.env.OPT_LOCK_TABLE ?? 'opt-tf-state-lock').trim(),
+    inlineStateBucket: (process.env.OPT_INLINE_STATE_BUCKET ?? 'opt-inlinepolicy-terraform').trim(),
+    eventQueue: (process.env.OPT_EVENT_QUEUE ?? 'opt-iam-event-queue').trim(),
+    cluster: (process.env.OPT_CLUSTER ?? 'opt-solution-cluster').trim(),
+
+    // Namespaces the pipeline ISSUES rather than interprets - the generator writes every name that
+    // starts with these. Kept in step with event_pipeline generator/config.py.
+    solutionPrefix: (process.env.OPT_SOLUTION_PREFIX ?? 'opt-').trim(),
+    mirrorPrefix: (process.env.OPT_MIRROR_PREFIX ?? 'mirror-').trim(),
+    specPolicyPrefix: (process.env.OPT_SPEC_POLICY_PREFIX ?? 'cmp-').trim(),
+
+    // Resources this deployment cannot name for itself, declared by an operator. An EC2 instance
+    // carries no configured name, so the instances running the listener and this dashboard are
+    // invisible to the analysis unless they are declared - and a takeover of one of those is among
+    // the most severe things a grant can enable. Entries are "<arn>" or "<arn>|<label>".
+    controlPlaneArns: (process.env.OPT_CONTROL_PLANE_ARNS ?? '')
+      .split(',').map((s) => s.trim()).filter(Boolean),
+
     // Prefixes are named for the container that consumes the marker, and the instance role is
     // scoped to them. Changing one here without changing opt-stack-dashboard-host.yaml produces
     // AccessDenied on write and a silently empty list on read.
