@@ -14,9 +14,9 @@
 //
 // Where it runs: on the dashboard host, through Amazon Bedrock, under the instance profile. The
 // dashboard already reads the assessment; this sends a condensed form of it to a model and reads
-// text back. It reaches no account, starts no task, and writes nothing. Claude Sonnet 5 is reached
-// with InvokeModel on bedrock-runtime (bedrock-mantle is a different IAM service and a grant built
-// for it would be denied), through the us. inference profile - see opt-stack-dashboard-host.yaml.
+// text back. It reaches no account, starts no task, and writes nothing. Every model is reached the
+// same way - Bedrock's Converse API, authorised by bedrock:InvokeModel on bedrock-runtime, through
+// the configured inference profile. See opt-stack-dashboard-host.yaml and converse.js.
 
 import { createHash } from 'node:crypto';
 
@@ -568,8 +568,8 @@ export function sha256Of(findings) {
  *     global.amazon.nova-pro-v1:0      not Anthropic
  *
  * So the test is on the provider segment rather than on "contains anthropic" - a customer profile
- * called anthropic-eval pointing at Nova would otherwise be sent to the wrong client, and the
- * failure would be a 400 about a request shape rather than anything naming the model.
+ * called anthropic-eval pointing at Nova would otherwise be told it supports Anthropic-only
+ * parameters, and the failure would be a 400 about a field rather than anything naming the model.
  */
 export function isAnthropicModel(model) {
   const parts = String(model ?? '').split('.');
@@ -577,31 +577,29 @@ export function isAnthropicModel(model) {
 }
 
 /**
- * The Bedrock client for the configured model, imported lazily.
+ * The Bedrock client, imported lazily. One path, for every model.
  *
- * Two clients, chosen by the model id and not by a switch somebody has to remember to set. An
- * Anthropic model gets the Anthropic SDK, which speaks the request shape this analysis is written
- * in; anything else goes through Converse, which every model on Bedrock speaks and which
- * converse.js translates to and from. Getting that choice wrong is a 400 about a body shape, so it
- * is derived from the one value that already has to be right.
+ * It was two: @anthropic-ai/bedrock-sdk for Anthropic models and Converse for the rest. That
+ * shipped and every batch came back
+ *
+ *     400 Malformed input request: #: extraneous key [output_config] is not permitted
+ *
+ * because the request this analysis builds is a first-party Anthropic Messages request, and
+ * InvokeModel on bedrock-runtime validates a narrower body than that. A wire probe had shown the
+ * SDK PASSING output_config through untouched, which is a different claim from Bedrock accepting
+ * it, and the difference is the whole of that failure.
+ *
+ * Converse takes a schema as a tool and is the same shape for every model, so there is now nothing
+ * per-provider except which optional fields ride along - and those are dropped on a 400 rather than
+ * assumed. One request shape also means one thing to be wrong about, which is the point: the
+ * validation that makes a model's answer usable must not have a branch for who answered.
  *
  * Lazily because the analysis is optional: a deployment that has not enabled it should not fail to
- * start over a package it never calls, and the tests must be able to exercise every line above
- * without one. A missing package is reported as configuration, not as a crash.
+ * start over a package it never calls, and the tests must exercise every line above without one.
  */
-export async function bedrockClient({ region, model }) {
-  if (!isAnthropicModel(model)) {
-    const { bedrockConverse } = await import('./converse.js');
-    return bedrockConverse({ region });
-  }
-  let AnthropicBedrock;
-  try {
-    ({ default: AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk'));
-  } catch (error) {
-    throw new AnalysisError('@anthropic-ai/bedrock-sdk is not installed, so the risk analysis '
-      + `cannot run: ${error.message}`);
-  }
+export async function bedrockClient({ region, model, onDegrade = null }) {
+  const { bedrockConverse } = await import('./converse.js');
   // No keys. The instance profile is the credential, and the SDK resolves it through the default
   // AWS provider chain - the same chain the S3 client on this host already uses.
-  return new AnthropicBedrock({ awsRegion: region });
+  return bedrockConverse({ region, onDegrade });
 }
