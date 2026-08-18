@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type {
-  AssessmentState, PlanDetail as Detail, Restriction,
+  AssessmentState, PlanDetail as Detail, Restriction, RiskAnalysisCitation,
 } from "../types";
 import { Impact } from "./Impact";
+import { RiskAnalysis } from "./RiskAnalysis";
 import { clock } from "../time";
 
 interface Props {
@@ -17,6 +18,7 @@ interface Props {
     reviewer: string,
     comment: string,
     restrictions: Restriction[],
+    analysis: RiskAnalysisCitation | null,
   ) => void;
 }
 
@@ -32,6 +34,13 @@ export function PlanDetail({
   const [reviewer, setReviewer] = useState("");
   const [comment, setComment] = useState("");
   const [restrictions, setRestrictions] = useState<Restriction[]>([]);
+  const [analysis, setAnalysis] = useState<RiskAnalysisCitation | null>(null);
+
+  // Dropped when the plan changes, and that is the whole reason it is state here rather than inside
+  // the analysis panel. The citation names an assessment digest; carrying one from the previous plan
+  // into this decision would be citing an analysis of something else, which the server would refuse
+  // - correctly, but after the reviewer had already pressed the button.
+  useEffect(() => { setAnalysis(null); }, [detail.plan_id, detail.request_id]);
 
   const submit = (decision: "approve" | "deny") => {
     if (!reviewer.trim()) {
@@ -54,7 +63,7 @@ export function PlanDetail({
     ) {
       return;
     }
-    onDecide(decision, reviewer.trim(), comment.trim(), active);
+    onDecide(decision, reviewer.trim(), comment.trim(), active, analysis);
   };
 
   return (
@@ -94,6 +103,15 @@ export function PlanDetail({
           제한은 자원을 지목하고, 그 이름을 대조할 근거가 평가뿐입니다.
         </div>
       )}
+
+      {/* The findings. Below the assessment because it reads the assessment, and above the plan
+          because a grade an approver has not seen yet is worth more than terraform's own output,
+          which they will read next either way. */}
+      <RiskAnalysis
+        planId={detail.plan_id}
+        ready={!!detail.assessment}
+        onAnalysis={setAnalysis}
+      />
 
       <h3>바뀌는 것</h3>
       {detail.changes.length === 0 ? (

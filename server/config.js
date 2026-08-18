@@ -93,6 +93,56 @@ export function load() {
     markerBucket: required('OPT_MARKER_BUCKET'),
     stateBucket: required('OPT_STATE_BUCKET'),
 
+    // ---- what this deployment's own resources are called -------------------------------------
+    //
+    // Used by the risk analysis to tell a write against the governance machinery apart from a
+    // write against an ordinary workload - see server/controlPlane.js for why naming them here is
+    // a statement of configuration rather than an inference from a name.
+    //
+    // Defaulted to the names the CloudFormation templates default to, so a stock deployment needs
+    // no extra environment. A deployment that renamed a resource must set the matching value here,
+    // and the cost of not doing so is one grade of analysis quality, never a wrong write.
+    approvalTable: (process.env.OPT_APPROVAL_TABLE ?? 'opt-approval-store').trim(),
+    lockTable: (process.env.OPT_LOCK_TABLE ?? 'opt-tf-state-lock').trim(),
+    inlineStateBucket: (process.env.OPT_INLINE_STATE_BUCKET ?? 'opt-inlinepolicy-terraform').trim(),
+    eventQueue: (process.env.OPT_EVENT_QUEUE ?? 'opt-iam-event-queue').trim(),
+    cluster: (process.env.OPT_CLUSTER ?? 'opt-solution-cluster').trim(),
+
+    // Namespaces the pipeline ISSUES rather than interprets - the generator writes every name that
+    // starts with these. Kept in step with event_pipeline generator/config.py.
+    solutionPrefix: (process.env.OPT_SOLUTION_PREFIX ?? 'opt-').trim(),
+    mirrorPrefix: (process.env.OPT_MIRROR_PREFIX ?? 'mirror-').trim(),
+    specPolicyPrefix: (process.env.OPT_SPEC_POLICY_PREFIX ?? 'cmp-').trim(),
+
+    // ---- the risk analysis ---------------------------------------------------------------------
+    //
+    // Off unless asked for, and that is the only default that is honest here. Turning it on spends
+    // money on every approval and needs a Bedrock grant that an older deployment of
+    // opt-stack-dashboard-host.yaml does not carry - so a dashboard that quietly started calling a
+    // model would either bill for something nobody chose or fail with AccessDenied on the one
+    // screen an approver is waiting on. Set OPT_RISK_ANALYSIS=on deliberately.
+    riskAnalysis: (process.env.OPT_RISK_ANALYSIS ?? '').trim().toLowerCase() === 'on',
+
+    // What to pass as the model id. This is the INFERENCE PROFILE id when the model needs one, not
+    // the bare model id: Claude Sonnet 5 is offered through cross-region inference, so a call
+    // passing the bare id fails with a 400 telling you to pass a profile. It must match what
+    // opt-stack-dashboard-host.yaml granted - the grant names the profile and the foundation model
+    // in the regions it routes to, and nothing else in Bedrock.
+    bedrockModelId: (process.env.OPT_BEDROCK_MODEL_ID ?? 'us.anthropic.claude-sonnet-5').trim(),
+
+    // The answer's ceiling, and how many candidates go in one request. Both are tuning: the batch
+    // exists so the frame, the deployment block and the digest are paid for once and read from
+    // cache after that, and so a failed request costs its own candidates and no others.
+    riskAnalysisMaxTokens: integer('OPT_RISK_ANALYSIS_MAX_TOKENS', 16000),
+    riskAnalysisBatch: integer('OPT_RISK_ANALYSIS_BATCH', 10),
+
+    // Resources this deployment cannot name for itself, declared by an operator. An EC2 instance
+    // carries no configured name, so the instances running the listener and this dashboard are
+    // invisible to the analysis unless they are declared - and a takeover of one of those is among
+    // the most severe things a grant can enable. Entries are "<arn>" or "<arn>|<label>".
+    controlPlaneArns: (process.env.OPT_CONTROL_PLANE_ARNS ?? '')
+      .split(',').map((s) => s.trim()).filter(Boolean),
+
     // Prefixes are named for the container that consumes the marker, and the instance role is
     // scoped to them. Changing one here without changing opt-stack-dashboard-host.yaml produces
     // AccessDenied on write and a silently empty list on read.

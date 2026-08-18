@@ -261,6 +261,24 @@ export interface DecisionPayload {
    * enumerated them is the one that is still stored.
    */
   expected_impact_sha256?: string;
+
+  /**
+   * The risk analysis the reviewer was looking at, cited rather than carried.
+   *
+   * Four values and no content: the findings are advisory text and the applier has nothing to do
+   * with them, whereas "this decision was taken while reading analysis <findings_sha256> of
+   * assessment <impact_sha256>, from <model_id> under prompt <prompt_version>" is what makes the
+   * record answerable months later. The server refuses a citation whose impact_sha256 is not the
+   * digest it just verified.
+   */
+  risk_analysis?: RiskAnalysisCitation;
+}
+
+export interface RiskAnalysisCitation {
+  findings_sha256: string;
+  model_id: string;
+  prompt_version: string;
+  impact_sha256: string;
 }
 
 /** One thing an administrator decided, before it is a policy statement.
@@ -429,4 +447,137 @@ export interface ImpactCoverage {
   reference?: string | null;
   /** False when anything above is non-empty. An incomplete assessment is still the best answer. */
   complete: boolean;
+}
+
+// ---- the risk analysis --------------------------------------------------------------------------
+//
+// Two kinds of finding arrive in one answer and they are NOT merged into one list here.
+//
+//   source 'rule'   a predicate in finding-rules.json fired. Deterministic, reproducible from the
+//                   assessment alone, and its sentence is the rule's own text
+//   source 'model'  a candidate path the code proposed and Claude judged. Its sentence was written
+//                   by a model, and every action it cites was checked against the grant
+//
+// An approver reads them differently, so the page says which is which on every card. What they
+// share is the shape below, which is what lets one sort and one card renderer serve both.
+
+export type Grade = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "NONE";
+export type AssetGrade = Grade | "UNDETERMINED";
+export type FindingStatus = "CONFIRMED" | "UNVERIFIED" | "NOT_ASSESSABLE";
+export type FindingCategory = "ESCALATION" | "EXPOSURE" | "RECON" | "DESTRUCTIVE";
+
+/** How the pipeline recognised one of its own resources. Only the first two may move a grade. */
+export type ControlPlaneBasis = "configured" | "declared" | "prefix";
+
+export interface ControlPlaneHit {
+  arn: string;
+  role: string;
+  basis: ControlPlaneBasis;
+}
+
+/** A resource-TYPE group a finding reaches, with the count first and the sample second. */
+export interface FindingTarget {
+  type: string;
+  count: number;
+  scope: string;
+  sample: string[];
+  /** False means the ARNs shown are a sample of a larger group. */
+  sampleComplete: boolean;
+  controlPlane: ControlPlaneHit[];
+}
+
+export interface Finding {
+  id: string;
+  category: FindingCategory;
+  title: string;
+  escalationGrade: Grade;
+  /** UNDETERMINED unless this deployment's configuration identified the resource. Never a sort key. */
+  assetImpactGrade: AssetGrade;
+  assetEvidence: ControlPlaneHit[];
+  status: FindingStatus;
+  /** Why the status is not CONFIRMED. Every entry is a sentence about the EVIDENCE. */
+  blockedBy: string[];
+  policyName: string;
+  policyId: string;
+  isBaseline?: boolean;
+  /** The exact action names that fired it. Shown in full - never abbreviated, never a count. */
+  triggerActions: string[];
+  targets: FindingTarget[];
+  restrictable: boolean;
+  relatedTo: string[];
+  narrative: string;
+  notes?: string | null;
+  /** null means enumeration completeness was never established. Not the same as false. */
+  truncated: boolean | null;
+  omittedCount?: number | null;
+
+  // Only on a model finding.
+  source?: "model";
+  edge?: string;
+  outcome?: string;
+  /** What the model asked for before the outcome's ceiling was applied. */
+  proposedGrade?: Grade;
+  capped?: boolean;
+  humanError?: boolean;
+  mechanism?: "new_resource" | "existing_resource" | "both" | "neither";
+  preconditions?: string[];
+  finalImpact?: string;
+  evidenceSufficient?: boolean;
+}
+
+/** A candidate the code proposed and the model judged not to be a path. */
+export interface RejectedCandidate {
+  id: string;
+  edge: string;
+  outcome: string;
+  policyId: string;
+  policyName: string;
+  title: string;
+  why: string;
+  citedActions: string[];
+}
+
+export interface ModelAnalysis {
+  analysis_version: number;
+  prompt_version: string;
+  model_id: string;
+  impact_sha256: string | null;
+  rules_sha256: string | null;
+  findings: Finding[];
+  rejected: RejectedCandidate[];
+  /** Verdicts refused, with the reason. A run that answered four of sixty is a different answer. */
+  dropped: { id: string; why: string }[];
+  failures: { batch: number; candidates: string[]; why: string }[];
+  candidates: number;
+  answered?: number;
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  findings_sha256?: string;
+  /** Present only when the whole run was thrown away for citing an action granted nowhere. */
+  discarded?: { why: string; fabricated: { id: string; action: string }[] };
+}
+
+export interface RiskAnalysisAnswer {
+  plan_id: string;
+  request_id: string;
+  impact_sha256: string | null;
+  rules_sha256: string;
+  prompt_version: string;
+  /** What the condensed assessment cost to ask about. */
+  digest_bytes: number;
+  /** What the condenser left out, and whether it is recoverable. */
+  dropped: { what: string; count: number; why: string; recoverable: boolean }[];
+  rule_findings: Finding[];
+  rule_sections: { category: FindingCategory; findings: Finding[] }[];
+  rule_summary: {
+    total: number;
+    byGrade: Record<string, number>;
+    byStatus: Record<string, number>;
+    byCategory: Record<string, number>;
+    notRestrictable: number;
+    enumerationIncomplete: number;
+  };
+  candidates: number;
+  analysis: ModelAnalysis | null;
+  /** Why no model answered. Not an error state - the rules ran either way. */
+  analysis_error: string | null;
 }

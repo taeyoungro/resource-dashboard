@@ -1,0 +1,206 @@
+{
+  "schemaVersion": "0.1",
+  "description": "영향도 평가 위험 판정 규칙. 코드에 하드코딩하지 말고 이 파일을 로드한다. 동작명은 산출물 원문 표기와 정확히 일치해야 하며 접두사 매칭을 쓰지 않는다.",
+  "rules": [
+    {
+      "id": "E-1",
+      "title": "역할 전달을 통한 임의 권한 획득",
+      "category": "ESCALATION",
+      "escalationGrade": "CRITICAL",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "policyActionUnion",
+      "predicate": {
+        "allOf": [
+          { "action": "iam:PassRole" },
+          { "action": "lambda:CreateFunction" },
+          {
+            "anyOf": [
+              { "action": "lambda:InvokeFunction" },
+              { "action": "lambda:InvokeFunctionUrl" },
+              { "action": "lambda:AddPermission" }
+            ]
+          }
+        ]
+      },
+      "narrative": "임의 역할을 전달해 함수를 생성하고 그 역할의 자격 증명하에 코드를 실행할 수 있다. 전달 가능 역할의 상한이 이 정책으로 도달 가능한 권한의 상한이다.",
+      "upperBound": {
+        "requires": "passableRoleSet",
+        "onUnreadableConstraintPolicy": "UNVERIFIED",
+        "onTruncatedResourceList": "NOT_ASSESSABLE"
+      }
+    },
+    {
+      "id": "E-2",
+      "title": "인증 없는 외부 호출 경로 개설",
+      "category": "ESCALATION",
+      "escalationGrade": "HIGH",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "anyOf": [
+          { "action": "lambda:CreateFunctionUrlConfig" },
+          { "action": "lambda:AddPermission" }
+        ]
+      },
+      "narrative": "함수 URL을 인증 없이 생성하거나 외부 주체에 호출 권한을 부여하면, 함수의 실행 역할이 외부에서 트리거 가능한 상태가 된다."
+    },
+    {
+      "id": "E-3",
+      "title": "실행 컨텍스트 교체를 통한 역할 승계",
+      "category": "ESCALATION",
+      "escalationGrade": "HIGH",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "anyOf": [
+          { "action": "lambda:UpdateFunctionCode" },
+          { "action": "ec2:ReplaceIamInstanceProfileAssociation" },
+          {
+            "allOf": [
+              { "action": "ec2:StopInstances" },
+              { "action": "ec2:ModifyInstanceAttribute" },
+              { "action": "ec2:StartInstances" }
+            ]
+          }
+        ]
+      },
+      "narrative": "대상의 코드나 기동 구성을 교체하면 이미 부여된 역할을 그대로 승계한다. 역할 전달 권한을 요구하지 않으므로 E-1과 독립적으로 성립한다.",
+      "notes": "allOf 절은 반드시 동일 자원의 동작 집합에서 평가한다. 서로 다른 자원에 흩어진 동작을 합쳐 판정하면 오탐이다."
+    },
+    {
+      "id": "X-1",
+      "title": "데이터 저장소 외부 공유 및 전량 반출",
+      "category": "EXPOSURE",
+      "escalationGrade": "MEDIUM",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "anyOf": [
+          { "action": "dynamodb:PutResourcePolicy" },
+          { "action": "dynamodb:ExportTableToPointInTime" },
+          { "action": "dynamodb:GetRecords" }
+        ]
+      },
+      "narrative": "자원 기반 정책으로 외부 주체에 접근을 열거나, 전량을 외부 저장소로 내보내거나, 이후 변경을 스트림으로 계속 읽을 수 있다."
+    },
+    {
+      "id": "X-2",
+      "title": "네트워크 이그레스 및 노출면 생성",
+      "category": "EXPOSURE",
+      "escalationGrade": "MEDIUM",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "anyOf": [
+          { "action": "ec2:CreateRoute" },
+          { "action": "ec2:ReplaceRoute" },
+          { "action": "ec2:AttachInternetGateway" },
+          { "action": "ec2:AuthorizeSecurityGroupIngress" }
+        ]
+      },
+      "narrative": "라우트 테이블에 기본 경로를 추가하거나 보안 그룹에 인그레스를 추가해 외부 통신 경로를 만들 수 있다.",
+      "notes": "서브넷을 '프라이빗'으로 기술하지 않는다. 공개 여부는 라우트 구성으로만 판정하며, 판정하지 않는 경우 서술에서 생략한다."
+    },
+    {
+      "id": "X-3",
+      "title": "인스턴스 부팅 출력 및 디스크 사본 획득",
+      "category": "EXPOSURE",
+      "escalationGrade": "MEDIUM",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "anyOf": [
+          { "action": "ec2:GetConsoleOutput" },
+          { "action": "ec2:GetConsoleScreenshot" },
+          { "action": "ec2:GetPasswordData" },
+          { "action": "ec2:CreateSnapshot" },
+          { "action": "ec2:CreateImage" }
+        ]
+      },
+      "narrative": "부팅 출력에 남은 구성값을 읽거나 볼륨 사본을 생성할 수 있다.",
+      "notes": "외부 계정 공유 가능 여부는 ec2:ModifySnapshotAttribute 가 동작 집합에 존재할 때만 서술에 포함한다."
+    },
+    {
+      "id": "R-1",
+      "title": "차단 불가 정찰",
+      "category": "RECON",
+      "escalationGrade": "MEDIUM",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "policyNonRestrictable",
+      "predicate": {
+        "anyOf": [
+          { "action": "iam:GetRole" },
+          { "action": "iam:GetPolicyVersion" },
+          { "action": "iam:ListAttachedRolePolicies" },
+          { "action": "iam:ListRoles" }
+        ]
+      },
+      "forceRestrictable": false,
+      "relatedTo": ["E-1"],
+      "narrative": "역할과 정책의 본문을 읽을 수 있고, 이 동작들은 선언 경로로 표기되어 정책 축소로 차단할 수 없다.",
+      "notes": "동일 정책에서 E-1이 발화한 경우 두 Finding을 연결해 표시한다. 정찰과 상승이 한 정책 안에서 연결된다는 사실이 승인자에게 보여야 한다."
+    },
+    {
+      "id": "D-1",
+      "title": "테이블 삭제",
+      "category": "DESTRUCTIVE",
+      "escalationGrade": "LOW",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": { "action": "dynamodb:DeleteTable" },
+      "narrative": "테이블을 삭제할 수 있다. 백업 구성 여부는 이 산출물로 알 수 없다."
+    },
+    {
+      "id": "D-2",
+      "title": "무고지 데이터 소멸",
+      "category": "DESTRUCTIVE",
+      "escalationGrade": "LOW",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": { "action": "dynamodb:UpdateTimeToLive" },
+      "narrative": "만료 설정을 켜면 항목이 오류 없이 소멸한다. 파괴 동작 중 인지 지연이 가장 길다."
+    },
+    {
+      "id": "D-3",
+      "title": "인스턴스 종료",
+      "category": "DESTRUCTIVE",
+      "escalationGrade": "LOW",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": { "action": "ec2:TerminateInstances" },
+      "narrative": "인스턴스를 종료할 수 있다. 종료 보호 설정 여부는 이 산출물로 알 수 없다."
+    },
+    {
+      "id": "D-4",
+      "title": "네트워크 구성 삭제",
+      "category": "DESTRUCTIVE",
+      "escalationGrade": "LOW",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "anyOf": [
+          { "action": "ec2:DeleteVpc" },
+          { "action": "ec2:DeleteSubnet" }
+        ]
+      },
+      "narrative": "네트워크 구성을 삭제할 수 있다. 의존 자원 때문에 부분 삭제 상태로 남을 수 있다."
+    },
+    {
+      "id": "D-5",
+      "title": "함수 삭제",
+      "category": "DESTRUCTIVE",
+      "escalationGrade": "LOW",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": { "action": "lambda:DeleteFunction" },
+      "narrative": "함수를 삭제할 수 있다. 연결된 URL 구성과 호출 권한도 함께 소멸한다."
+    }
+  ],
+  "sort": {
+    "keys": ["escalationGrade:desc", "status:asc", "id:asc"],
+    "statusOrder": ["CONFIRMED", "UNVERIFIED", "NOT_ASSESSABLE"],
+    "forbiddenKeys": ["assetImpactGrade"]
+  },
+  "sectionOrder": ["ESCALATION", "EXPOSURE", "RECON", "DESTRUCTIVE"],
+  "forbiddenNarrativeSources": ["resourceName", "resourceTags", "stackName"]
+}
