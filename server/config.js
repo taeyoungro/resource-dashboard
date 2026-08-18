@@ -123,12 +123,12 @@ export function load() {
     // screen an approver is waiting on. Set OPT_RISK_ANALYSIS=on deliberately.
     riskAnalysis: (process.env.OPT_RISK_ANALYSIS ?? '').trim().toLowerCase() === 'on',
 
-    // What to pass as the model id. This is the INFERENCE PROFILE id when the model needs one, not
-    // the bare model id: Claude Sonnet 5 is offered through cross-region inference, so a call
-    // passing the bare id fails with a 400 telling you to pass a profile. It must match what
-    // opt-stack-dashboard-host.yaml granted - the grant names the profile and the foundation model
-    // in the regions it routes to, and nothing else in Bedrock.
-    bedrockModelId: (process.env.OPT_BEDROCK_MODEL_ID ?? 'us.anthropic.claude-sonnet-5').trim(),
+    // What to pass as the model id. This is the INFERENCE PROFILE id, not the bare model id: Claude
+    // Sonnet 4.6 is offered through cross-region inference, so a call passing the bare id fails
+    // with a 400 telling you to pass a profile. It must match what opt-stack-dashboard-host.yaml
+    // granted - the grant names the profile and the foundation model in the regions it routes to,
+    // and nothing else in Bedrock, so another value here is AccessDenied rather than another model.
+    bedrockModelId: (process.env.OPT_BEDROCK_MODEL_ID ?? 'us.anthropic.claude-sonnet-4-6').trim(),
 
     // The answer's ceiling, and how many candidates go in one request. Both are tuning: the batch
     // exists so the frame, the deployment block and the digest are paid for once and read from
