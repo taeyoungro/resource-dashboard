@@ -437,6 +437,12 @@ export interface ImpactCoverage {
   policies_unreadable: string[];
   /** Actions the reference did not know. Their groups fall back to service level attribution. */
   actions_unresolved?: string[];
+  /**
+   * Resource types Resource Explorer reported that the action reference cannot resolve, and how many
+   * of each were dropped. Non-empty means the enumeration is short by that many resources - the two
+   * vocabularies name the same ARN differently and nothing bridged this one.
+   */
+  types_unknown?: Record<string, number>;
   /** Patterns that could not be expanded - Action "*" and its kind. Nothing was enumerated for them. */
   actions_unbounded?: string[];
   /** Known actions that name no resource. Nothing enumerated for these is an answer, not a gap. */
@@ -566,6 +572,11 @@ export interface RiskAnalysisAnswer {
   digest_bytes: number;
   /** What the condenser left out, and whether it is recoverable. */
   dropped: { what: string; count: number; why: string; recoverable: boolean }[];
+  /**
+   * Resource types the inventory reported that the action reference could not resolve, and how many
+   * of each were dropped. Not a condenser loss - these never reached the assessment at all.
+   */
+  types_unknown?: Record<string, number>;
   rule_findings: Finding[];
   rule_sections: { category: FindingCategory; findings: Finding[] }[];
   rule_summary: {

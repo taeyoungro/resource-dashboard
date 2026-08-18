@@ -408,6 +408,11 @@ export function condense(assessment, {
       actions_unbounded: coverage.actions_unbounded ?? [],
       // Why any unit is marked attribution='service'.
       actions_unresolved: coverage.actions_unresolved ?? [],
+      // Resource types the index reported and the reference could not resolve, with how many were
+      // dropped. Verbatim and never folded into a count: each key names a type whose resources are
+      // MISSING from every unit below, so an analysis reading this digest is reasoning over an
+      // enumeration it can now see the hole in.
+      types_unknown: coverage.types_unknown ?? {},
       // Safe to collapse ONLY because risk_actions is built from the grant rather than from the
       // units: an account-level action reaches nothing in any index and appears in no unit, and
       // one of them (iam:ListRoles) is named by a rule.

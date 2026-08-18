@@ -444,6 +444,10 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         prompt_version: PROMPT_VERSION,
         digest_bytes: digestBytes(digest),
         dropped: digest.budget?.dropped ?? [],
+        // Types the inventory reported and the reference could not resolve. Surfaced beside the
+        // findings because it bounds them: resources of these types are in no unit, so no rule and
+        // no candidate could have fired on one.
+        types_unknown: digest.coverage?.types_unknown ?? {},
         rule_findings: rules,
         rule_sections: sections(rules),
         rule_summary: summary(rules),
