@@ -504,6 +504,24 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
                   </ul>
                 </div>
               )}
+              {Object.keys(answer.types_unknown ?? {}).length > 0 && (
+                <div className="row-warn">
+                  <strong>
+                    열거된 자원 유형 {Object.keys(answer.types_unknown!).length}종을 동작 표가 해석하지
+                    못해 제외했습니다.
+                  </strong>
+                  <p className="small">
+                    AWS는 같은 ARN을 두 어휘로 부른다 — 동작 표는 레퍼런스의 이름을, 인벤토리는
+                    인덱스의 이름을 쓴다. 여기 있는 유형은 어느 쪽으로도 잇지 못한 것이고, 그만큼의
+                    자원이 아래 어느 목록에도 <strong>없다.</strong>
+                  </p>
+                  <ul className="finding-list">
+                    {Object.entries(answer.types_unknown!).map(([type, count]) => (
+                      <li key={type}><code>{type}</code> {count}개</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {answer.dropped.length > 0 && (
                 <details>
                   <summary className="muted small">
