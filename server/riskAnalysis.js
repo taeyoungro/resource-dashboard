@@ -593,9 +593,10 @@ export async function analyse({ digest, client, model, candidates = null, maxTok
   for (const [index, batch] of groups.entries()) {
     const body = request(digest, batch, { model, maxTokens });
     try {
-      const message = client.messages.stream
-        ? await client.messages.stream(body).finalMessage()
-        : await client.messages.create(body);
+      // One call, not a stream. Nothing here consumes tokens as they arrive - a batch is parsed as
+      // a whole or lost as a whole - and the branch that used to prefer a streaming client was
+      // dead the moment every model started going through Converse, which exposes create alone.
+      const message = await client.messages.create(body);
       const text = (message.content ?? []).find((block) => block.type === 'text')?.text;
       if (!text) throw new AnalysisError('the answer carried no text block');
       let parsed;
