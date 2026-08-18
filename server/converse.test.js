@@ -58,8 +58,8 @@ test('the schema becomes a forced tool, because Converse has no output_config', 
 
 test('what Converse cannot carry is dropped, not translated into something else', () => {
   const input = converseInput(BODY);
-  // Adaptive thinking is Anthropic's. Emulating it with a temperature or a preamble would be
-  // inventing a feature the model does not have.
+  // BODY names a Nova model. Adaptive thinking is Anthropic's, and offering it to a model that
+  // does not have it would be a guess about somebody else's validator.
   assert.equal('thinking' in input, false);
   assert.equal('additionalModelRequestFields' in input, false);
   // cachePoint is accepted by some models and rejected by others with a 400 on every request, so it
@@ -115,4 +115,62 @@ test('the client answers in the shape analyse() reads, so validation has no per-
   const answer = await client.messages.create(BODY);
   assert.equal(answer.content.find((b) => b.type === 'text').text, '{"verdicts":[]}');
   assert.equal(answer.usage.cache_read_input_tokens, 0);
+});
+
+test('a field the endpoint refuses is dropped once, and the request goes again', async () => {
+  // The failure this exists for, in its own words: the analysis sent a first-party Anthropic body
+  // to InvokeModel and every batch came back "extraneous key [output_config] is not permitted".
+  // Whether an endpoint accepts an optional field is not knowable from here, so it is not assumed.
+  const sent = [];
+  let degraded = null;
+  const client = converseClient({
+    send: async (input) => {
+      sent.push(input);
+      if (input.additionalModelRequestFields) {
+        const error = new Error('Malformed input request: #: extraneous key [thinking] is not '
+          + 'permitted, please reformat your input and try again.');
+        error.$metadata = { httpStatusCode: 400 };
+        throw error;
+      }
+      return { output: { message: { content: [{ toolUse: { input: { verdicts: [] } } }] } },
+               stopReason: 'tool_use', usage: {} };
+    },
+    onDegrade: (event) => { degraded = event; },
+  });
+
+  const answer = await client.messages.create({ ...BODY, model: 'us.anthropic.claude-sonnet-5' });
+  assert.equal(sent.length, 2);
+  assert.ok(sent[0].additionalModelRequestFields, 'the first attempt did not carry the field');
+  assert.equal('additionalModelRequestFields' in sent[1], false);
+  assert.equal(answer.content[0].text, '{"verdicts":[]}');
+  // Reported rather than swallowed: the run answered under a different configuration from the one
+  // it asked for, and the log is where somebody finds out why the answers changed.
+  assert.deepEqual(degraded.dropped, { thinking: { type: 'adaptive' } });
+});
+
+test('a refusal that is not about a field is not retried', async () => {
+  // Sending less cannot fix a throttle, a denial or a model that is not enabled, and a blind retry
+  // would double the cost of every outage.
+  for (const [status, message] of [[403, 'not authorized to perform: bedrock:InvokeModel'],
+                                   [429, 'Too many requests'],
+                                   [400, 'The provided model identifier is invalid']]) {
+    let calls = 0;
+    const client = converseClient({
+      send: async () => {
+        calls += 1;
+        const error = new Error(message);
+        error.$metadata = { httpStatusCode: status };
+        throw error;
+      },
+    });
+    await assert.rejects(() => client.messages.create({ ...BODY, model: 'us.anthropic.claude-sonnet-5' }));
+    assert.equal(calls, 1, `${status} was retried`);
+  }
+});
+
+test('adaptive thinking rides along for an Anthropic model and for nothing else', () => {
+  const claude = converseInput({ ...BODY, model: 'us.anthropic.claude-sonnet-5' });
+  assert.deepEqual(claude.additionalModelRequestFields, { thinking: { type: 'adaptive' } });
+  const nova = converseInput({ ...BODY, model: 'us.amazon.nova-pro-v1:0' });
+  assert.equal('additionalModelRequestFields' in nova, false);
 });

@@ -1,19 +1,25 @@
-// Every other model on Bedrock, behind the same interface the Anthropic client offers.
+// How every model on Bedrock is called: one request shape, whoever answers.
 //
-// Why this exists: the analysis speaks one shape - an Anthropic Messages request with a system
-// array, a user turn, and a JSON schema for the answer - and @anthropic-ai/bedrock-sdk only carries
-// that shape to Anthropic models. A deployment waiting on Anthropic model access, or one that has
-// settled on Nova or Llama, needs the same analysis to run against a model that does not speak it.
+// The analysis is written as an Anthropic Messages request - a system array, a user turn, and a
+// JSON schema for the answer - because that is the shape the design is stated in. Bedrock does not
+// take that shape. It was sent anyway, through @anthropic-ai/bedrock-sdk, and every batch came back
 //
-// Bedrock's Converse API is the model-agnostic surface, so this translates between the two. The
-// translation is small, and stating what it CANNOT carry matters more than what it can:
+//     400 Malformed input request: #: extraneous key [output_config] is not permitted
+//
+// because InvokeModel on bedrock-runtime validates a narrower body than the first-party API does.
+// So this translates instead, to Converse, which is the model-agnostic surface and which takes a
+// schema as a tool. The translation is small, and stating what it CANNOT carry matters more than
+// what it can:
 //
 //   structured output   Converse has no output_config. A forced tool call does the same job - the
 //                       schema becomes a tool's input schema and toolChoice makes the model use it
 //                       - and the tool's input IS the answer. Support for forced tool use varies by
 //                       model, so a model that ignores toolChoice produces prose and the batch is
 //                       reported as failed rather than parsed loosely
-//   adaptive thinking   Anthropic-only. Dropped, not emulated
+//   adaptive thinking   Anthropic-only, and passed through Converse's own field for
+//                       model-specific parameters. Offered to an Anthropic model, never to another,
+//                       and dropped with one retry if the endpoint refuses it - whether it accepts
+//                       one is not knowable from here and is therefore not assumed
 //   prompt caching      cachePoint is supported by some models and rejected by others, and the
 //                       failure is a 400 on every request rather than a silent cost. So it is not
 //                       sent here at all: the frame and the digest are paid for on every batch, and
@@ -24,6 +30,27 @@
 // validation is what makes a model's answer usable, and it must not have a per-model branch in it.
 
 export class ConverseError extends Error {}
+
+/** Whether the provider segment of a model id is anthropic. See riskAnalysis.isAnthropicModel. */
+function isAnthropic(model) {
+  const parts = String(model ?? '').split('.');
+  return parts[0] === 'anthropic' || (parts.length > 1 && parts[1] === 'anthropic');
+}
+
+/**
+ * Whether a failure is the endpoint refusing a field rather than refusing the request.
+ *
+ * The distinction is worth drawing because only the first is recoverable by sending less. This
+ * pipeline learned it the expensive way: output_config went to InvokeModel because a wire probe
+ * proved the SDK PASSED it, which is not the same as proving Bedrock ACCEPTED it, and every batch
+ * came back "extraneous key [output_config] is not permitted".
+ */
+function refusesAField(error) {
+  const text = `${error?.message ?? ''}`;
+  const status = error?.$metadata?.httpStatusCode ?? error?.status;
+  if (status && status !== 400) return false;
+  return /extraneous key|unsupported|not permitted|unknown field|validation/i.test(text);
+}
 
 /** The tool a schema becomes. One name, used in the request and read back out of the answer. */
 const TOOL = 'record_verdicts';
@@ -47,6 +74,17 @@ export function converseInput(body) {
     messages,
     inferenceConfig: { maxTokens: body.max_tokens },
   };
+
+  // Model-specific parameters go through the one field Converse reserves for them. Adaptive
+  // thinking is Anthropic's and is passed only to an Anthropic model; anything else would be a
+  // guess about a body somebody else's validator has to accept, and a wrong guess there is a 400
+  // on every request rather than a degraded answer.
+  //
+  // Whether the endpoint accepts it is not knowable from here, so it is not assumed: the client
+  // below retries once without this field when the answer is a 400 about a field it does not know.
+  if (body.thinking && isAnthropic(body.model)) {
+    input.additionalModelRequestFields = { thinking: body.thinking };
+  }
 
   const schema = body.output_config?.format?.schema;
   if (schema) {
@@ -101,23 +139,37 @@ export function fromConverse(answer) {
  * `send` is injected so the translation is testable without the network and without the AWS SDK -
  * in production it is a BedrockRuntimeClient's send, bound to a ConverseCommand.
  */
-export function converseClient({ send }) {
+export function converseClient({ send, onDegrade = null }) {
+  async function ask(input) {
+    const shaped = fromConverse(await send(input));
+    if (shaped.content.length === 0) {
+      throw new ConverseError(`the model returned no content (stop reason: ${shaped.stop_reason})`);
+    }
+    return shaped;
+  }
+
   return {
     messages: {
       async create(body) {
-        const answer = await send(converseInput(body));
-        const shaped = fromConverse(answer);
-        if (shaped.content.length === 0) {
-          throw new ConverseError(`the model returned no content (stop reason: ${shaped.stop_reason})`);
+        const input = converseInput(body);
+        try {
+          return await ask(input);
+        } catch (error) {
+          // One retry, and only for the one thing sending less can fix. The optional field is the
+          // model-specific block; everything else in the request is the analysis itself, and
+          // retrying without a piece of that would be answering a different question quietly.
+          if (!input.additionalModelRequestFields || !refusesAField(error)) throw error;
+          const { additionalModelRequestFields: dropped, ...plain } = input;
+          if (onDegrade) onDegrade({ dropped, why: error.message });
+          return ask(plain);
         }
-        return shaped;
       },
     },
   };
 }
 
 /** The production client. Imported lazily, like the Anthropic one, for the same reason. */
-export async function bedrockConverse({ region }) {
+export async function bedrockConverse({ region, onDegrade = null }) {
   let BedrockRuntimeClient;
   let ConverseCommand;
   try {
@@ -127,5 +179,5 @@ export async function bedrockConverse({ region }) {
       + `model cannot be called: ${error.message}`);
   }
   const client = new BedrockRuntimeClient({ region });
-  return converseClient({ send: (input) => client.send(new ConverseCommand(input)) });
+  return converseClient({ send: (input) => client.send(new ConverseCommand(input)), onDegrade });
 }
