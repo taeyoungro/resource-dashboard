@@ -42,7 +42,13 @@ function refusesAField(error) {
   const text = `${error?.message ?? ''}`;
   const status = error?.$metadata?.httpStatusCode ?? error?.status;
   if (status && status !== 400) return false;
-  return /extraneous key|unsupported|not permitted|unknown field|validation/i.test(text);
+  return /extraneous key|unsupported|not permitted|unknown field|validation/i.test(text)
+    // A field the endpoint knows and will not take BESIDE another one. This pattern was added
+    // after "Thinking may not be enabled when tool_choice forces tool use" failed every batch
+    // while the retry above sat there: the list only recognised fields nobody had heard of, and a
+    // conflict between two fields it knew perfectly well read as an ordinary refusal.
+    || /may not be (enabled|used|set)|cannot be (used|combined|set)|not (supported|allowed) with/i
+      .test(text);
 }
 
 /** The tool a schema becomes. One name, used in the request and read back out of the answer. */
@@ -68,14 +74,6 @@ export function converseInput(body) {
     inferenceConfig: { maxTokens: body.max_tokens },
   };
 
-  // Model-specific parameters go through the one field Converse reserves for them. Whether the
-  // endpoint accepts this one is not knowable from here - it varies by region as well as by model
-  // - so it is not assumed: the client below retries once without this field when the answer is a
-  // 400 about a field it does not know.
-  if (body.thinking) {
-    input.additionalModelRequestFields = { thinking: body.thinking };
-  }
-
   const schema = body.output_config?.format?.schema;
   if (schema) {
     input.toolConfig = {
@@ -92,6 +90,31 @@ export function converseInput(body) {
       }],
       toolChoice: { tool: { name: TOOL } },
     };
+  }
+
+  // Thinking, and the one rule that decides what it may be.
+  //
+  // On Bedrock a FORCED tool choice and enabled thinking are mutually exclusive, and the refusal is
+  // not a 400 about an unknown field - it is the whole batch coming back with
+  //
+  //     Thinking may not be enabled when tool_choice forces tool use.
+  //
+  // which arrived as ten candidates with no verdicts. Bedrock wants the conflict resolved
+  // explicitly rather than by omission, so the field is SENT and set to disabled; leaving it out is
+  // a different request from turning it off. (The first-party API and Vertex AI do not require
+  // this, which is why it can be true of the design and false on this transport.)
+  //
+  // The schema wins over the thinking. It is what makes an answer checkable - the citation
+  // contract, the fabrication check, the containment subset all read a structure - and a batch that
+  // came back as prose costs ten verdicts, while one that came back without deliberation costs
+  // depth on ten verdicts that are still validated.
+  const thinking = input.toolConfig ? { type: 'disabled' } : body.thinking;
+  if (thinking) {
+    // Model-specific parameters go through the one field Converse reserves for them. Whether the
+    // endpoint accepts this one is not knowable from here - it varies by region as well as by
+    // model - so it is not assumed: the client below retries once without this field when the
+    // answer is a 400 about a field it cannot take.
+    input.additionalModelRequestFields = { thinking };
   }
   return input;
 }

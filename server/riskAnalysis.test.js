@@ -141,8 +141,12 @@ test('the request carries three cache breakpoints, and the batch carries none', 
   assert.equal(content[1].cache_control, undefined);
   // Bedrock has no automatic caching, so these explicit breakpoints are the only caching there is.
   assert.equal(body.model, MODEL);
-  assert.deepEqual(body.thinking, { type: 'adaptive' });
   assert.equal(body.output_config.format.type, 'json_schema');
+  // No thinking asked for, deliberately. The schema travels as a forced tool call and Bedrock
+  // refuses that beside enabled thinking - "Thinking may not be enabled when tool_choice forces
+  // tool use" came back on every batch of a deployed run. Of the two the schema is what makes an
+  // answer checkable, so it is the one that stays.
+  assert.equal('thinking' in body, false, 'the request asks for thinking it cannot have');
 });
 
 test('the frame is byte-identical across assessments and deployments', () => {
