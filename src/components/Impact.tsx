@@ -5,6 +5,8 @@ import type {
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
+import { provenance, remainingTags } from "../../server/provenance.js";
+import type { ProvenanceKind } from "../../server/provenance.js";
 import { localDate, localTime } from "../time";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
@@ -465,11 +467,18 @@ function PolicyBlock({
 }
 
 /**
- * One resource as a labelled sentence: 리소스명, 계정, 리전. The console link is NOT here - it
+ * One resource as a labelled sentence: 리소스명, 계정, 리전, 배포. The console link is NOT here - it
  * lives on the group heading, once per region, because the list page it opens is the same for
  * every row of the group and a repeated link is furniture. The full ARN stays on the hover title;
  * an ARN that does not parse shows whole in the name slot rather than hiding.
  */
+/** One word per origin. A union type, so a new kind is a compile error rather than a blank slot. */
+const DEPLOYMENT: Record<ProvenanceKind, string> = {
+  stack: "Stack",
+  stackset: "StackSet",
+  manual: "수동",
+};
+
 function LabeledResource({ resource, accountId }: {
   resource: ImpactResource;
   /** The governed account, used only when the ARN itself carries none (S3). */
@@ -479,6 +488,7 @@ function LabeledResource({ resource, accountId }: {
   const name = parsed?.name ?? resource.arn;
   const account = parsed?.account || accountId;
   const region = resource.region || parsed?.region || "global";
+  const origin = provenance(resource.tags);
   return (
     <span className="res labeled" title={resource.arn}>
       <span className="res-label">리소스명: </span>
@@ -488,6 +498,11 @@ function LabeledResource({ resource, accountId }: {
       <span className="res-value">{account}</span>
       <span className="res-label">, 리전: </span>
       <span className="res-value">{region}</span>
+      <span className="res-label">, 배포: </span>
+      <span className="res-value">
+        {DEPLOYMENT[origin.kind]}
+        {origin.name && <> (이름: <code>{origin.name}</code>)</>}
+      </span>
     </span>
   );
 }
@@ -552,9 +567,12 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
         {group.resources.slice(0, 50).map((resource) => (
           <li key={resource.arn} className={resource.sensitive ? "sensitive" : undefined}>
             <LabeledResource resource={resource} accountId={accountId} />
-            {Object.entries(resource.tags).length > 0 && (
+            {/* The three aws:cloudformation:* tags are now the 배포 clause above, so what is left
+                here is the operator's own tags - which is what a reader was looking for in this
+                slot and could not find under two hundred characters of stack id. */}
+            {Object.entries(remainingTags(resource.tags)).length > 0 && (
               <span className="tags">
-                {Object.entries(resource.tags)
+                {Object.entries(remainingTags(resource.tags))
                   .map(([k, v]) => `${k}=${v}`)
                   .join(" ")}
               </span>
