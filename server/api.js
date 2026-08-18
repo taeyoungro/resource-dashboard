@@ -20,6 +20,7 @@ import { controlPlane } from './controlPlane.js';
 import { condense, digestBytes } from './riskDigest.js';
 import { candidates as proposeCandidates } from './candidatePaths.js';
 import { findings as ruleFindings, sections, summary } from './findings.js';
+import { overlapCount, withOverlap } from './overlap.js';
 import { RULES_SHA256, RULE_ACTIONS } from './rules.js';
 import { AnalysisError, PROMPT_VERSION, analyse, bedrockClient } from './riskAnalysis.js';
 
@@ -445,7 +446,10 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         impactSha256: stored.digest ?? null,
       });
       const rules = ruleFindings(digest);
-      const candidates = proposeCandidates(digest);
+      // The candidates, each told which rules already cover it. Both halves run over the same
+      // digest and reach the same places by different routes; without this the approver reads
+      // twelve paths twice, in two cases at two different grades.
+      const candidates = withOverlap(proposeCandidates(digest), rules);
 
       const answer = {
         plan_id: id,
@@ -463,6 +467,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         rule_sections: sections(rules),
         rule_summary: summary(rules),
         candidates: candidates.length,
+        candidates_covered_by_rules: overlapCount(candidates),
         analysis: null,
         analysis_error: null,
       };
@@ -484,10 +489,11 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         });
         const a = answer.analysis;
         log.info(
-          'analysis plan=%s candidates=%d answered=%d findings=%d rejected=%d dropped=%d failed=%d '
-          + 'digest=%dB in=%d out=%d cached=%d',
-          id, a.candidates, a.answered ?? 0, a.findings.length, a.rejected.length, a.dropped.length,
-          a.failures.length, answer.digest_bytes, a.usage.input, a.usage.output, a.usage.cacheRead,
+          'analysis plan=%s candidates=%d covered=%d answered=%d findings=%d rejected=%d '
+          + 'dropped=%d failed=%d digest=%dB in=%d out=%d cached=%d',
+          id, a.candidates, answer.candidates_covered_by_rules, a.answered ?? 0, a.findings.length,
+          a.rejected.length, a.dropped.length, a.failures.length, answer.digest_bytes,
+          a.usage.input, a.usage.output, a.usage.cacheRead,
         );
       } catch (error) {
         // The rules still stand. An analysis outage is not an approval outage - the same rule the

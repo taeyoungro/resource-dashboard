@@ -747,6 +747,35 @@ dialog.picker button.commit {
    whatever its value, so the filled badge stays the one an approver's eye lands on. */
 .grade.grade-asset { background: transparent; color: var(--danger); font-weight: 600; }
 
+/* What to deny, and what denying it costs. Boxed like the not-confirmed block because it is the one
+   part of the card that leads somewhere - the restriction editor is on this screen - and a reader
+   scanning for "so what do I do" must not have to read the narrative to find it. Solid border where
+   the blocked box is dashed: that one is a caveat, this one is an instruction. */
+.finding-containment {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.finding-containment > strong { display: block; margin-bottom: 4px; color: var(--accent); }
+
+/* The action to remove, and the action that only LOOKS removable. The second is struck through
+   rather than dropped: the model proposed it, and a silently shortened list reads as a shorter
+   answer instead of a qualified one. Colour is not the only signal, for the same reason the grade
+   badges carry text - line-through survives a reader who cannot separate the two hues. */
+.finding-containment .finding-actions code.deny {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.finding-containment .finding-actions code.deny-forbidden {
+  border-color: var(--danger);
+  color: var(--danger);
+  text-decoration: line-through;
+}
+
 /* ---- a resource's tags, behind a button -------------------------------------------------------- */
 
 /* Small and quiet. It sits at the end of a row that is already a sentence, so it must not read as

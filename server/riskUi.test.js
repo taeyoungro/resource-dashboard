@@ -150,6 +150,40 @@ test('the panel is mounted where the assessment is, and says so when there is no
   assert.ok(PANEL.includes('영향도 평가를 입력으로 씁니다'));
 });
 
+test('a card that names actions to deny also names what denying them breaks', () => {
+  // The whole point of the containment block. An approver given a list of actions and no cost
+  // denies, finds out at the next deploy, and reverts - and the analysis has then produced a worse
+  // outcome than saying nothing. So the cost is not behind a conditional of its own: if there are
+  // deny actions there is a 막히는 일 row.
+  const block = PANEL.slice(PANEL.indexOf('function Containment('), PANEL.indexOf('function Card('));
+  assert.ok(block.includes('c.denyActions.map'), 'the actions to deny are no longer rendered');
+  assert.ok(block.includes('막히는 일'), 'the card no longer says what denying them breaks');
+  assert.ok(block.includes('{c.breaks}'), 'the cost row is no longer filled from the verdict');
+  assert.ok(/denyActions\.length === 0\) return null/.test(block),
+            'the block is rendered with no actions in it, which reads as "nothing to do"');
+});
+
+test('a deny action on the declaration path is struck through and never quietly dropped', () => {
+  // Two failures avoided at once. Offering it as deniable locks the user out of the pipeline that
+  // governs the permission set; removing it from the list without a word turns a qualified answer
+  // into a shorter one, and the reader cannot tell which they are looking at.
+  const block = PANEL.slice(PANEL.indexOf('function Containment('), PANEL.indexOf('function Card('));
+  assert.ok(block.includes('c.notRestrictable'), 'the block no longer reads the forbidden set');
+  assert.ok(!/denyActions\.filter\([^)]*\)\.map/.test(block),
+            'the deny list is being filtered before rendering, so a forbidden action vanishes');
+  assert.match(CSS, /\.deny-forbidden\s*\{[^}]*line-through/,
+               'the forbidden action is distinguished by colour alone');
+});
+
+test('a path the rules already found says so on the card', () => {
+  // Both halves run over the same digest and collide - measured at twelve of twenty-one candidates
+  // on one assessment, twice at two different grades. Unlabelled, the reader counts one path as two
+  // findings and has to decide which half of their own tool to believe.
+  assert.ok(PANEL.includes('finding.alreadyFoundBy'),
+            'the page no longer shows which rules already cover a model finding');
+  assert.ok(PANEL.includes('중복'));
+});
+
 test('every rule id the file defines can appear on a card', () => {
   // Not a rendering rule - a wiring one. The page keys cards by id and groups by category, so a
   // category the page has no section for would render a finding nowhere at all.
