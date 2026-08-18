@@ -180,6 +180,33 @@ test('a running analysis says so rather than looking like an empty result', () =
   assert.ok(PANEL.includes('progress.batches'), 'the page no longer shows how far along the run is');
 });
 
+test('a card is folded shut, and the fold shows what decides whether to open it', () => {
+  // Thirty-eight cards open at once is a page nobody reads to the end. What must survive the fold
+  // is everything the reader needs to decide WHICH to open - the grade, the id, the title, and the
+  // badges that say whether it can be restricted at all and whether a rule already found it.
+  const card = PANEL.slice(PANEL.indexOf('function Card('), PANEL.indexOf('function Summary('));
+  assert.match(card, /<details className=\{`finding grade-/,
+               'the card is no longer a details element, so it cannot be collapsed');
+  assert.ok(!/<details[^>]*\bopen\b/.test(card), 'cards render expanded, which is what this avoids');
+  const fold = card.slice(card.indexOf('<summary'), card.indexOf('</summary>'));
+  for (const required of ['GRADE_CLASS[finding.escalationGrade]', 'finding.id', 'finding.title',
+                          'finding.restrictable', 'alreadyFoundBy', 'STATUS_LABEL']) {
+    assert.ok(fold.includes(required), `${required} fell below the fold`);
+  }
+  // The narrative and the containment are the body - if they were in the summary the fold would
+  // save nothing.
+  assert.ok(!fold.includes('finding.narrative'));
+  assert.ok(!fold.includes('<Containment'));
+});
+
+test('a folded card can be opened from the keyboard', () => {
+  // The default marker is hidden so the arrow can sit inside the flex row. Hiding it without
+  // restoring a focus ring leaves a control an approver on a keyboard cannot see they have reached.
+  assert.match(CSS, /\.finding > summary\s*\{[^}]*list-style:\s*none/);
+  assert.match(CSS, /\.finding > summary:focus-visible\s*\{[^}]*outline:/,
+               'the summary has no focus ring, so keyboard users cannot see what they are on');
+});
+
 test('a card that names actions to deny also names what denying them breaks', () => {
   // The whole point of the containment block. An approver given a list of actions and no cost
   // denies, finds out at the next deploy, and reverts - and the analysis has then produced a worse

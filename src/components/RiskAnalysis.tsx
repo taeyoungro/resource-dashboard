@@ -231,11 +231,23 @@ function Containment({ finding }: { finding: Finding }) {
   );
 }
 
+/**
+ * One finding, folded shut.
+ *
+ * Thirty-eight cards open at once is a page nobody reads to the end - and the reader's first job is
+ * not to read any one of them, it is to see how many there are and at what grade. So the summary
+ * row carries everything that decides whether to open it: the grade, the id, the title, and the
+ * badges that say whether it can be restricted at all and whether a rule already found it.
+ *
+ * <details> rather than a useState toggle. It is open/closed in the DOM, so the browser's own find
+ * and the keyboard both work on it, and a card cannot get stuck open in a state nothing resets when
+ * the plan changes.
+ */
 function Card({ finding }: { finding: Finding }) {
   const model = finding.source === "model";
   return (
-    <div className={`finding grade-${finding.escalationGrade.toLowerCase()}`}>
-      <div className="finding-head">
+    <details className={`finding grade-${finding.escalationGrade.toLowerCase()}`}>
+      <summary className="finding-head">
         <span className={GRADE_CLASS[finding.escalationGrade]}>
           {GRADE_LABEL[finding.escalationGrade]}
         </span>
@@ -271,7 +283,7 @@ function Card({ finding }: { finding: Finding }) {
             {STATUS_LABEL[finding.status]}
           </span>
         </span>
-      </div>
+      </summary>
 
       <p className="finding-narrative">{finding.narrative}</p>
 
@@ -360,7 +372,7 @@ function Card({ finding }: { finding: Finding }) {
       )}
 
       {finding.notes && <div className="finding-row muted small">{finding.notes}</div>}
-    </div>
+    </details>
   );
 }
 
