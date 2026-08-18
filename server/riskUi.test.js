@@ -20,8 +20,24 @@ import { RULES, SECTION_ORDER } from './rules.js';
 
 const read = (name) => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8');
 const PANEL = read('components/RiskAnalysis.tsx');
+const CSS = read('styles.css');
 const DETAIL = read('components/PlanDetail.tsx');
 const PAGE = read('components/PlanPage.tsx');
+
+test('a grade modifier styles the badge and never the card it sits on', () => {
+  // Shipped broken once, and every check that existed passed. The card root carries
+  // `finding grade-critical` so its left edge can take the grade's colour, and the badge carries
+  // `grade grade-critical`. An unscoped `.grade-critical { color: #fff }` therefore hit BOTH, and
+  // every descendant of the card inherited white text on a light panel - measured at 1.05:1.
+  //
+  // The rule: a .grade-* declaration that paints text or background is scoped to .grade.
+  for (const [, selector, body] of CSS.matchAll(/^(\.[^{\n]*grade-[^{\n]*)\{([^}]*)\}/gm)) {
+    if (!/(^|[^-])color\s*:|background/.test(body)) continue;
+    assert.ok(/\.grade\.grade-/.test(selector),
+              `${selector.trim()} paints without being scoped to .grade, so it also paints the `
+              + 'card that carries the same modifier');
+  }
+});
 
 test('the sort is grade, status, id - and the asset grade is not in it', () => {
   // T-7. UNDETERMINED dominates the asset axis, so a sort that used it would rank almost nothing.
