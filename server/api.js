@@ -239,7 +239,11 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
   // this route without Bedrock.
   let client = null;
   async function modelClient() {
-    if (!client) client = await makeModelClient({ region: config.region });
+    // The model id goes in as well as the region: it decides WHICH client, because an Anthropic
+    // model and a Nova one do not accept the same request body.
+    if (!client) {
+      client = await makeModelClient({ region: config.region, model: config.bedrockModelId });
+    }
     return client;
   }
 
