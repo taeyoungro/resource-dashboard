@@ -281,6 +281,11 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       status: 'ok',
       release: config.release,
       swept_at: store.get()?.swept_at ?? null,
+      // Analyses this process is holding. Here because it is the one piece of state the dashboard
+      // keeps in memory and loses on restart, and because an operator asking "is it working or is
+      // it stuck" should not have to open a browser to find out - which is exactly what the 504
+      // forced, back when the model call lived inside its own request.
+      analysis_runs: runs.size(),
     }),
 
     'GET /api/state': async () => {
