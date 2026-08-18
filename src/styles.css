@@ -668,10 +668,14 @@ dialog.picker button.commit {
   border: 1px solid var(--border);
   white-space: nowrap;
 }
-.grade-critical { background: var(--danger); color: #fff; border-color: var(--danger); }
-.grade-high { color: var(--danger); border-color: var(--danger); }
-.grade-medium { color: var(--warn); border-color: var(--warn); }
-.grade-low { color: var(--muted); }
+/* Scoped to the badge, and the scoping is the whole point. The card root also carries
+   grade-critical - it is how the left edge gets its colour - so an unscoped .grade-critical set
+   color:#fff on the CARD, and every descendant inherited white text on a light panel. The card
+   modifiers below set border-left-color and nothing else, deliberately. */
+.grade.grade-critical { background: var(--danger); color: #fff; border-color: var(--danger); }
+.grade.grade-high { color: var(--danger); border-color: var(--danger); }
+.grade.grade-medium { color: var(--warn); border-color: var(--warn); }
+.grade.grade-low { color: var(--muted); }
 
 .finding-summary { margin: 12px 0 4px; }
 .metrics { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -698,6 +702,7 @@ dialog.picker button.commit {
   padding: 10px 12px;
   margin-bottom: 8px;
 }
+.finding { color: var(--text); }
 .finding.grade-critical { border-left-color: var(--danger); }
 .finding.grade-high { border-left-color: var(--danger); }
 .finding.grade-medium { border-left-color: var(--warn); }
@@ -740,4 +745,4 @@ dialog.picker button.commit {
 
 /* The asset axis is a second grade on the same card and must not compete with the first. Outlined
    whatever its value, so the filled badge stays the one an approver's eye lands on. */
-.grade-asset { background: transparent; color: var(--danger); font-weight: 600; }
+.grade.grade-asset { background: transparent; color: var(--danger); font-weight: 600; }
