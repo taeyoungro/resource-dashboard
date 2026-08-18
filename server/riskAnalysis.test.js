@@ -14,7 +14,7 @@ import {
 } from './riskAnalysis.js';
 
 const ACCOUNT = '718100330247';
-const MODEL = 'us.anthropic.claude-sonnet-5';
+const MODEL = 'us.anthropic.claude-sonnet-4-6';
 
 function unit(type, actions, riskActions, over = {}) {
   const total = over.n ?? 3;
@@ -152,7 +152,7 @@ test('the frame is byte-identical across assessments and deployments', () => {
                          [unit('ec2:instance', ['ec2:TerminateInstances'], ['ec2:TerminateInstances'])],
                          { meta: { account_id: '999999999999' } });
   const a = request(SIMPLE, candidates(SIMPLE), { model: MODEL });
-  const b = request(other, candidates(other), { model: 'anthropic.claude-sonnet-5' });
+  const b = request(other, candidates(other), { model: 'anthropic.claude-sonnet-4-6' });
   assert.equal(a.system[0].text, b.system[0].text);
   assert.ok(PROMPT_VERSION.startsWith(`v${ANALYSIS_VERSION}-`));
   assert.equal(PROMPT_VERSION.length, `v${ANALYSIS_VERSION}-`.length + 12);

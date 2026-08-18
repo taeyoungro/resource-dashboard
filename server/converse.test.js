@@ -5,10 +5,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { ConverseError, converseClient, converseInput, fromConverse } from './converse.js';
-import { VERDICT_SCHEMA, isAnthropicModel } from './riskAnalysis.js';
+import { VERDICT_SCHEMA } from './riskAnalysis.js';
 
 const BODY = {
-  model: 'us.amazon.nova-pro-v1:0',
+  model: 'us.anthropic.claude-sonnet-4-6',
   max_tokens: 16000,
   thinking: { type: 'adaptive' },
   output_config: { effort: 'high', format: { type: 'json_schema', schema: VERDICT_SCHEMA } },
@@ -22,21 +22,9 @@ const BODY = {
   ] }],
 };
 
-test('the model id decides the client, on the provider segment and not on a substring', () => {
-  // A 400 about a request body is what a wrong choice produces, and nothing in it names the model.
-  assert.ok(isAnthropicModel('anthropic.claude-sonnet-5'));
-  assert.ok(isAnthropicModel('us.anthropic.claude-sonnet-5'));
-  assert.ok(isAnthropicModel('global.anthropic.claude-opus-4-6-v1'));
-  assert.ok(!isAnthropicModel('us.amazon.nova-pro-v1:0'));
-  assert.ok(!isAnthropicModel('meta.llama3-70b-instruct-v1:0'));
-  // A profile somebody named after the team rather than the provider.
-  assert.ok(!isAnthropicModel('anthropic-eval.amazon.nova-pro-v1:0'));
-  assert.ok(!isAnthropicModel(''));
-});
-
 test('the system array and the user turn survive, and the model id moves to modelId', () => {
   const input = converseInput(BODY);
-  assert.equal(input.modelId, 'us.amazon.nova-pro-v1:0');
+  assert.equal(input.modelId, 'us.anthropic.claude-sonnet-4-6');
   assert.deepEqual(input.system, [{ text: 'frame' }, { text: 'deployment' }]);
   assert.equal(input.messages.length, 1);
   assert.equal(input.messages[0].role, 'user');
@@ -58,10 +46,10 @@ test('the schema becomes a forced tool, because Converse has no output_config', 
 
 test('what Converse cannot carry is dropped, not translated into something else', () => {
   const input = converseInput(BODY);
-  // BODY names a Nova model. Adaptive thinking is Anthropic's, and offering it to a model that
-  // does not have it would be a guess about somebody else's validator.
+  // Converse has no top-level thinking field. It goes through the one field reserved for
+  // model-specific parameters, and the client retries once without it if the endpoint refuses it.
   assert.equal('thinking' in input, false);
-  assert.equal('additionalModelRequestFields' in input, false);
+  assert.deepEqual(input.additionalModelRequestFields, { thinking: { type: 'adaptive' } });
   // cachePoint is accepted by some models and rejected by others with a 400 on every request, so it
   // is not sent at all. The cost of that shows up in the usage line rather than as a surprise.
   assert.equal(JSON.stringify(input).includes('cachePoint'), false);
@@ -138,7 +126,7 @@ test('a field the endpoint refuses is dropped once, and the request goes again',
     onDegrade: (event) => { degraded = event; },
   });
 
-  const answer = await client.messages.create({ ...BODY, model: 'us.anthropic.claude-sonnet-5' });
+  const answer = await client.messages.create({ ...BODY, model: 'us.anthropic.claude-sonnet-4-6' });
   assert.equal(sent.length, 2);
   assert.ok(sent[0].additionalModelRequestFields, 'the first attempt did not carry the field');
   assert.equal('additionalModelRequestFields' in sent[1], false);
@@ -163,14 +151,17 @@ test('a refusal that is not about a field is not retried', async () => {
         throw error;
       },
     });
-    await assert.rejects(() => client.messages.create({ ...BODY, model: 'us.anthropic.claude-sonnet-5' }));
+    await assert.rejects(() => client.messages.create({ ...BODY, model: 'us.anthropic.claude-sonnet-4-6' }));
     assert.equal(calls, 1, `${status} was retried`);
   }
 });
 
-test('adaptive thinking rides along for an Anthropic model and for nothing else', () => {
-  const claude = converseInput({ ...BODY, model: 'us.anthropic.claude-sonnet-5' });
-  assert.deepEqual(claude.additionalModelRequestFields, { thinking: { type: 'adaptive' } });
-  const nova = converseInput({ ...BODY, model: 'us.amazon.nova-pro-v1:0' });
-  assert.equal('additionalModelRequestFields' in nova, false);
+test('adaptive thinking rides along, and is absent when the request does not ask for one', () => {
+  // It travels in additionalModelRequestFields rather than at the top level, because Converse has
+  // no field of its own for it. A request without it must not grow an empty one - an endpoint that
+  // rejects the field would then reject every request over something nobody asked for.
+  const asked = converseInput(BODY);
+  assert.deepEqual(asked.additionalModelRequestFields, { thinking: { type: 'adaptive' } });
+  const { thinking, ...plain } = BODY;
+  assert.equal('additionalModelRequestFields' in converseInput(plain), false);
 });

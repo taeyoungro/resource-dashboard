@@ -204,7 +204,7 @@ function harness({ pushed = null, riskAnalysis = false, assessment = null,
       inlineStateBucket: 'opt-inlinepolicy-terraform', eventQueue: 'opt-iam-event-queue',
       cluster: 'opt-solution-cluster', solutionPrefix: 'opt-', mirrorPrefix: 'mirror-',
       specPolicyPrefix: 'cmp-', controlPlaneArns: [],
-      riskAnalysis, bedrockModelId: 'us.anthropic.claude-sonnet-5',
+      riskAnalysis, bedrockModelId: 'us.anthropic.claude-sonnet-4-6',
       riskAnalysisMaxTokens: 16000, riskAnalysisBatch: 10,
     },
     makeModelClient,
@@ -266,6 +266,25 @@ test('an approval carrying a restriction is written, from either assessment path
     // must not author the value that authorises its own approval.
     assert.equal(marker.expected_impact_sha256, ASSESSMENT_SHA);
   }
+});
+
+test('the model id in the code and in the example environment are the same one', () => {
+  // Three places name the model and all three must agree: this default, OPT_BEDROCK_MODEL_ID in
+  // the environment file an operator copies from the example, and RiskAnalysisInferenceProfileId
+  // in opt-stack-dashboard-host. The grant is built from the last one and the call is made with
+  // the first two, so a mismatch is AccessDenied on the screen an approver is waiting on - never a
+  // quiet fall back to another model. Only two of the three are in this repository.
+  const example = readFileSync(new URL('../deploy/dashboard.env.example', import.meta.url), 'utf8');
+  const [, configured] = readFileSync(new URL('./config.js', import.meta.url), 'utf8')
+    .match(/OPT_BEDROCK_MODEL_ID \?\? '([^']+)'/);
+  assert.equal(configured, 'us.anthropic.claude-sonnet-4-6',
+               'this deployment is built for Claude Sonnet 4.6 alone');
+  assert.ok(example.includes(`OPT_BEDROCK_MODEL_ID=${configured}`),
+            `the example environment does not name ${configured}, so an operator who copies it `
+            + 'gets a model the stack did not grant');
+  // The profile id, not the bare model id. Sonnet 4.6 is offered through cross-region inference,
+  // so a call passing the bare id comes back 400 telling you to pass a profile.
+  assert.ok(configured.startsWith('us.'), 'the configured id is not a regional inference profile');
 });
 
 test('the page sends the assessment digest whether or not there is a restriction', async () => {
@@ -679,7 +698,7 @@ test('an assessment describing another inspection is refused rather than analyse
 
 const citation = (over = {}) => ({
   findings_sha256: 'f'.repeat(64),
-  model_id: 'us.anthropic.claude-sonnet-5',
+  model_id: 'us.anthropic.claude-sonnet-4-6',
   prompt_version: 'v1-abcdef123456',
   ...over,
 });
@@ -696,7 +715,7 @@ test('an approval cites the analysis it was taken against', async () => {
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.deepEqual(marker.risk_analysis, {
     findings_sha256: 'f'.repeat(64),
-    model_id: 'us.anthropic.claude-sonnet-5',
+    model_id: 'us.anthropic.claude-sonnet-4-6',
     prompt_version: 'v1-abcdef123456',
     impact_sha256: impactSha256,
   });

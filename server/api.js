@@ -259,12 +259,11 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
   // this route without Bedrock.
   let client = null;
   async function modelClient() {
-    // The model id goes in as well as the region: it decides WHICH client, because an Anthropic
-    // model and a Nova one do not accept the same request body.
+    // The region and nothing else. Which model is called is a field in the request, not a choice of
+    // client - everything goes through Converse.
     if (!client) {
       client = await makeModelClient({
         region: config.region,
-        model: config.bedrockModelId,
         // An optional field the endpoint refused. The run still answered, under a configuration it
         // did not ask for, and that is worth a line rather than a silence.
         onDegrade: ({ dropped, why }) => log.warn(

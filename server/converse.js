@@ -13,29 +13,22 @@
 //
 //   structured output   Converse has no output_config. A forced tool call does the same job - the
 //                       schema becomes a tool's input schema and toolChoice makes the model use it
-//                       - and the tool's input IS the answer. Support for forced tool use varies by
-//                       model, so a model that ignores toolChoice produces prose and the batch is
-//                       reported as failed rather than parsed loosely
-//   adaptive thinking   Anthropic-only, and passed through Converse's own field for
-//                       model-specific parameters. Offered to an Anthropic model, never to another,
-//                       and dropped with one retry if the endpoint refuses it - whether it accepts
-//                       one is not knowable from here and is therefore not assumed
+//                       - and the tool's input IS the answer. This is also the reason the model is
+//                       not a free choice: one that ignores toolChoice produces prose, and that
+//                       batch is reported as failed rather than parsed loosely
+//   adaptive thinking   passed through Converse's own field for model-specific parameters, and
+//                       dropped with one retry if the endpoint refuses it - whether a given region
+//                       accepts one is not knowable from here and is therefore not assumed
 //   prompt caching      cachePoint is supported by some models and rejected by others, and the
 //                       failure is a 400 on every request rather than a silent cost. So it is not
 //                       sent here at all: the frame and the digest are paid for on every batch, and
 //                       what that costs is visible in the usage line rather than guessed at
 //
 // The adapter returns the Anthropic response shape - content blocks and a usage object - so
-// analyse() and everything it feeds cannot tell which client answered. That is deliberate: the
-// validation is what makes a model's answer usable, and it must not have a per-model branch in it.
+// analyse() and everything it feeds does not know how the answer was carried. That is deliberate:
+// the validation is what makes a model's answer usable, and it must not depend on the transport.
 
 export class ConverseError extends Error {}
-
-/** Whether the provider segment of a model id is anthropic. See riskAnalysis.isAnthropicModel. */
-function isAnthropic(model) {
-  const parts = String(model ?? '').split('.');
-  return parts[0] === 'anthropic' || (parts.length > 1 && parts[1] === 'anthropic');
-}
 
 /**
  * Whether a failure is the endpoint refusing a field rather than refusing the request.
@@ -75,14 +68,11 @@ export function converseInput(body) {
     inferenceConfig: { maxTokens: body.max_tokens },
   };
 
-  // Model-specific parameters go through the one field Converse reserves for them. Adaptive
-  // thinking is Anthropic's and is passed only to an Anthropic model; anything else would be a
-  // guess about a body somebody else's validator has to accept, and a wrong guess there is a 400
-  // on every request rather than a degraded answer.
-  //
-  // Whether the endpoint accepts it is not knowable from here, so it is not assumed: the client
-  // below retries once without this field when the answer is a 400 about a field it does not know.
-  if (body.thinking && isAnthropic(body.model)) {
+  // Model-specific parameters go through the one field Converse reserves for them. Whether the
+  // endpoint accepts this one is not knowable from here - it varies by region as well as by model
+  // - so it is not assumed: the client below retries once without this field when the answer is a
+  // 400 about a field it does not know.
+  if (body.thinking) {
     input.additionalModelRequestFields = { thinking: body.thinking };
   }
 

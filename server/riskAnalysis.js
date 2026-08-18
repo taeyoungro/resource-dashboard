@@ -710,27 +710,9 @@ export function sha256Of(findings) {
 }
 
 /**
- * Whether a model id names an Anthropic model.
+ * The Bedrock client, imported lazily. One path.
  *
- * The id carries the provider, with an optional routing prefix in front of it:
- *
- *     anthropic.claude-sonnet-5        the bare model
- *     us.anthropic.claude-sonnet-5     a regional inference profile
- *     global.amazon.nova-pro-v1:0      not Anthropic
- *
- * So the test is on the provider segment rather than on "contains anthropic" - a customer profile
- * called anthropic-eval pointing at Nova would otherwise be told it supports Anthropic-only
- * parameters, and the failure would be a 400 about a field rather than anything naming the model.
- */
-export function isAnthropicModel(model) {
-  const parts = String(model ?? '').split('.');
-  return parts[0] === 'anthropic' || (parts.length > 1 && parts[1] === 'anthropic');
-}
-
-/**
- * The Bedrock client, imported lazily. One path, for every model.
- *
- * It was two: @anthropic-ai/bedrock-sdk for Anthropic models and Converse for the rest. That
+ * It was two: @anthropic-ai/bedrock-sdk for Anthropic models and Converse for anything else. That
  * shipped and every batch came back
  *
  *     400 Malformed input request: #: extraneous key [output_config] is not permitted
@@ -740,15 +722,13 @@ export function isAnthropicModel(model) {
  * SDK PASSING output_config through untouched, which is a different claim from Bedrock accepting
  * it, and the difference is the whole of that failure.
  *
- * Converse takes a schema as a tool and is the same shape for every model, so there is now nothing
- * per-provider except which optional fields ride along - and those are dropped on a 400 rather than
- * assumed. One request shape also means one thing to be wrong about, which is the point: the
- * validation that makes a model's answer usable must not have a branch for who answered.
+ * Converse takes a schema as a tool, and it is the only path now. There is no per-provider branch
+ * left, which is the point: the validation that makes a model's answer usable must not have one.
  *
  * Lazily because the analysis is optional: a deployment that has not enabled it should not fail to
  * start over a package it never calls, and the tests must exercise every line above without one.
  */
-export async function bedrockClient({ region, model, onDegrade = null }) {
+export async function bedrockClient({ region, onDegrade = null }) {
   const { bedrockConverse } = await import('./converse.js');
   // No keys. The instance profile is the credential, and the SDK resolves it through the default
   // AWS provider chain - the same chain the S3 client on this host already uses.
