@@ -525,12 +525,87 @@ test('the rules run with no model, and the route says the model was not asked', 
   assert.equal(answer.rules_sha256.length, 64);
 });
 
+/**
+ * Ask for the analysis and wait for the model half, the way the page does.
+ *
+ * The POST answers as soon as the RULES have fired and leaves the model running on the server -
+ * that split is what took a minutes-long request, and the 504 in front of it, off the table. A test
+ * that only pressed the button would be asserting about an answer that has not been written yet.
+ */
+async function analysed(route, id = PLAN_ID) {
+  const started = await route['POST /api/plans/:id/analysis']({ params: { id }, body: {} });
+  if (started.run?.state !== 'running') return started;
+  for (let tick = 0; tick < 500; tick += 1) {
+    const next = await route['GET /api/plans/:id/analysis']({ params: { id } });
+    if (next.run?.state !== 'running') return next;
+    await new Promise((resolve) => { setTimeout(resolve, 2); });
+  }
+  throw new Error('the run never left the running state');
+}
+
+test('the rules come back without waiting for the model', async () => {
+  // The whole reason the route is split. A real assessment is several batches and minutes of model
+  // time, and it used to be one request holding a connection open for all of it - long enough for
+  // whatever terminates TLS in front of the dashboard to answer 504 while the server kept paying
+  // for verdicts the browser would never receive.
+  const model = modelStub();
+  const { route } = harness({
+    assessment: ANALYSABLE, riskAnalysis: true, makeModelClient: model.make,
+  });
+  const started = await route['POST /api/plans/:id/analysis']({ params: { id: PLAN_ID }, body: {} });
+  assert.ok(started.rule_findings.length > 0, 'the rule findings did not come back with the POST');
+  assert.equal(started.analysis, null, 'the POST waited for the model');
+  assert.equal(started.run.state, 'running');
+  assert.ok(typeof started.run.started_at === 'string');
+});
+
+test('the run is polled until it has an answer, and the answer carries the rules too', async () => {
+  const model = modelStub();
+  const { route } = harness({
+    assessment: ANALYSABLE, riskAnalysis: true, makeModelClient: model.make,
+  });
+  const answer = await analysed(route);
+  assert.equal(answer.run.state, 'done');
+  assert.ok(answer.analysis.findings.length > 0);
+  assert.ok(answer.rule_findings.length > 0);
+  // How long it took, recorded. Its absence is why the 504 could not be told from a hung process.
+  assert.ok(answer.analysis.timing.totalMs >= 0);
+  assert.equal(answer.analysis.timing.batchMs.length, 1);
+});
+
+test('asking again for an assessment already answered does not ask the model again', async () => {
+  // A second press of the button, or a browser reload, is not a request for a second opinion - and
+  // the model half costs money and minutes.
+  const model = modelStub();
+  const { route } = harness({
+    assessment: ANALYSABLE, riskAnalysis: true, makeModelClient: model.make,
+  });
+  const first = await analysed(route);
+  const again = await route['POST /api/plans/:id/analysis']({ params: { id: PLAN_ID }, body: {} });
+  assert.equal(model.calls.length, 1, 'the model was asked a second time');
+  assert.equal(again.analysis.findings_sha256, first.analysis.findings_sha256);
+  // And it says it is finished. The task took its copy of the answer before it started, so the run
+  // field frozen into that copy still says running - handing it back would send the page off
+  // polling for an answer it is already holding.
+  assert.equal(again.run.state, 'done');
+});
+
+test('polling a plan nobody started says so instead of hanging', async () => {
+  // Nothing is stored, so a restart loses what was in flight. The page can act on that sentence;
+  // it cannot act on a poll that never resolves.
+  const { route } = harness({ assessment: ANALYSABLE, riskAnalysis: true });
+  await assert.rejects(
+    () => route['GET /api/plans/:id/analysis']({ params: { id: PLAN_ID } }),
+    /no analysis has been started/,
+  );
+});
+
 test('with the analysis on, the model judges the candidates the code proposed', async () => {
   const model = modelStub();
   const { route, impactSha256 } = harness({
     assessment: ANALYSABLE, riskAnalysis: true, makeModelClient: model.make,
   });
-  const answer = await route['POST /api/plans/:id/analysis']({ params: { id: PLAN_ID }, body: {} });
+  const answer = await analysed(route);
   assert.equal(model.calls.length, 1);
   assert.ok(answer.analysis.findings.length > 0);
   assert.equal(answer.analysis.impact_sha256, impactSha256);
@@ -549,10 +624,13 @@ test('a model that fails leaves the rule findings standing', async () => {
     assessment: ANALYSABLE, riskAnalysis: true,
     makeModelClient: async () => { throw new Error('AccessDeniedException'); },
   });
-  const answer = await route['POST /api/plans/:id/analysis']({ params: { id: PLAN_ID }, body: {} });
+  const answer = await analysed(route);
   assert.ok(answer.rule_findings.length > 0);
   assert.equal(answer.analysis, null);
   assert.match(answer.analysis_error, /AccessDenied/);
+  // The RUN finished. A model outage is a result, not a broken run - which is why it comes back as
+  // done carrying analysis_error rather than as failed.
+  assert.equal(answer.run.state, 'done');
 });
 
 test('there is nothing to analyse without a stored assessment, and it says so', async () => {

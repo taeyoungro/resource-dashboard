@@ -589,6 +589,24 @@ export interface ModelAnalysis {
   discarded?: { why: string; fabricated: { id: string; action: string }[] };
 }
 
+/**
+ * A model run the server is doing on its own time.
+ *
+ * `failed` is the RUN failing - the process lost it, or something threw where nothing should. A
+ * model outage is not this: it comes back as a finished answer carrying `analysis_error`, because
+ * the rule findings in that answer still stand.
+ */
+export interface AnalysisRun {
+  state: "running" | "done" | "failed";
+  started_at: string;
+  elapsed_ms: number;
+  /** null batches means the run has not worked out how many there are yet. */
+  progress: { batches: number | null; done: number; elapsedMs?: number };
+  error: string | null;
+  /** Which assessment the run is about. A run left over from a replaced one is not this answer. */
+  impact_sha256?: string | null;
+}
+
 export interface RiskAnalysisAnswer {
   plan_id: string;
   request_id: string;
@@ -618,6 +636,13 @@ export interface RiskAnalysisAnswer {
   /** How many candidates a rule had already found. The two halves overlap; this is by how much. */
   candidates_covered_by_rules?: number;
   analysis: ModelAnalysis | null;
+  /**
+   * The model half, which runs on the server after the POST has already answered.
+   *
+   * Null when no model was asked at all. The rules never appear here - they are finished before
+   * the POST returns, so nothing about them is ever pending.
+   */
+  run?: AnalysisRun | null;
   /** Why no model answered. Not an error state - the rules ran either way. */
   analysis_error: string | null;
 }

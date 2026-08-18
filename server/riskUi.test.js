@@ -150,6 +150,36 @@ test('the panel is mounted where the assessment is, and says so when there is no
   assert.ok(PANEL.includes('영향도 평가를 입력으로 씁니다'));
 });
 
+test('the rules are shown as soon as they arrive, and the model half is polled for', () => {
+  // The 504. The analysis was one POST that called the model once per batch in sequence, so a real
+  // assessment held the connection open for minutes and whatever terminates TLS in front answered
+  // first. Both halves of the fix have to stay: the POST puts the rule findings up immediately,
+  // and a separate short GET collects the model half.
+  assert.ok(PANEL.includes('api.analysisRun('),
+            'the page no longer polls for the model half, so it is back to one long request');
+  assert.match(PANEL, /run\?\.state === "running"[\s\S]{0,200}poll\(\)/,
+               'a running run no longer schedules the next poll');
+  const start = PANEL.slice(PANEL.indexOf('const run = async'), PANEL.indexOf('if (!ready)'));
+  assert.ok(start.includes('setAnswer(next)'),
+            'the POST result is no longer shown, so the rule findings wait for the model again');
+});
+
+test('the poll stops when the reviewer opens another plan', () => {
+  // Otherwise the answer for the plan they just left arrives and overwrites the one in front of
+  // them - with a grade, a card list and a citation that belong to a different grant.
+  assert.match(PANEL, /useEffect\(\(\) => \{[\s\S]{0,240}return stopPolling;\s*\}, \[planId\]\)/,
+               'the poll is no longer abandoned when the plan changes');
+  assert.ok(PANEL.includes('polling.current.stopped'),
+            'a poll in flight has no way to find out it was abandoned');
+});
+
+test('a running analysis says so rather than looking like an empty result', () => {
+  // The rule findings are on screen while the model is still working. Without a line saying the
+  // other half is coming, that screen is indistinguishable from "the model found nothing".
+  assert.ok(PANEL.includes('규칙 판정을 먼저 표시합니다'));
+  assert.ok(PANEL.includes('progress.batches'), 'the page no longer shows how far along the run is');
+});
+
 test('a card that names actions to deny also names what denying them breaks', () => {
   // The whole point of the containment block. An approver given a list of actions and no cost
   // denies, finds out at the next deploy, and reverts - and the analysis has then produced a worse

@@ -60,11 +60,15 @@ export const api = {
     handle(await fetch(`${BASE}/plans/${encodeURIComponent(planId)}`, { headers: headers() })),
 
   /**
-   * Run the risk analysis for a plan.
+   * Start the risk analysis for a plan, and get the half that is ready immediately.
    *
-   * POST because running it costs money and takes seconds, so it happens when somebody asks - never
-   * as a side effect of opening a plan. The rules come back either way; the model half is present
-   * only where the deployment enabled it.
+   * POST because running it costs money, so it happens when somebody asks - never as a side effect
+   * of opening a plan. It returns as soon as the RULES have fired: those are deterministic and take
+   * milliseconds. The model half is started on the server and collected by analysisRun below.
+   *
+   * It used to return only when the model had answered every batch, which on a real assessment is
+   * minutes inside one request - long enough for whatever terminates TLS in front of the dashboard
+   * to answer 504 while the server kept paying for an answer the browser would never see.
    */
   analyse: async (planId: string): Promise<RiskAnalysisAnswer> =>
     handle(
@@ -73,6 +77,12 @@ export const api = {
         headers: headers(),
         body: "{}",
       }),
+    ),
+
+  /** How the model half is going, and the whole answer once it is done. Milliseconds per call. */
+  analysisRun: async (planId: string): Promise<RiskAnalysisAnswer> =>
+    handle(
+      await fetch(`${BASE}/plans/${encodeURIComponent(planId)}/analysis`, { headers: headers() }),
     ),
 
   decide: async (planId: string, payload: DecisionPayload): Promise<DecisionResult> =>
