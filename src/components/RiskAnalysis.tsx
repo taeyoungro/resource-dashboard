@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type {
   AssetGrade, Finding, FindingCategory, FindingStatus, Grade, RiskAnalysisAnswer,
@@ -409,41 +409,111 @@ function Summary({ answer, findings }: { answer: RiskAnalysisAnswer; findings: F
   );
 }
 
+/** How often the page asks how the model half is going. */
+const POLL_MS = 3000;
+
 export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
   const [answer, setAnswer] = useState<RiskAnalysisAnswer | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The poll in flight. A ref rather than state because nothing renders from it and because the
+  // cleanup below has to be able to stop it without waiting for a re-render.
+  const polling = useRef<{ timer: number | null; stopped: boolean }>({ timer: null, stopped: false });
+
+  const stopPolling = () => {
+    polling.current.stopped = true;
+    if (polling.current.timer !== null) window.clearTimeout(polling.current.timer);
+    polling.current.timer = null;
+  };
+
+  // Opening another plan abandons this one's poll. Without this the answer for the plan the
+  // reviewer just left would arrive and overwrite the one they are looking at now.
+  useEffect(() => {
+    setAnswer(null);
+    setError(null);
+    setBusy(false);
+    return stopPolling;
+  }, [planId]);
+
+  /**
+   * The citation the decision will carry.
+   *
+   * Only when a model answered: the rule findings are reproducible from the assessment and its
+   * digest already travels, so there is nothing for a rules-only run to cite that the marker does
+   * not already have.
+   *
+   * And never for a DISCARDED run. That run cited an action granted nowhere, so every verdict in it
+   * was thrown away and the reviewer is looking at the rule findings alone - a citation there would
+   * record that a decision was taken while reading an analysis that does not exist.
+   */
+  const settle = (next: RiskAnalysisAnswer) => {
+    setAnswer(next);
+    onAnalysis(
+      next.analysis && !next.analysis.discarded
+        && next.analysis.findings_sha256 && next.analysis.impact_sha256
+        ? {
+          findings_sha256: next.analysis.findings_sha256,
+          model_id: next.analysis.model_id,
+          prompt_version: next.analysis.prompt_version,
+          impact_sha256: next.analysis.impact_sha256,
+        }
+        : null,
+    );
+  };
+
+  const poll = () => {
+    polling.current.timer = window.setTimeout(async () => {
+      if (polling.current.stopped) return;
+      try {
+        const next = await api.analysisRun(planId);
+        if (polling.current.stopped) return;
+        if (next.run?.state === "running") {
+          // Only the progress moved. Merged rather than replaced so the rule findings the POST
+          // already returned stay on screen while the model half is still being written.
+          setAnswer((prev) => (prev ? { ...prev, run: next.run } : prev));
+          poll();
+          return;
+        }
+        setBusy(false);
+        if (next.run?.state === "failed") {
+          setError(next.run.error ?? "분석 실행이 끝나지 못했습니다.");
+          setAnswer((prev) => (prev ? { ...prev, run: next.run } : prev));
+          return;
+        }
+        settle(next);
+      } catch (e) {
+        if (polling.current.stopped) return;
+        setBusy(false);
+        setError((e as Error).message);
+      }
+    }, POLL_MS);
+  };
+
   const run = async () => {
+    stopPolling();
+    polling.current.stopped = false;
     setBusy(true);
     setError(null);
     try {
       const next = await api.analyse(planId);
+      if (polling.current.stopped) return;
+      // The rules are finished before this returns, so they go up now rather than after the model.
+      // On a real assessment that is the difference between reading twelve findings immediately and
+      // staring at a spinner for the minutes the model takes.
       setAnswer(next);
-      // The citation the decision will carry. Only when a model answered: the rule findings are
-      // reproducible from the assessment and its digest already travels, so there is nothing for a
-      // rules-only run to cite that the marker does not already have.
-      //
-      // And never for a DISCARDED run. That run cited an action granted nowhere, so every verdict
-      // in it was thrown away and the reviewer is looking at the rule findings alone - a citation
-      // there would record that a decision was taken while reading an analysis that does not exist.
-      onAnalysis(
-        next.analysis && !next.analysis.discarded
-          && next.analysis.findings_sha256 && next.analysis.impact_sha256
-          ? {
-            findings_sha256: next.analysis.findings_sha256,
-            model_id: next.analysis.model_id,
-            prompt_version: next.analysis.prompt_version,
-            impact_sha256: next.analysis.impact_sha256,
-          }
-          : null,
-      );
+      onAnalysis(null);
+      if (next.run?.state === "running") {
+        poll();
+        return;
+      }
+      setBusy(false);
+      settle(next);
     } catch (e) {
+      setBusy(false);
       setError((e as Error).message);
       setAnswer(null);
       onAnalysis(null);
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -474,6 +544,20 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
       </div>
 
       {error && <div className="error">{error}</div>}
+
+      {/* 규칙 판정은 이미 아래에 떠 있다. 이 줄은 모델 절반이 아직 오는 중이라는 사실만 말한다 —
+          없으면 화면이 "모델이 아무것도 찾지 못했다"와 구분되지 않는다. */}
+      {answer?.run?.state === "running" && (
+        <div className="notice">
+          <strong>규칙 판정을 먼저 표시합니다.</strong>{" "}
+          모델은 후보를 묶음으로 판정하며 서버에서 계속 돌고 있습니다
+          {answer.run.progress.batches
+            ? ` — ${answer.run.progress.batches}묶음 중 ${answer.run.progress.done}묶음`
+            : ""}
+          {` · ${Math.round(answer.run.elapsed_ms / 1000)}초 경과`}. 이 화면을 떠나도 실행은 끝까지
+          가고, 돌아와서 다시 누르면 이미 나온 답을 그대로 보여줍니다.
+        </div>
+      )}
 
       {answer && (
         <>

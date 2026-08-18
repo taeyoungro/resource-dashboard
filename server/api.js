@@ -23,6 +23,7 @@ import { findings as ruleFindings, sections, summary } from './findings.js';
 import { overlapCount, withOverlap } from './overlap.js';
 import { RULES_SHA256, RULE_ACTIONS } from './rules.js';
 import { AnalysisError, PROMPT_VERSION, analyse, bedrockClient } from './riskAnalysis.js';
+import { DONE, asJson, runStore } from './runs.js';
 
 // A plan is identified by the governed resource it belongs to, not by the request that produced
 // it: <12 digit account>:<resource>. One resource has one state and one plan, and a second edit
@@ -229,11 +230,29 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
 }
 
 export function routes({ config, s3, store, notifications, markerBodies, impacts, log,
-                         makeModelClient = bedrockClient }) {
+                         makeModelClient = bedrockClient, runs = runStore() }) {
   // Announcements ask for a sweep, because learning that work started is most of what they are
   // for. Rate limited: a burst of dispatches is a normal thing (one administrator attaching five
   // policies) and would otherwise be a burst of full bucket listings.
   let lastNotificationSweep = 0;
+
+  /** How a run looks to the page right now. */
+  const runState = (entry) => ({
+    ...asJson(entry, runs.elapsed(entry)),
+    // Which assessment it is about. The page holds that digest and refuses a citation that does
+    // not match it, so a run left over from a replaced assessment cannot be read as this answer.
+    impact_sha256: entry.key,
+  });
+
+  /**
+   * A finished answer with the run's CURRENT state on it.
+   *
+   * Always recomputed, never the copy stored in the answer. The task takes its copy of the answer
+   * before it starts, so the run field frozen into it says `running` forever - and a second press
+   * of the button would hand back a finished analysis labelled as still going, which sends the page
+   * off polling for something it already has.
+   */
+  const withRun = (answer, entry) => ({ ...answer, run: runState(entry) });
 
   // Built on first use and kept. Built lazily because the package it needs is only there for a
   // deployment that enabled the analysis, and injectable because the tests must be able to exercise
@@ -422,7 +441,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
      * deployment that never enables Bedrock still gets the twelve rules fired against the
      * assessment - which is the half an approver can rely on without trusting a model at all.
      */
-    'POST /api/plans/:id/analysis': async ({ params, body }) => {
+    'POST /api/plans/:id/analysis': async ({ params }) => {
       const id = planId(params.id);
       const plan = await readPlan(s3, config, id);
       if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
@@ -439,11 +458,19 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
           + `this plan is ${plan.request_id}; reload the plan`);
       }
 
+      const key = stored.digest ?? null;
+
+      // Already answered, about this same assessment. Returned rather than asked again: the model
+      // half costs money and minutes, and a second press of the button - or a browser reload - is
+      // not a request for a second opinion.
+      const finished = runs.get(id, key);
+      if (finished && finished.state === DONE) return withRun(finished.answer, finished);
+
       const digest = condense(stored.document, {
         controlPlane: controlPlane(config),
         ruleActions: RULE_ACTIONS,
         rulesSha256: RULES_SHA256,
-        impactSha256: stored.digest ?? null,
+        impactSha256: key,
       });
       const rules = ruleFindings(digest);
       // The candidates, each told which rules already cover it. Both halves run over the same
@@ -454,7 +481,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       const answer = {
         plan_id: id,
         request_id: stored.document.request_id,
-        impact_sha256: stored.digest ?? null,
+        impact_sha256: key,
         rules_sha256: RULES_SHA256,
         prompt_version: PROMPT_VERSION,
         digest_bytes: digestBytes(digest),
@@ -470,6 +497,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         candidates_covered_by_rules: overlapCount(candidates),
         analysis: null,
         analysis_error: null,
+        run: null,
       };
 
       if (!config.riskAnalysis) {
@@ -479,31 +507,67 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         return answer;
       }
 
-      try {
-        const client = await modelClient();
-        answer.analysis = await analyse({
-          digest, client, candidates,
-          model: config.bedrockModelId,
-          maxTokens: config.riskAnalysisMaxTokens,
-          batchSize: config.riskAnalysisBatch,
-        });
-        const a = answer.analysis;
-        log.info(
-          'analysis plan=%s candidates=%d covered=%d answered=%d findings=%d rejected=%d '
-          + 'dropped=%d failed=%d digest=%dB in=%d out=%d cached=%d',
-          id, a.candidates, answer.candidates_covered_by_rules, a.answered ?? 0, a.findings.length,
-          a.rejected.length, a.dropped.length, a.failures.length, answer.digest_bytes,
-          a.usage.input, a.usage.output, a.usage.cacheRead,
-        );
-      } catch (error) {
-        // The rules still stand. An analysis outage is not an approval outage - the same rule the
-        // assessment itself follows.
-        answer.analysis_error = error instanceof AnalysisError || error instanceof HttpError
-          ? error.message
-          : `the model call failed: ${error.message ?? String(error)}`;
-        log.warn('analysis plan=%s failed: %s', id, answer.analysis_error);
-      }
+      // Everything above is deterministic and takes milliseconds. Everything below is one model
+      // call per batch, in sequence, and on a real assessment that is minutes - which is what put
+      // a 504 in front of this route when it was all one request. So the model half is started and
+      // not awaited: this returns the rule findings now, and the page polls GET for the rest.
+      const entry = runs.start(id, key, async (report) => {
+        const done = { ...answer };
+        try {
+          const client = await modelClient();
+          done.analysis = await analyse({
+            digest, client, candidates,
+            model: config.bedrockModelId,
+            maxTokens: config.riskAnalysisMaxTokens,
+            batchSize: config.riskAnalysisBatch,
+            onProgress: ({ batch, of, elapsedMs }) => report({ batches: of, done: batch, elapsedMs }),
+          });
+          const a = done.analysis;
+          log.info(
+            'analysis plan=%s candidates=%d covered=%d answered=%d findings=%d rejected=%d '
+            + 'dropped=%d failed=%d digest=%dB in=%d out=%d cached=%d took=%dms slowest=%dms',
+            id, a.candidates, done.candidates_covered_by_rules, a.answered ?? 0, a.findings.length,
+            a.rejected.length, a.dropped.length, a.failures.length, done.digest_bytes,
+            a.usage.input, a.usage.output, a.usage.cacheRead,
+            a.timing?.totalMs ?? 0, Math.max(0, ...(a.timing?.batchMs ?? [0])),
+          );
+        } catch (error) {
+          // The rules still stand. An analysis outage is not an approval outage - the same rule the
+          // assessment itself follows.
+          done.analysis_error = error instanceof AnalysisError || error instanceof HttpError
+            ? error.message
+            : `the model call failed: ${error.message ?? String(error)}`;
+          log.warn('analysis plan=%s failed: %s', id, done.analysis_error);
+        }
+        return done;
+      });
+
+      answer.run = runState(entry);
       return answer;
+    },
+
+    /**
+     * How the run started above is going, and its answer once there is one.
+     *
+     * GET because it changes nothing and a browser may repeat it as often as it likes - which is
+     * the point. Every request on this route is milliseconds, so no proxy timeout is in play; the
+     * one that used to matter belonged to the POST, which held a connection open for the whole
+     * model call and got a 504 for it.
+     */
+    'GET /api/plans/:id/analysis': async ({ params }) => {
+      const id = planId(params.id);
+      // No key given, so the run is returned with the assessment it is about stated on it. The
+      // page holds that digest already and refuses a citation that does not match it, so a run
+      // left over from a replaced assessment cannot be read as this plan's answer.
+      const entry = runs.get(id, null);
+      if (!entry) {
+        throw new HttpError(404, `no analysis has been started for ${id} in this process. Press `
+          + 'the button again - a restart loses what was running, and nothing is stored.');
+      }
+      if (entry.state === DONE) return withRun(entry.answer, entry);
+      // A failure here is the RUN failing, not the model - a model outage comes back as a finished
+      // answer carrying analysis_error, because the rules in it still stand.
+      return { plan_id: id, run: runState(entry) };
     },
 
     'POST /api/plans/:id/decision': async ({ params, body }) => {

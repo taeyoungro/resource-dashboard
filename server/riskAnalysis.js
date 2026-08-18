@@ -589,9 +589,16 @@ export async function analyse({ digest, client, model, candidates = null, maxTok
   const verdicts = [];
   const failures = [];
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  // How long this took, per batch and in total. Recorded because its absence cost a deployment:
+  // the run held one HTTP request open for minutes, whatever terminates TLS in front returned
+  // 504, and the log line said what the answer contained and nothing about how long it took to
+  // get - so there was no way to tell a slow model from a hung one without a browser open.
+  const timing = { totalMs: 0, batchMs: [] };
+  const started = Date.now();
 
   for (const [index, batch] of groups.entries()) {
     const body = request(digest, batch, { model, maxTokens });
+    const batchStarted = Date.now();
     try {
       // One call, not a stream. Nothing here consumes tokens as they arrive - a batch is parsed as
       // a whole or lost as a whole - and the branch that used to prefer a streaming client was
@@ -617,8 +624,12 @@ export async function analyse({ digest, client, model, candidates = null, maxTok
       failures.push({ batch: index + 1, candidates: batch.map((c) => c.id),
                       why: error.message ?? String(error) });
     }
-    if (onProgress) onProgress({ batch: index + 1, of: groups.length });
+    timing.batchMs.push(Date.now() - batchStarted);
+    if (onProgress) {
+      onProgress({ batch: index + 1, of: groups.length, elapsedMs: Date.now() - started });
+    }
   }
+  timing.totalMs = Date.now() - started;
 
   const { accepted, dropped, fabricated } = validate(verdicts, { candidates: list, digest });
 
@@ -643,6 +654,7 @@ export async function analyse({ digest, client, model, candidates = null, maxTok
       failures,
       candidates: list.length,
       usage,
+      timing,
     };
   }
 
@@ -687,6 +699,7 @@ export async function analyse({ digest, client, model, candidates = null, maxTok
     candidates: list.length,
     answered: accepted.length,
     usage,
+    timing,
     findings_sha256: sha256Of(findings),
   };
 }
