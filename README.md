@@ -3,6 +3,10 @@
 IAM 거버넌스 파이프라인의 **승인 화면**과 **실패 조회 화면**. EC2 인스턴스에서 돌고, 인스턴스
 프로파일로 역할을 받는다.
 
+> **배포 절차**는 `event_pipeline/docs/cloudformation/UPDATE_RUNBOOK.md`에 있다 — 스택·이미지와
+> 순서를 맞춰야 하는 부분이 있어서 이 저장소가 아니라 그쪽에 둔다.
+> **하지 않은 것**은 `event_pipeline/docs/BACKLOG.md`에 있다.
+
 ## 무엇이 바뀌었나
 
 이전에는 브라우저에서만 도는 화면이었다. `npm run dev`로 로컬에서 띄우고, Vite 개발 서버가
