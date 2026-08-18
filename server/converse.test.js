@@ -49,10 +49,38 @@ test('what Converse cannot carry is dropped, not translated into something else'
   // Converse has no top-level thinking field. It goes through the one field reserved for
   // model-specific parameters, and the client retries once without it if the endpoint refuses it.
   assert.equal('thinking' in input, false);
-  assert.deepEqual(input.additionalModelRequestFields, { thinking: { type: 'adaptive' } });
   // cachePoint is accepted by some models and rejected by others with a 400 on every request, so it
   // is not sent at all. The cost of that shows up in the usage line rather than as a surprise.
   assert.equal(JSON.stringify(input).includes('cachePoint'), false);
+});
+
+test('a schema turns thinking off, explicitly, because the two cannot both be set', () => {
+  // The test that would have caught it. BODY asks for adaptive thinking AND carries a schema, and
+  // the schema travels as a FORCED tool call - a combination Bedrock refuses outright:
+  //
+  //     Thinking may not be enabled when tool_choice forces tool use.
+  //
+  // Every batch of a deployed run came back that way, ten candidates at a time with no verdicts.
+  const input = converseInput(BODY);
+  assert.deepEqual(input.toolChoice ?? input.toolConfig.toolChoice, { tool: { name: 'record_verdicts' } });
+  assert.deepEqual(input.additionalModelRequestFields, { thinking: { type: 'disabled' } },
+                   'a forced tool choice was sent with thinking not explicitly disabled');
+  // SENT and set to disabled, not left out. Bedrock wants the conflict resolved rather than
+  // implied, and omitting the field is a different request from turning the feature off.
+  assert.ok('additionalModelRequestFields' in input,
+            'the field was dropped instead of being set to disabled');
+});
+
+test('without a forced tool the request keeps the thinking it asked for', () => {
+  // The rule is about the COMBINATION, not about thinking. A request with no schema has no forced
+  // tool choice and nothing to conflict with, so what it asked for travels unchanged.
+  const { output_config: schema, ...prose } = BODY;
+  assert.deepEqual(converseInput(prose).additionalModelRequestFields,
+                   { thinking: { type: 'adaptive' } });
+  // And a request that asked for neither must not grow an empty field: an endpoint that rejects
+  // the field would then reject every request over something nobody asked for.
+  const { thinking, ...plain } = prose;
+  assert.equal('additionalModelRequestFields' in converseInput(plain), false);
 });
 
 test('a forced tool call comes back as the text the caller parses', () => {
@@ -133,7 +161,7 @@ test('a field the endpoint refuses is dropped once, and the request goes again',
   assert.equal(answer.content[0].text, '{"verdicts":[]}');
   // Reported rather than swallowed: the run answered under a different configuration from the one
   // it asked for, and the log is where somebody finds out why the answers changed.
-  assert.deepEqual(degraded.dropped, { thinking: { type: 'adaptive' } });
+  assert.deepEqual(degraded.dropped, { thinking: { type: 'disabled' } });
 });
 
 test('a refusal that is not about a field is not retried', async () => {
@@ -156,12 +184,29 @@ test('a refusal that is not about a field is not retried', async () => {
   }
 });
 
-test('adaptive thinking rides along, and is absent when the request does not ask for one', () => {
-  // It travels in additionalModelRequestFields rather than at the top level, because Converse has
-  // no field of its own for it. A request without it must not grow an empty one - an endpoint that
-  // rejects the field would then reject every request over something nobody asked for.
-  const asked = converseInput(BODY);
-  assert.deepEqual(asked.additionalModelRequestFields, { thinking: { type: 'adaptive' } });
-  const { thinking, ...plain } = BODY;
-  assert.equal('additionalModelRequestFields' in converseInput(plain), false);
+test('a refusal about two fields conflicting is retried, not just an unknown one', () => {
+  // The retry existed and sat there. Its list only recognised fields nobody had heard of -
+  // "extraneous key", "unknown field" - so "Thinking may not be enabled when tool_choice forces
+  // tool use", which is a conflict between two fields the endpoint knows perfectly well, read as
+  // an ordinary refusal and every batch was lost.
+  //
+  // The primary path no longer produces that combination. This is the backstop for the next
+  // conflict, which will be worded differently and will not be predicted here either.
+  let calls = 0;
+  const client = converseClient({
+    send: async () => {
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error('Thinking may not be enabled when tool_choice forces tool use.');
+        error.$metadata = { httpStatusCode: 400 };
+        throw error;
+      }
+      return { output: { message: { content: [{ toolUse: { input: { verdicts: [] } } }] } },
+               stopReason: 'tool_use', usage: {} };
+    },
+  });
+  return client.messages.create(BODY).then((answer) => {
+    assert.equal(calls, 2, 'the conflict was not retried');
+    assert.equal(answer.content[0].text, '{"verdicts":[]}');
+  });
 });

@@ -324,12 +324,18 @@ function batchBlock(batch) {
  *   3. the digest           - identical for every batch of THIS assessment
  * The batch itself carries no marker: it differs every request, and marking it would write a cache
  * entry per batch that nothing ever reads.
+ *
+ * No thinking is asked for, and that is a decision rather than an omission. The schema travels as a
+ * FORCED tool call, and on Bedrock a forced tool choice and enabled thinking cannot both be set -
+ * every batch came back "Thinking may not be enabled when tool_choice forces tool use" until this
+ * stopped asking. Of the two the schema is the one worth keeping: it is what makes an answer
+ * checkable at all, since the citation contract, the fabrication check and the containment subset
+ * each read a structure. converse.js is where the two facts meet, so it is where the field is set.
  */
 export function request(digest, batch, { model, maxTokens = 16000 }) {
   return {
     model,
     max_tokens: maxTokens,
-    thinking: { type: 'adaptive' },
     output_config: {
       effort: 'high',
       format: { type: 'json_schema', schema: VERDICT_SCHEMA },
