@@ -78,10 +78,25 @@ export const VERDICT_SCHEMA = {
           // differently, and only the second has a blast radius already attached to it.
           mechanism: { type: 'string',
                        enum: ['new_resource', 'existing_resource', 'both', 'neither'] },
-          // Q4. What has to already be true. Empty means nothing does.
-          preconditions: { type: 'array', items: { type: 'string' } },
-          // Q5.
-          final_impact: { type: 'string' },
+          // Q4. What has to already be true. Empty means nothing does, and empty is the common
+          // answer - the first version of this returned "The Lambda function must be running" and
+          // "The EC2 image must be running" on nearly every card, which are filler and one of them
+          // is not a thing that happens. The description says what a precondition IS.
+          preconditions: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Conditions an approver could go and CHECK, which are not implied by the '
+              + 'resource existing. Empty if there are none. Never "the resource must exist", '
+              + '"must be running" or "must be available".',
+          },
+          // Q5. A sentence, not the outcome label - that is already on the card, and returning it
+          // was what eight of twenty-one verdicts did.
+          final_impact: {
+            type: 'string',
+            minLength: 10,
+            description: 'One sentence in Korean naming what the attacker ends up holding or '
+              + 'breaking. Not the outcome label.',
+          },
           // Q6. False means the evidence given does not settle it, and the finding is recorded as
           // not assessable rather than as confirmed.
           evidence_sufficient: { type: 'boolean' },
@@ -90,12 +105,49 @@ export const VERDICT_SCHEMA = {
           category: { type: 'string',
                       enum: ['ESCALATION', 'EXPOSURE', 'RECON', 'DESTRUCTIVE'] },
           proposed_grade: { type: 'string', enum: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] },
-          title: { type: 'string' },
-          narrative: { type: 'string' },
+          title: { type: 'string', minLength: 2 },
+          narrative: {
+            type: 'string',
+            // Ten of twenty-one came back empty. The schema required the key and said nothing about
+            // its contents, so an empty string satisfied it and the card rendered a title with
+            // nothing under it. Validation drops a blank one now as well - a length in a schema is
+            // a request, not a guarantee.
+            minLength: 30,
+            description: 'Two to four sentences in Korean.',
+          },
+
+          // Q7, and the reason an approver opened this page. A finding that does not end in "so
+          // remove these" leaves the reader to translate a path into a restriction by hand, in an
+          // editor sitting on the same screen.
+          containment: {
+            type: 'object',
+            properties: {
+              deny_actions: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'The SMALLEST subset of cited_actions whose removal breaks this path. '
+                  + 'Byte-identical to the names you cited. Empty only if nothing can break it.',
+              },
+              breaks: {
+                type: 'string',
+                minLength: 10,
+                description: 'One sentence in Korean: what legitimate work stops if those actions '
+                  + 'are denied on these resources. A restriction with no stated cost is how an '
+                  + 'outage gets approved. Say "확인되지 않음" if you cannot tell.',
+              },
+              blocked_elsewhere: {
+                type: 'boolean',
+                description: 'True if denying these actions does not close the path because another '
+                  + 'granted action reaches the same outcome.',
+              },
+            },
+            required: ['deny_actions', 'breaks', 'blocked_elsewhere'],
+            additionalProperties: false,
+          },
         },
         required: ['candidate_id', 'real', 'human_error', 'mechanism', 'preconditions',
                    'final_impact', 'evidence_sufficient', 'cited_actions', 'category',
-                   'proposed_grade', 'title', 'narrative'],
+                   'proposed_grade', 'title', 'narrative', 'containment'],
         additionalProperties: false,
       },
     },
@@ -118,50 +170,102 @@ function frame() {
   const rules = RULES.map((r) => `  ${r.id} [${r.category}/${r.escalationGrade}] ${r.title}`)
     .join('\n');
 
-  return `You are judging candidate attack paths in an AWS permission grant, for a human who has to
-approve or refuse that grant. You are one half of the analysis. The other half is deterministic code
-that has already read the assessment, worked out which capabilities each granted action carries, and
-proposed every candidate path the evidence supports. Your job is to judge those candidates. It is
-not to find new ones.
+  return `You are judging candidate attack paths in an AWS permission grant, for a cloud
+administrator who has to approve or refuse that grant AND decide what to deny. You are one half of
+the analysis. The other half is deterministic code that has already read the assessment, worked out
+which capabilities each granted action carries, and proposed every candidate path the evidence
+supports. Your job is to judge those candidates. It is not to find new ones.
 
-Answer six questions about each candidate:
+Answer seven questions about each candidate:
 
   1. Is it a real, executable path? An action being granted is not the same as a path existing.
-  2. Could an operator cause it by mistake, without intending an attack?
+  2. Could an operator cause it by mistake, in the course of ordinary work?
   3. Does it create a new resource, or alter one that already exists? They are different incidents.
   4. What has to already be true for it to work?
   5. What is the final impact?
   6. Is the evidence you were given sufficient to settle questions 1 to 5?
+  7. Which of these actions would have to be DENIED to break the path, and what breaks with them?
+
+Question 7 is why this page exists. The reader has a restriction editor open beside your answer and
+a decision to make in it. A verdict that stops at "this path exists" leaves them to do the
+translation you were asked for.
 
 Rules you work under:
 
-CITATION. Every action you name must be copied byte for byte from the candidate you are judging -
-same case, same service prefix, no abbreviation, no reconstruction from memory. You may not name an
-action that does not appear in the candidate's steps or in its also_granted list. An action you
+CITATION. Every action you name - in cited_actions and in containment.deny_actions - must be copied
+byte for byte from the candidate you are judging: same case, same service prefix, no abbreviation,
+no reconstruction from memory. You may not name an action that does not appear in the candidate's
+steps or in its also_granted list, and deny_actions must be a subset of cited_actions. An action you
 believe should be there but cannot find is a reason to answer question 6 with false, never a reason
 to write the name yourself. A single fabricated action name invalidates the entire analysis.
 
 NO NEW PATHS. If you see something the candidates do not cover, say so in the narrative of the
 closest candidate. Do not answer about a candidate id you were not given; it will be discarded.
 
-NO NAMES. Judge and describe using resource TYPES, counts, and the control-plane labels you are
-given. Never build an argument on a resource name, an ARN, or a tag: the same table is called
-something else in the next account, and an inference from a name inverts silently there. Sample
-ARNs are given to you as evidence that resources exist and to be counted - not as a description of
-what they are for. Do not put an ARN or a resource name in a narrative.
+KOREAN. Every field you write prose into is Korean: title, narrative, final_impact, preconditions
+and containment.breaks. Action names, ARNs and resource types stay as they are.
 
-NO GRADE FROM A NAME, AND NO IMPACT FROM AN UNKNOWN. The asset half of the grade is computed from
-this deployment's configuration, not by you. Do not describe the scale of damage to a resource whose
-purpose you were not told.
+WHAT A PRECONDITION IS. Something an approver could go and CHECK, and that is not implied by the
+resource existing. "The role attached to this instance must itself hold permissions worth taking"
+is a precondition. "The instance must be running", "the subnet must be available", "the function
+must exist" are not - they restate the candidate. If nothing has to be true, the list is empty, and
+empty is the ordinary answer.
+
+WHAT THE FINAL IMPACT IS. One sentence saying what the caller ends up holding or breaking. Not the
+outcome label - credentials_of, data_egress and the rest are already on the card, and repeating one
+there says nothing.
+
+HUMAN ERROR IS NOT RARE. Question 2 asks whether an operator doing ordinary work could produce this
+outcome without intending it. Terminating the wrong instance, deleting a subnet that still has
+something in it, opening a security group to 0.0.0.0/0 while debugging, replacing an instance
+profile during a migration - these happen on ordinary afternoons. Answer false only when the
+sequence has no innocent version.
+
+CATEGORIES ARE NOT INTERCHANGEABLE.
+  ESCALATION   the caller ends up able to act as something else, or with permissions they did not
+               have. Role passing, credential minting, taking over what a workload runs as
+  EXPOSURE     data or a network path leaves the boundary it was in. Table contents, a disk copy, an
+               ingress rule, a resource policy naming an outside principal
+  RECON        reading what exists and what it may do. Policy documents, role listings, console
+               output. Reading a policy is RECON even though the answer is data: it tells the reader
+               where to aim and it moves nothing
+  DESTRUCTIVE  something that exists stops existing or stops working
+
+WHAT THE RULES ALREADY FOUND. A candidate may carry already_found_by - rule ids that fired on the
+same policy, the same resource type and some of the same actions. Those rules are shown to the
+approver beside your answer, at their own grade. Do not restate one. Say what a rule cannot: whether
+the path is reachable in THIS account, what it costs to close, and whether closing it is worth it.
+If you have nothing to add beyond the rule, say so in one sentence and keep the verdict short.
+
+WHAT APPROVAL INSTALLS. Approving this grant does not only attach policies. The digest's
+passrole_grants list the attached policies that carry their own iam:PassRole allowance and the
+iam:PassedToService values each one names, and the approval writes a Deny back against them: one
+statement per named service, denying iam:PassRole for that service on every role except an approved
+allowlist. So for the services named there, the set of roles that can actually be passed after
+approval is the allowlist and not the count the assessment measured - say so when you judge a
+PassRole path, and say which half you are describing. Two cases where it does NOT apply, both
+readable from the same list: a grant with unconditioned true names no service, no Deny can be
+derived from it, and the measured ceiling stands whole; and a service the list does not name is not
+fenced at all. Passing to any other service is untouched either way.
 
 RESERVATIONS ARE FACTS. Each candidate may carry reservations - the assessment could not prove the
 actions are on the same resource, the resource list was truncated, an action's resource type was
 guessed. A reservation is not a hedge to be talked past. If a reservation undermines the path,
 question 1 or question 6 is false.
 
-WHAT YOU AUTHOR. Exactly five things: the category, the proposed grade, the title, the narrative,
-and your six answers. Status, restrictability, target lists, the asset grade and the final grade are
-computed from your answers and from the assessment; do not try to state them.
+NO NAMES. Judge and describe using resource TYPES, counts, and the control-plane labels you are
+given. Never build an argument on a resource name, an ARN, or a tag: the same table is called
+something else in the next account, and an inference from a name inverts silently there. Sample
+ARNs are given to you as evidence that resources exist and to be counted - not as a description of
+what they are for. Do not put an ARN or a resource name in any field.
+
+NO GRADE FROM A NAME, AND NO IMPACT FROM AN UNKNOWN. The asset half of the grade is computed from
+this deployment's configuration, not by you. Do not describe the scale of damage to a resource whose
+purpose you were not told.
+
+WHAT YOU AUTHOR. The category, the proposed grade, the title, the narrative, your seven answers and
+the containment block. Status, restrictability, target lists, the asset grade and the final grade
+are computed from your answers and from the assessment; do not try to state them.
 
 Outcome vocabulary, where a path ENDS:
 ${outcomes}
@@ -169,14 +273,12 @@ ${outcomes}
 Capability vocabulary, what an action CAN do:
 ${capabilities}
 
-The deterministic rules have already fired separately and their findings are shown to the approver
-alongside yours. They are listed here so you do not repeat them as if they were your discovery, and
-so you can say when a candidate is the same path one of them names:
+The deterministic rules, whose findings are shown to the approver alongside yours:
 ${rules}
 
-Write the narrative in Korean. Two to four sentences. State the path, the precondition that matters
-most, and the impact. No preamble, no restatement of the question, no recommendation about whether
-to approve - that is the reader's decision and they have information you do not.`;
+Write the narrative in Korean, two to four sentences: the path, the precondition that matters most,
+and the impact. No preamble, no restatement of the question, no recommendation about whether to
+approve - that is the reader's decision and they have information you do not.`;
 }
 
 const FRAME = frame();
@@ -347,6 +449,27 @@ export function validate(verdicts, { candidates, digest }) {
     if ((verdict.cited_actions ?? []).length === 0) {
       bad = bad ?? { why: 'cites no action at all' };
     }
+
+    // A restriction is composed from these, so they are held to the citation contract as strictly
+    // as the evidence is - and to one more rule: an action to deny that the verdict did not cite is
+    // a recommendation about something it did not reason over.
+    const cited = new Set(verdict.cited_actions ?? []);
+    for (const action of verdict.containment?.deny_actions ?? []) {
+      if (!cited.has(action)) {
+        bad = bad ?? { why: `proposes denying ${action}, which it did not cite as evidence` };
+      }
+    }
+
+    // The schema asks for prose and a minimum length; a model can satisfy the key and return
+    // nothing. Ten of twenty-one verdicts in the first deployed run came back with an empty
+    // narrative, and the card rendered a title with a blank under it - which reads as a finding
+    // nobody bothered to explain rather than as a defect.
+    const blank = ['narrative', 'final_impact', 'title']
+      .find((field) => String(verdict[field] ?? '').trim().length < 2);
+    if (blank) bad = bad ?? { why: `${blank} came back empty` };
+    if (String(verdict.containment?.breaks ?? '').trim().length < 2) {
+      bad = bad ?? { why: 'proposes a restriction without saying what it breaks' };
+    }
     if (bad) {
       dropped.push({ id: verdict.candidate_id, ...bad });
       continue;
@@ -419,6 +542,20 @@ function findingOf({ verdict, candidate, grant }, digest) {
     finalImpact: verdict.final_impact,
     evidenceSufficient: verdict.evidence_sufficient,
     triggerActions: verdict.cited_actions,
+    // What to deny, and what it costs. The half an approver came for: the restriction editor is on
+    // the same screen and this is the only field that reaches into it.
+    containment: {
+      denyActions: verdict.containment?.deny_actions ?? [],
+      breaks: verdict.containment?.breaks ?? '',
+      blockedElsewhere: verdict.containment?.blocked_elsewhere === true,
+      // An action on the declaration path cannot be denied at all, whatever the model proposed -
+      // restricting one locks the user out of the pipeline that governs them.
+      notRestrictable: (verdict.containment?.deny_actions ?? [])
+        .filter((a) => grant.nonRestrictable.has(a)),
+    },
+    // Rules that already cover this path, carried through so the page can group the two halves
+    // rather than showing one fact twice at two grades.
+    alreadyFoundBy: (candidate.already_found_by ?? []).map((entry) => entry.rule),
     restrictable: !verdict.cited_actions.some((a) => grant.nonRestrictable.has(a)),
     targets: candidate.target
       ? [{ type: candidate.target.type, count: candidate.target.count,
@@ -456,9 +593,10 @@ export async function analyse({ digest, client, model, candidates = null, maxTok
   for (const [index, batch] of groups.entries()) {
     const body = request(digest, batch, { model, maxTokens });
     try {
-      const message = client.messages.stream
-        ? await client.messages.stream(body).finalMessage()
-        : await client.messages.create(body);
+      // One call, not a stream. Nothing here consumes tokens as they arrive - a batch is parsed as
+      // a whole or lost as a whole - and the branch that used to prefer a streaming client was
+      // dead the moment every model started going through Converse, which exposes create alone.
+      const message = await client.messages.create(body);
       const text = (message.content ?? []).find((block) => block.type === 'text')?.text;
       if (!text) throw new AnalysisError('the answer carried no text block');
       let parsed;

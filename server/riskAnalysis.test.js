@@ -89,8 +89,25 @@ function stub(reply, { failOn = [], text = null } = {}) {
   };
 }
 
+const CONTAINMENT = {
+  deny_actions: ['lambda:UpdateFunctionCode'],
+  breaks: '이 함수들에 대한 코드 배포가 막힌다.',
+  blocked_elsewhere: false,
+};
+
+/**
+ * The containment block for a verdict that cites something other than the default actions.
+ *
+ * Kept as a helper rather than written out at each site because deny_actions has to be a subset of
+ * that same verdict's cited_actions - a verdict that proposes denying an action it never cited is
+ * rejected, and a fixture that drifts from that rule fails as an empty findings list rather than as
+ * the thing it was testing.
+ */
+const contain = (actions) => ({ ...CONTAINMENT, deny_actions: actions });
+
 const VERDICT = {
   real: true,
+  containment: CONTAINMENT,
   human_error: false,
   mechanism: 'existing_resource',
   preconditions: [],
@@ -313,8 +330,8 @@ test('a proposed grade above the outcome ceiling is capped, and both numbers are
   const actions = ['ec2:TerminateInstances'];
   const d = digestOf(actions, [unit('ec2:instance', actions, actions)]);
   const client = stub((ids) => ids.map((id) => ({
-    ...VERDICT, candidate_id: id, cited_actions: actions, category: 'DESTRUCTIVE',
-    proposed_grade: 'CRITICAL',
+    ...VERDICT, candidate_id: id, cited_actions: actions, containment: contain(actions),
+    category: 'DESTRUCTIVE', proposed_grade: 'CRITICAL',
   })));
   const result = await analyse({ digest: d, client, model: MODEL });
   const [found] = result.findings;
@@ -331,7 +348,8 @@ test('the asset grade moves on configuration and not on a name', async () => {
     cp: [{ arn: table, role: 'approval_store', basis }],
   })]);
   const client = stub((ids) => ids.map((id) => ({
-    ...VERDICT, candidate_id: id, cited_actions: actions, category: 'ESCALATION',
+    ...VERDICT, candidate_id: id, cited_actions: actions, containment: contain(actions),
+    category: 'ESCALATION',
   })));
 
   const configured = await analyse({ digest: make('configured'), client, model: MODEL });

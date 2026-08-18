@@ -179,6 +179,58 @@ function Targets({ finding }: { finding: Finding }) {
   );
 }
 
+/**
+ * 무엇을 빼면 이 경로가 끊기고, 그러면 무엇이 깨지는가.
+ *
+ * 제한 편집기가 같은 화면에 있으므로 카드에서 그 화면으로 이어지는 항목은 이것 하나다. 끊는 동작만
+ * 적고 대가를 적지 않으면 승인자는 한 번 끊고 되돌린다 — 그래서 '막히는 일'은 접히지 않고 항상 함께
+ * 나온다.
+ *
+ * 선언 경로의 동작은 목록에서 빼지 않고 따로 표시한다. 모델이 제안했다는 사실 자체가 기록이고,
+ * 조용히 지우면 승인자는 그 동작을 제한에 넣어도 되는 줄로 읽는다.
+ */
+function Containment({ finding }: { finding: Finding }) {
+  const c = finding.containment;
+  if (!c || c.denyActions.length === 0) return null;
+  const forbidden = new Set(c.notRestrictable);
+  const usable = c.denyActions.filter((a) => !forbidden.has(a));
+
+  return (
+    <div className="finding-containment">
+      <strong>이 경로를 끊으려면</strong>
+      <div className="finding-row">
+        <span className="finding-label">거부할 동작</span>
+        <span className="finding-actions">
+          {c.denyActions.map((action) => (
+            <code key={action} className={forbidden.has(action) ? "deny-forbidden" : "deny"}>
+              {action}
+            </code>
+          ))}
+        </span>
+      </div>
+      <div className="finding-row">
+        <span className="finding-label">막히는 일</span>
+        <span>{c.breaks}</span>
+      </div>
+      {forbidden.size > 0 && (
+        <div className="finding-row warn-inline">
+          취소선이 그어진 동작은 선언 경로에 있습니다. 제한에 넣으면 파이프라인이 이 권한 세트를 읽지
+          못하므로 실제로 거부할 수 있는 것은
+          {usable.length > 0
+            ? ` ${usable.join(", ")} 뿐입니다.`
+            : " 없습니다 — 이 경로는 정책을 줄여서 끊을 수 없습니다."}
+        </div>
+      )}
+      {c.blockedElsewhere && (
+        <div className="finding-row muted">
+          <span className="finding-label">이미 차단</span>
+          <span>이 경로는 정책 밖의 다른 통제로 이미 막혀 있다고 판정되었습니다.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Card({ finding }: { finding: Finding }) {
   const model = finding.source === "model";
   return (
@@ -203,6 +255,16 @@ function Card({ finding }: { finding: Finding }) {
           )}
           {finding.isBaseline && (
             <span className="badge" title="요청 이전에 이미 붙어 있던 정책입니다.">기준선</span>
+          )}
+          {/* 같은 경로를 규칙도 찾았다는 사실. 두 카드를 각각 새 발견으로 세면 건수가 부풀고, 두
+              등급이 어긋났을 때 승인자가 자기 도구의 어느 쪽을 믿을지 정해야 한다. */}
+          {(finding.alreadyFoundBy ?? []).length > 0 && (
+            <span
+              className="badge"
+              title={`같은 정책·같은 자원 유형에서 규칙 ${finding.alreadyFoundBy?.join(", ")}도 이 경로를 찾았습니다.`}
+            >
+              규칙 {finding.alreadyFoundBy?.join(", ")} 중복
+            </span>
           )}
           <AssetGradeBadge grade={finding.assetImpactGrade} evidence={finding.assetEvidence} />
           <span className={finding.status === "CONFIRMED" ? "badge badge-ok" : "badge badge-warn"}>
@@ -265,6 +327,7 @@ function Card({ finding }: { finding: Finding }) {
               </span>
             </div>
           )}
+          <Containment finding={finding} />
         </>
       )}
 
@@ -333,6 +396,11 @@ function Summary({ answer, findings }: { answer: RiskAnalysisAnswer; findings: F
       <div className="meta small muted">
         규칙 {answer.rule_findings.length}건
         {model ? ` · 모델 판정 ${model.findings.length}건 (후보 ${model.candidates}건 중)` : ""}
+        {/* 두 절반이 같은 자료를 읽으므로 겹친다. 겹친 수를 적지 않으면 위 숫자들의 합이 서로 다른
+            경로의 수로 읽힌다. */}
+        {model && (answer.candidates_covered_by_rules ?? 0) > 0
+          ? ` · 그중 ${answer.candidates_covered_by_rules}건은 규칙이 이미 찾은 경로`
+          : ""}
         {" · "}질의 크기 {(answer.digest_bytes / 1024).toFixed(1)} KB
         {" · "}규칙 <code>{answer.rules_sha256.slice(0, 12)}</code>
         {model ? <> · 모델 <code>{model.model_id}</code> · 프롬프트 <code>{model.prompt_version}</code></> : null}

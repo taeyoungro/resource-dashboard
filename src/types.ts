@@ -492,6 +492,27 @@ export interface FindingTarget {
   controlPlane: ControlPlaneHit[];
 }
 
+/**
+ * What to deny to close a path, and what denying it costs.
+ *
+ * The restriction editor is on the same screen as the finding, so this is the one field that
+ * reaches into it. `breaks` is why it is not just a list of actions: an approver who denies without
+ * knowing what stops working denies once and reverts.
+ */
+export interface Containment {
+  /** A subset of triggerActions. Never an action the finding did not cite. */
+  denyActions: string[];
+  /** What legitimate work stops when those actions are denied. */
+  breaks: string;
+  /** The path is already closed elsewhere - a permissions boundary, a condition, a service control. */
+  blockedElsewhere: boolean;
+  /**
+   * Proposed deny actions that sit on the declaration path. Denying one locks the user out of the
+   * pipeline that governs them, so these cannot go into a restriction whatever the model proposed.
+   */
+  notRestrictable: string[];
+}
+
 export interface Finding {
   id: string;
   category: FindingCategory;
@@ -529,6 +550,12 @@ export interface Finding {
   preconditions?: string[];
   finalImpact?: string;
   evidenceSufficient?: boolean;
+  containment?: Containment;
+  /**
+   * Rule ids that already reached this path. Both halves run over the same digest, so they collide;
+   * the page groups on this rather than showing one fact twice under two labels at two grades.
+   */
+  alreadyFoundBy?: string[];
 }
 
 /** A candidate the code proposed and the model judged not to be a path. */
@@ -588,6 +615,8 @@ export interface RiskAnalysisAnswer {
     enumerationIncomplete: number;
   };
   candidates: number;
+  /** How many candidates a rule had already found. The two halves overlap; this is by how much. */
+  candidates_covered_by_rules?: number;
   analysis: ModelAnalysis | null;
   /** Why no model answered. Not an error state - the rules ran either way. */
   analysis_error: string | null;
