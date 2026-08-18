@@ -559,13 +559,41 @@ export function sha256Of(findings) {
 }
 
 /**
- * The Bedrock client, imported lazily.
+ * Whether a model id names an Anthropic model.
+ *
+ * The id carries the provider, with an optional routing prefix in front of it:
+ *
+ *     anthropic.claude-sonnet-5        the bare model
+ *     us.anthropic.claude-sonnet-5     a regional inference profile
+ *     global.amazon.nova-pro-v1:0      not Anthropic
+ *
+ * So the test is on the provider segment rather than on "contains anthropic" - a customer profile
+ * called anthropic-eval pointing at Nova would otherwise be sent to the wrong client, and the
+ * failure would be a 400 about a request shape rather than anything naming the model.
+ */
+export function isAnthropicModel(model) {
+  const parts = String(model ?? '').split('.');
+  return parts[0] === 'anthropic' || (parts.length > 1 && parts[1] === 'anthropic');
+}
+
+/**
+ * The Bedrock client for the configured model, imported lazily.
+ *
+ * Two clients, chosen by the model id and not by a switch somebody has to remember to set. An
+ * Anthropic model gets the Anthropic SDK, which speaks the request shape this analysis is written
+ * in; anything else goes through Converse, which every model on Bedrock speaks and which
+ * converse.js translates to and from. Getting that choice wrong is a 400 about a body shape, so it
+ * is derived from the one value that already has to be right.
  *
  * Lazily because the analysis is optional: a deployment that has not enabled it should not fail to
  * start over a package it never calls, and the tests must be able to exercise every line above
  * without one. A missing package is reported as configuration, not as a crash.
  */
-export async function bedrockClient({ region }) {
+export async function bedrockClient({ region, model }) {
+  if (!isAnthropicModel(model)) {
+    const { bedrockConverse } = await import('./converse.js');
+    return bedrockConverse({ region });
+  }
   let AnthropicBedrock;
   try {
     ({ default: AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk'));

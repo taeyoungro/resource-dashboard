@@ -1,12 +1,10 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type {
   Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPassRoleGrant, ImpactPolicy,
   ImpactResource, Restriction,
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
-import { provenance, remainingTags } from "../../server/provenance.js";
-import type { ProvenanceKind } from "../../server/provenance.js";
 import { localDate, localTime } from "../time";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
@@ -467,18 +465,70 @@ function PolicyBlock({
 }
 
 /**
- * One resource as a labelled sentence: 리소스명, 계정, 리전, 배포. The console link is NOT here - it
+ * The row's tags, behind a button.
+ *
+ * They were printed inline and a single CloudFormation-managed resource carried two hundred
+ * characters of them - a logical id, a stack name, and a stack ARN with a uuid on the end - which
+ * pushed 리소스명 off the left of what a reader takes in and made every row look different lengths
+ * for reasons that were not about the resource.
+ *
+ * A native <dialog>, not a hand-built overlay. It comes with Escape, the backdrop, focus trapping
+ * and returning focus to the button - four behaviours that get written badly otherwise, and the
+ * last of which is the one nobody notices missing until they are using a keyboard.
+ *
+ * The button says how MANY, so a reader can see there are tags without opening anything, and rows
+ * with none show no button rather than an empty one.
+ */
+function TagButton({ tags, arn }: { tags: Record<string, string>; arn: string }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const entries = Object.entries(tags ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length === 0) return null;
+  return (
+    <>
+      <button
+        type="button"
+        className="tag-button"
+        title="이 자원의 태그를 봅니다"
+        onClick={() => dialog.current?.showModal()}
+      >
+        태그 {entries.length}
+      </button>
+      <dialog
+        ref={dialog}
+        className="tag-dialog"
+        /* The backdrop IS the dialog element as far as a click is concerned, so a click whose
+           target is the dialog itself landed outside the panel below. */
+        onClick={(event) => {
+          if (event.target === dialog.current) dialog.current?.close();
+        }}
+      >
+        <div className="tag-panel">
+          <div className="tag-head">
+            <code>{arn}</code>
+            <button type="button" onClick={() => dialog.current?.close()}>닫기</button>
+          </div>
+          <table className="tag-table">
+            <tbody>
+              {entries.map(([key, value]) => (
+                <tr key={key}>
+                  <th>{key}</th>
+                  <td>{value}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </dialog>
+    </>
+  );
+}
+
+/**
+ * One resource as a labelled sentence: 리소스명, 계정, 리전. The console link is NOT here - it
  * lives on the group heading, once per region, because the list page it opens is the same for
  * every row of the group and a repeated link is furniture. The full ARN stays on the hover title;
  * an ARN that does not parse shows whole in the name slot rather than hiding.
  */
-/** One word per origin. A union type, so a new kind is a compile error rather than a blank slot. */
-const DEPLOYMENT: Record<ProvenanceKind, string> = {
-  stack: "Stack",
-  stackset: "StackSet",
-  manual: "수동",
-};
-
 function LabeledResource({ resource, accountId }: {
   resource: ImpactResource;
   /** The governed account, used only when the ARN itself carries none (S3). */
@@ -488,7 +538,6 @@ function LabeledResource({ resource, accountId }: {
   const name = parsed?.name ?? resource.arn;
   const account = parsed?.account || accountId;
   const region = resource.region || parsed?.region || "global";
-  const origin = provenance(resource.tags);
   return (
     <span className="res labeled" title={resource.arn}>
       <span className="res-label">리소스명: </span>
@@ -498,11 +547,6 @@ function LabeledResource({ resource, accountId }: {
       <span className="res-value">{account}</span>
       <span className="res-label">, 리전: </span>
       <span className="res-value">{region}</span>
-      <span className="res-label">, 배포: </span>
-      <span className="res-value">
-        {DEPLOYMENT[origin.kind]}
-        {origin.name && <> (이름: <code>{origin.name}</code>)</>}
-      </span>
     </span>
   );
 }
@@ -567,16 +611,7 @@ function GroupBlock({ group, accountId }: { group: ImpactGroup; accountId: strin
         {group.resources.slice(0, 50).map((resource) => (
           <li key={resource.arn} className={resource.sensitive ? "sensitive" : undefined}>
             <LabeledResource resource={resource} accountId={accountId} />
-            {/* The three aws:cloudformation:* tags are now the 배포 clause above, so what is left
-                here is the operator's own tags - which is what a reader was looking for in this
-                slot and could not find under two hundred characters of stack id. */}
-            {Object.entries(remainingTags(resource.tags)).length > 0 && (
-              <span className="tags">
-                {Object.entries(remainingTags(resource.tags))
-                  .map(([k, v]) => `${k}=${v}`)
-                  .join(" ")}
-              </span>
-            )}
+            <TagButton tags={resource.tags} arn={resource.arn} />
           </li>
         ))}
         {group.resources.length > 50 && (

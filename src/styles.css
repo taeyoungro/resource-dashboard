@@ -746,3 +746,55 @@ dialog.picker button.commit {
 /* The asset axis is a second grade on the same card and must not compete with the first. Outlined
    whatever its value, so the filled badge stays the one an approver's eye lands on. */
 .grade.grade-asset { background: transparent; color: var(--danger); font-weight: 600; }
+
+/* ---- a resource's tags, behind a button -------------------------------------------------------- */
+
+/* Small and quiet. It sits at the end of a row that is already a sentence, so it must not read as
+   the row's subject - the resource name is. */
+.tag-button {
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.tag-button:hover { color: var(--text); border-color: var(--accent); }
+
+/* The dialog element is the backdrop's box too, so it carries no chrome of its own and the panel
+   inside it is what looks like a window. */
+.tag-dialog {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  max-width: min(640px, 92vw);
+}
+.tag-dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
+
+.tag-panel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  max-height: 70vh;
+  overflow: auto;
+}
+.tag-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.tag-head code { word-break: break-all; }
+.tag-head button { margin-left: auto; flex: 0 0 auto; }
+
+.tag-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.tag-table th, .tag-table td { text-align: left; vertical-align: top; padding: 4px 8px 4px 0; }
+.tag-table th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+/* A stack ARN is a hundred characters with no spaces in it. Breaking anywhere beats a scrollbar. */
+.tag-table td { font-family: "SF Mono", Menlo, monospace; word-break: break-all; }
+.tag-table tr + tr th, .tag-table tr + tr td { border-top: 1px solid var(--panel-2); }
