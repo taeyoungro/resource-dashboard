@@ -419,6 +419,12 @@ export interface ImpactResource {
   region: string;
   tags: Record<string, string>;
   sensitive: boolean;
+  /**
+   * A name the resource carries outside its ARN. Only a KMS key has one today: its ARN ends in a
+   * UUID, so a list of keys says nothing about WHICH keys, and the alias is what people call them
+   * by. Absent means there is no such name - not that the lookup failed.
+   */
+  alias?: string;
 }
 
 export interface ImpactCoverage {
