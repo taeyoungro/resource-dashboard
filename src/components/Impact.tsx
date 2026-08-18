@@ -535,14 +535,20 @@ function LabeledResource({ resource, accountId }: {
   accountId: string;
 }) {
   const parsed = parseArn(resource.arn);
-  const name = parsed?.name ?? resource.arn;
   const account = parsed?.account || accountId;
   const region = resource.region || parsed?.region || "global";
+  // A KMS key's own name is a UUID, so a list of them says which service and which region and
+  // nothing about which key. Where an alias came back it IS the name, and the id moves to the
+  // quiet slot beside it - still on the row, because that is what the console and every policy
+  // document call the key, and a page that showed only the alias would leave the reader unable to
+  // match a row to a Deny they are about to write.
+  const name = resource.alias ?? parsed?.name ?? resource.arn;
+  const aside = resource.alias ? (parsed?.name ?? null) : (parsed?.qualifier ?? null);
   return (
     <span className="res labeled" title={resource.arn}>
       <span className="res-label">리소스명: </span>
       <code className="res-name">{name}</code>
-      {parsed?.qualifier && <span className="res-qualifier">/{parsed.qualifier}</span>}
+      {aside && <span className="res-qualifier">/{aside}</span>}
       <span className="res-label">, 계정: </span>
       <span className="res-value">{account}</span>
       <span className="res-label">, 리전: </span>
