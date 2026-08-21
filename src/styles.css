@@ -850,3 +850,49 @@ dialog.picker button.commit {
 /* A stack ARN is a hundred characters with no spaces in it. Breaking anywhere beats a scrollbar. */
 .tag-table td { font-family: "SF Mono", Menlo, monospace; word-break: break-all; }
 .tag-table tr + tr th, .tag-table tr + tr td { border-top: 1px solid var(--panel-2); }
+
+
+/* ---- the inline policy an administrator's choices become ---------------------------------------- */
+
+/* Above the policy blocks, because it is about all of them at once: the permission set has ONE
+   inline document and every Deny in it spends one 10,240 character quota, however many policies
+   prompted them. */
+.inline-preview {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.policy-dialog {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 0;
+  max-width: min(900px, 92vw);
+}
+.policy-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.policy-dialog-body { padding: 16px 18px; }
+.policy-dialog h4 { margin: 0 0 6px; }
+
+/* The document itself. Monospace and scrollable in its own box: a policy is read line by line, and
+   a wide Resource list must not push the page sideways. */
+.policy-json {
+  margin: 10px 0;
+  padding: 10px 12px;
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+}

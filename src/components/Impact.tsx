@@ -9,6 +9,8 @@ import { localDate, localTime } from "../time";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
+import { INLINE_LIMIT, composeInline, inlineBytes, readable }
+  from "../../server/inlinePreview.js";
 
 /**
  * What the permission set will reach, and the place a restriction is chosen.
@@ -110,58 +112,27 @@ function primaryService(identifier: string, candidates: string[]): string | null
 }
 
 /**
- * The permission set inline policy quota. NOT the 32,768 the API accepts.
+ * The document these choices become, and what it costs.
  *
- * A permission set provisions as an IAM role in the target account, so it is bound by the role's inline
- * policy limit, and that one is not increasable. A document between the two is stored successfully and
- * then fails at ProvisionPermissionSet - after somebody approved it. So the size is estimated here,
- * before the approval, and generator/restriction.py measures it exactly before it writes.
+ * Composed by server/inlinePreview.js rather than here, because that module is pinned byte-for-byte
+ * against generator/restriction.py by a fixture test. Two hand-written approximations of the same
+ * shape - one to estimate the size, one to show the policy - is two things to drift.
  */
-const INLINE_LIMIT = 10240;
-
-/**
- * Roughly what these choices will serialise to. The same statement shape restriction.py builds,
- * plus `reserved` - the bytes the document spends before any restriction is chosen, which today
- * means the PassRole fence statements the inline writer composes for policies that grant
- * iam:PassRole. Without the reserve the estimate undercounts and a restriction that fits the
- * number here fails at provisioning, after the approval.
- */
-function estimateBytes(intent: Restriction["intent"], choices: Choice[], tag: string,
-                       reserved: number): number {
-  const statements = choices.map((choice, n) => (intent === "tag_condition"
-    ? {
-      Sid: `AdminDeny${n + 1}`, Effect: "Deny", Action: choice.action, Resource: "*",
-      Condition: { StringEquals: { [`aws:ResourceTag/${tag}`]: [] } },
-    }
-    : {
-      Sid: `AdminDeny${n + 1}`,
-      Effect: "Deny",
-      Action: choice.action,
-      ...(intent === "allow_only"
-        ? { NotResource: choice.resources }
-        : { Resource: choice.resources.length > 0 ? choice.resources : "*" }),
-    }));
-  return JSON.stringify({ Version: "2012-10-17", Statement: statements }).length + reserved;
+function preview(intent: Restriction["intent"], choices: Choice[], tag: string, values: string[],
+                 accountId: string, fenceServices: string[]) {
+  const restrictions: Restriction[] = choices.map((choice) => ({
+    policy: "", intent, actions: [choice.action],
+    ...(intent === "tag_condition"
+      ? { tag_key: tag, tag_values: values }
+      : { resources: choice.resources }),
+  }));
+  const document = composeInline(restrictions, { accountId, fenceServices });
+  return { document, bytes: inlineBytes(document) };
 }
 
-/**
- * The bytes the PassRole fence will occupy in the inline document - the exact statement shape the
- * writer composes: one Deny per service any restrictable policy's own PassRole grant names, with
- * the unreachable placeholder as the whole exemption list. Approved mirror ARNs added later widen
- * this, which is one more reason the estimate stays an estimate and the writer measures exactly.
- */
-function fenceBytes(grants: Assessment["passrole_grants"], accountId: string): number {
-  const services = [...new Set((grants ?? []).flatMap((g) => g.services))].sort();
-  if (services.length === 0) return 0;
-  const statements = services.map((service, n) => ({
-    Sid: `PassRoleAllowlistFence${n + 1}`,
-    Effect: "Deny",
-    Action: "iam:PassRole",
-    NotResource: [`arn:aws:iam::${accountId}:role/mirror-denyrole`],
-    Condition: { StringEquals: { "iam:PassedToService": service } },
-  }));
-  // Statement bytes plus the comma that joins them to the AdminDeny list.
-  return JSON.stringify(statements).length - 2 + statements.length;
+/** Which services the PassRole fence will name. Its statements are in the same document. */
+function fenceServicesOf(grants: Assessment["passrole_grants"]): string[] {
+  return [...new Set((grants ?? []).flatMap((g) => g.services))].filter(Boolean).sort();
 }
 
 /**
@@ -195,6 +166,69 @@ const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {
   aws_managed: "AWS Managed",
   customer_managed: "Customer Managed",
 };
+
+/**
+ * The whole inline policy these choices become, behind a button.
+ *
+ * A preview, and it says so. The container recomposes from the decisions and refuses what it will
+ * not write - which is why decisions cross the wire and not documents - so this cannot be the
+ * authority. What it answers is the question the page could not: an administrator who ticked eleven
+ * actions across four policies was approving a description of a document rather than the document.
+ *
+ * server/inlinePreview.js composes it, and a fixture test pins that module byte-for-byte against
+ * generator/restriction.py. A preview that differs from what gets written would be worse than none.
+ */
+function InlinePreview({ restrictions, accountId, fenceServices }: {
+  restrictions: Restriction[];
+  accountId: string;
+  fenceServices: string[];
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const active = restrictions.filter((r) => r.actions.length > 0);
+  const { document: composed, bytes } = useMemo(() => {
+    const doc = composeInline(active, { accountId, fenceServices });
+    return { document: doc, bytes: inlineBytes(doc) };
+  }, [active, accountId, fenceServices]);
+
+  if (active.length === 0 && fenceServices.length === 0) return null;
+  const over = bytes > INLINE_LIMIT;
+
+  return (
+    <div className="inline-preview">
+      <button type="button" onClick={() => dialog.current?.showModal()}>
+        인라인 정책 보기
+      </button>
+      <span className="muted small">
+        문장 {composed.Statement.length}개 · {bytes.toLocaleString()}바이트
+        {over ? " — 한도 초과" : ` / ${INLINE_LIMIT.toLocaleString()}`}
+        {active.length > 0 && ` · 정책 ${new Set(active.map((r) => r.policy)).size}개에서`}
+      </span>
+
+      <dialog ref={dialog} className="policy-dialog"
+              onClick={(e) => { if (e.target === dialog.current) dialog.current?.close(); }}>
+        <div className="policy-dialog-body">
+          <h4>권한 세트 인라인 정책</h4>
+          <p className="muted small">
+            지금 고른 것으로 작성될 문서다. 승인하면 인라인 작성기가 결정을 다시 조립해 쓰므로 이것은
+            <strong> 미리보기</strong>이고, 작성기가 거부하면 그 이유를 말한다.
+            {fenceServices.length > 0 && (
+              <> {" "}<code>PassRoleAllowlistFence*</code> 문장은 파이프라인이 붙이는 것으로,
+              승인된 mirror 역할이 늘면 더 커진다.</>
+            )}
+          </p>
+          <p className={over ? "error" : "muted small"}>
+            {bytes.toLocaleString()}바이트 / 한도 {INLINE_LIMIT.toLocaleString()}바이트
+            {over && " — 이대로면 인라인 작성기가 거부한다. 동작을 줄이거나 태그 조건을 쓰면 된다."}
+          </p>
+          <pre className="policy-json">{readable(composed)}</pre>
+          <div className="row">
+            <button type="button" onClick={() => dialog.current?.close()}>닫기</button>
+          </div>
+        </div>
+      </dialog>
+    </div>
+  );
+}
 
 const INTENT_LABEL: Record<Restriction["intent"], string> = {
   allow_only: "이 자원만 허용 — 이후 생기는 자원은 거부된다",
@@ -243,6 +277,17 @@ export function Impact({
         <p className="muted">제한할 수 있는 정책이 없다. 기반 정책만 붙어 있다.</p>
       )}
 
+      {/* 전체 AMP 기준 하나의 문서. 편집기는 정책별이지만 권한 세트의 인라인 문서는 하나이고,
+          거기 담긴 Deny는 어느 정책이 계기였든 권한 세트 전체에 적용된다 — 정책마다 따로 보여주면
+          존재하지 않는 문서 넷을 보여주고 실제로 존재하는 하나를 숨기게 된다. */}
+      {restrictable.length > 0 && (
+        <InlinePreview
+          restrictions={restrictions}
+          accountId={assessment.account_id}
+          fenceServices={fenceServicesOf(assessment.passrole_grants)}
+        />
+      )}
+
       {restrictable.map((policy) => (
         <PolicyBlock
           key={`${policy.source}:${policy.identifier}`}
@@ -257,7 +302,7 @@ export function Impact({
           omitted={assessment.coverage.action_lists_omitted ?? []}
           passroleGrant={(assessment.passrole_grants ?? [])
             .find((g) => g.identifier === policy.identifier) ?? null}
-          reservedBytes={fenceBytes(assessment.passrole_grants, assessment.account_id)}
+          fenceServices={fenceServicesOf(assessment.passrole_grants)}
         />
       ))}
 
@@ -309,7 +354,7 @@ function PolicyBlock({
   referenceError,
   omitted,
   passroleGrant,
-  reservedBytes,
+  fenceServices,
 }: {
   policy: ImpactPolicy;
   /** The governed account, for the console list links. The host of those URLs carries it. */
@@ -324,7 +369,8 @@ function PolicyBlock({
   /** This policy's own PassRole grant, when it has one - what earns it a fence. */
   passroleGrant: ImpactPassRoleGrant | null;
   /** Bytes the fence will spend in the inline document, counted against the restriction budget. */
-  reservedBytes: number;
+  /** Services the PassRole fence names. Its statements share the document and the quota. */
+  fenceServices: string[];
 }) {
   // Every restriction on this policy - one per action, because generator/restriction.py writes one
   // statement per action and each of those statements now carries its own resources. A single
@@ -449,7 +495,8 @@ function PolicyBlock({
           reference={reference}
           referenceError={referenceError}
           omitted={omitted}
-          reservedBytes={reservedBytes}
+          fenceServices={fenceServices}
+          accountId={accountId}
         />
         {/* At the BOTTOM of the restriction area, on the operator's direction: it says what the
             picker above will not offer, so it reads as a footnote to the choosing, not a headline
@@ -654,7 +701,8 @@ function RestrictionEditor({
   reference,
   referenceError,
   omitted,
-  reservedBytes,
+  fenceServices,
+  accountId,
 }: {
   policy: string;
   /** The service this policy is named for, or null. Its actions go first; the rest fold away. */
@@ -670,8 +718,9 @@ function RestrictionEditor({
   reference: ImpactActionReference | null;
   referenceError: string | null;
   omitted: string[];
-  /** Bytes the PassRole fence spends in the same document, counted against the size estimate. */
-  reservedBytes: number;
+  /** Services the PassRole fence names. Its statements share the document and the quota. */
+  fenceServices: string[];
+  accountId: string;
 }) {
   const [picking, setPicking] = useState(false);
 
@@ -818,7 +867,9 @@ function RestrictionEditor({
         // Estimated, and said so. The exact number depends on statements this write preserves, which
         // only the container can see - but a restriction that is going to be refused for size should
         // not get as far as an approval marker to find that out.
-        const bytes = estimateBytes(intent, choices, tagKey, reservedBytes);
+        const { bytes } = preview(intent, choices, tagKey,
+                                  tagValues.split(",").map((v) => v.trim()).filter(Boolean),
+                                  accountId, fenceServices);
         if (choices.length === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
         return (
           <p className={bytes > INLINE_LIMIT ? "error" : "warn-inline"}>
