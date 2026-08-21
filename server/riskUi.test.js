@@ -250,3 +250,39 @@ test('every rule id the file defines can appear on a card', () => {
               `the page has no section for ${category}, so its findings would not be shown`);
   }
 });
+
+// ---- the inline policy an administrator is about to approve -------------------------------------
+
+const IMPACT = readFileSync(new URL('../src/components/Impact.tsx', import.meta.url), 'utf8');
+
+test('the inline policy preview is over every policy, not one at a time', () => {
+  // The permission set has ONE inline document and every Deny in it spends one 10,240 character
+  // quota, whatever policy prompted it. A per-policy preview would show four documents that do not
+  // exist and hide the one that does.
+  assert.ok(IMPACT.includes('<InlinePreview'), 'the preview is gone');
+  const mounted = IMPACT.slice(IMPACT.indexOf('<InlinePreview'), IMPACT.indexOf('<PolicyBlock'));
+  assert.ok(mounted.includes('restrictions={restrictions}'),
+            "the preview was given one policy's restrictions rather than all of them");
+  assert.ok(IMPACT.indexOf('<InlinePreview') < IMPACT.indexOf('<PolicyBlock'));
+});
+
+test('the page does not compose the policy itself', () => {
+  // A web tier that authors IAM content is a web tier that can grant, which is why decisions cross
+  // the wire and not documents. The preview is composed by server/inlinePreview.js, which a fixture
+  // test pins byte-for-byte against generator/restriction.py - a preview that differed from what
+  // gets written would be a wrong answer with a screenshot.
+  assert.ok(/composeInline/.test(IMPACT) && /server\/inlinePreview\.js/.test(IMPACT),
+            'Impact.tsx no longer uses the pinned composer');
+  assert.ok(!/Sid: `AdminDeny/.test(IMPACT),
+            'Impact.tsx builds statements of its own again, which is the drift the module removed');
+});
+
+test('the preview says it is a preview, and shows the fence', () => {
+  const block = IMPACT.slice(IMPACT.indexOf('function InlinePreview('),
+                             IMPACT.indexOf('const INTENT_LABEL'));
+  assert.ok(block.includes('미리보기'), 'the preview no longer says the writer is the authority');
+  assert.ok(block.includes('fenceServices'),
+            'the fence is not in the preview, so the deployed document would have a statement the '
+            + 'approver never saw');
+  assert.ok(block.includes('INLINE_LIMIT'), 'the quota is not shown beside the size');
+});

@@ -1,0 +1,153 @@
+{
+ "account_id": "718100330247",
+ "cases": [
+  {
+   "label": "두 동작이 같은 자원 — 접힌다",
+   "restrictions": [
+    {
+     "policy": "AWSLambda_FullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "lambda:InvokeFunction",
+      "lambda:InvokeFunctionUrl"
+     ],
+     "resources": [
+      "arn:aws:lambda:us-east-1:718100330247:function:testLambda"
+     ]
+    }
+   ],
+   "bytes": 213,
+   "serialised": "{\"Statement\":[{\"Action\":[\"lambda:InvokeFunction\",\"lambda:InvokeFunctionUrl\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:testLambda\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "두 동작이 다른 자원 — 접히지 않는다",
+   "restrictions": [
+    {
+     "policy": "P",
+     "intent": "allow_only",
+     "actions": [
+      "s3:GetObject"
+     ],
+     "resources": [
+      "arn:aws:s3:::keep/*"
+     ]
+    },
+    {
+     "policy": "P",
+     "intent": "allow_only",
+     "actions": [
+      "s3:ListBucket"
+     ],
+     "resources": [
+      "arn:aws:s3:::keep"
+     ]
+    }
+   ],
+   "bytes": 235,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:ListBucket\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep/*\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "여러 정책이 한 문서로",
+   "restrictions": [
+    {
+     "policy": "AWSLambda_FullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "lambda:UpdateFunctionCode"
+     ],
+     "resources": [
+      "arn:aws:lambda:us-east-1:718100330247:function:a",
+      "arn:aws:lambda:us-east-1:718100330247:function:b"
+     ]
+    },
+    {
+     "policy": "AmazonEC2FullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "ec2:TerminateInstances"
+     ],
+     "resources": [
+      "arn:aws:ec2:us-east-1:718100330247:instance/i-0aaa"
+     ]
+    },
+    {
+     "policy": "AmazonEC2FullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "ec2:StopInstances"
+     ],
+     "resources": [
+      "arn:aws:ec2:us-east-1:718100330247:instance/i-0aaa"
+     ]
+    }
+   ],
+   "bytes": 392,
+   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:StopInstances\",\"ec2:TerminateInstances\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:us-east-1:718100330247:instance/i-0aaa\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"lambda:UpdateFunctionCode\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:a\",\"arn:aws:lambda:us-east-1:718100330247:function:b\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "deny_only 자원 없음 -> 평면 거부",
+   "restrictions": [
+    {
+     "policy": "P",
+     "intent": "deny_only",
+     "actions": [
+      "s3:ListAllMyBuckets"
+     ],
+     "resources": []
+    }
+   ],
+   "bytes": 121,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:ListAllMyBuckets\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "태그 조건",
+   "restrictions": [
+    {
+     "policy": "P",
+     "intent": "tag_condition",
+     "actions": [
+      "ec2:TerminateInstances",
+      "ec2:StopInstances"
+     ],
+     "tag_key": "env",
+     "tag_values": [
+      "prod",
+      "stage"
+     ]
+    }
+   ],
+   "bytes": 216,
+   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:StopInstances\",\"ec2:TerminateInstances\"],\"Condition\":{\"StringEquals\":{\"aws:ResourceTag/env\":[\"prod\",\"stage\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "정렬 안 된 입력도 같은 바이트",
+   "restrictions": [
+    {
+     "policy": "P",
+     "intent": "allow_only",
+     "actions": [
+      "s3:PutObject",
+      "s3:DeleteObject"
+     ],
+     "resources": [
+      "arn:aws:s3:::zeta",
+      "arn:aws:s3:::alpha"
+     ]
+    }
+   ],
+   "bytes": 176,
+   "serialised": "{\"Statement\":[{\"Action\":[\"s3:DeleteObject\",\"s3:PutObject\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::alpha\",\"arn:aws:s3:::zeta\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "울타리만 (서비스 둘)",
+   "restrictions": [],
+   "fence_services": [
+    "lambda.amazonaws.com",
+    "ec2.amazonaws.com"
+   ],
+   "account_id": "718100330247",
+   "bytes": 465,
+   "serialised": "{\"Statement\":[{\"Action\":\"iam:PassRole\",\"Condition\":{\"StringEquals\":{\"iam:PassedToService\":\"ec2.amazonaws.com\"}},\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:iam::718100330247:role/mirror-denyrole\"],\"Sid\":\"PassRoleAllowlistFence1\"},{\"Action\":\"iam:PassRole\",\"Condition\":{\"StringEquals\":{\"iam:PassedToService\":\"lambda.amazonaws.com\"}},\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:iam::718100330247:role/mirror-denyrole\"],\"Sid\":\"PassRoleAllowlistFence2\"}],\"Version\":\"2012-10-17\"}"
+  }
+ ]
+}
