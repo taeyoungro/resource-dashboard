@@ -896,3 +896,25 @@ dialog.picker button.commit {
   white-space: pre;
   tab-size: 2;
 }
+
+
+/* Actions that name no resource. Folded and set back, because they are the minority case and the
+   ordinary one should be what the eye lands on - but present, which is the whole change: they used
+   to be filtered out of the offering entirely and 전체 선택 skipped them in silence. */
+.pick-flat {
+  margin: 6px 0 2px;
+  padding: 6px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.pick-flat > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--warn);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pick-flat > summary .block-all { margin-left: auto; }
+.pick-flat > p { margin: 6px 0 4px; line-height: 1.5; }

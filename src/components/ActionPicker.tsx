@@ -140,12 +140,17 @@ export function ActionPicker({
     search.current?.focus();
   }, []);
 
-  // An account-level action names no resource, so an allow_only restriction on it would deny it
-  // outright rather than narrow it - generator/restriction.py refuses exactly that. Offered for the
-  // other two intents, where a flat Deny is what the administrator meant.
-  const usable = (offer: Offer) =>
-    !protectedActions.includes(offer.action)
-    && !(intent === "allow_only" && offer.account_level);
+  // An account-level action names no resource, so it cannot be narrowed - only denied outright.
+  //
+  // It used to be REMOVED from the offering under allow_only, and that was the wrong answer to a
+  // real constraint: 전체 선택 across EC2 then quietly skipped 257 of its 793 actions and nothing
+  // on the page said which, or why, or that they existed. An approver who ticked everything
+  // believed they had covered everything.
+  //
+  // So it is offered under every intent now, in its own block, and ticking one composes a flat Deny
+  // instead - which is what the editor emits and what the container will accept. The block says so;
+  // this is a different decision from the one being made about the rest and it is made knowingly.
+  const usable = (offer: Offer) => !protectedActions.includes(offer.action);
 
   // Everything the dialog offers, regardless of the search. Anything in the draft that is NOT in here
   // gets its own group: an action typed earlier, or one that was ticked under deny_only and became
@@ -264,19 +269,88 @@ export function ActionPicker({
     setTyped("");
   };
 
-  /** 전체 선택 for one block. Acts on what is SHOWN, so it follows the search rather than ignoring it. */
+  /**
+   * 전체 선택 for one block. Acts on what is SHOWN, so it follows the search rather than ignoring it.
+   *
+   * And only on the actions that reach a resource. The ones that do not are a different kind of
+   * statement - a flat Deny, unconditional - and sweeping them in with everything else would make
+   * that decision on the administrator's behalf while a button labelled 전체 선택 implied it had
+   * merely selected some checkboxes. They have their own 전체 선택 in their own block.
+   */
   const blockToggle = (group: { service: string; entries: Offer[] }) => {
-    if (group.entries.length === 0) return null;
-    const all = group.entries.every((o) => Boolean(held(o.action)));
+    const scoped = group.entries.filter((o) => !o.account_level);
+    if (scoped.length === 0) return null;
+    const all = scoped.every((o) => Boolean(held(o.action)));
     return (
       <button
         type="button"
         className="block-all"
-        onClick={() => selectAll(group.entries, !all)}
+        onClick={() => selectAll(scoped, !all)}
         title={q ? "검색으로 걸러진 것만 대상이다" : undefined}
       >
-        {all ? "전체 해제" : `전체 선택 ${group.entries.length}개`}
+        {all ? "전체 해제" : `전체 선택 ${scoped.length}개`}
       </button>
+    );
+  };
+
+  /**
+   * The actions that reach a resource, by access level. The ordinary case.
+   *
+   * `only` picks which half: false is everything that names a resource type, true is everything
+   * that names none. They are never rendered together, because ticking one of each produces two
+   * different KINDS of statement and a single list would hide that.
+   */
+  const byLevel = (group: { entries: Offer[]; showResource: boolean }, accountOnly: boolean) =>
+    ACCESS_ORDER.map((access) => {
+      const ofLevel = group.entries.filter(
+        (e) => e.access === access && e.account_level === accountOnly,
+      );
+      if (ofLevel.length === 0) return null;
+      return (
+        <div key={access} className="pick-level">
+          <span className="level-name">{access}</span>
+          {ofLevel.map((offer) =>
+            item(offer.action,
+                 group.showResource && !accountOnly
+                   ? (offer.resources.join(", ") || "자원 없음")
+                   : undefined))}
+        </div>
+      );
+    });
+
+  /**
+   * The actions that name no resource, folded, with what ticking one actually does.
+   *
+   * These cannot be narrowed. A NotResource list denies them whatever is in it - their resource is
+   * "*" and "*" is in no list - and a Resource list of ARNs never matches them. The only statement
+   * that means anything is a flat Deny, so the editor emits deny_only for these whatever intent the
+   * rest are under, and the sentence here is what makes that a decision rather than a surprise.
+   *
+   * Folded because they are the minority case and the ordinary one should be what the eye lands on
+   * - but PRESENT, which is the change. They used to be filtered out of the offering under
+   * allow_only, so 전체 선택 across EC2 skipped 257 of 793 actions in silence.
+   */
+  const flatDenyBlock = (group: { service: string; entries: Offer[]; showResource: boolean }) => {
+    const flat = group.entries.filter((e) => e.account_level);
+    if (flat.length === 0) return null;
+    const all = flat.every((o) => Boolean(held(o.action)));
+    return (
+      <details className="pick-flat" open={Boolean(q)}>
+        <summary>
+          자원을 지목하지 않는 동작 {flat.length}개 — 통째로 거부하는 것만 가능하다
+          <button type="button" className="block-all"
+                  onClick={(e) => { e.preventDefault(); selectAll(flat, !all); }}>
+            {all ? "전체 해제" : `전체 선택 ${flat.length}개`}
+          </button>
+        </summary>
+        <p className="muted small">
+          이 동작들은 자원을 인자로 받지 않으므로 &quot;이 자원만&quot;으로 좁힐 수 없다. 고르면 지금
+          고른 나머지와 달리 <strong>평면 거부</strong>(<code>Deny</code> · <code>Resource: &quot;*&quot;</code>)로
+          작성된다 — 조건 없이 완전히 막힌다는 뜻이다. 위의 <strong>인라인 정책 보기</strong>에서 실제
+          문장을 확인할 수 있다.
+        </p>
+        {byLevel(group, true)}
+      </details>
     );
   };
 
@@ -363,18 +437,8 @@ export function ActionPicker({
               {group.label} — 이 정책이 닿는 서비스
               {blockToggle(group)}
             </span>
-            {ACCESS_ORDER.map((access) => {
-              const ofLevel = group.entries.filter((e) => e.access === access);
-              if (ofLevel.length === 0) return null;
-              return (
-                <div key={access} className="pick-level">
-                  <span className="level-name">{access}</span>
-                  {ofLevel.map((offer) =>
-                    item(offer.action,
-                         group.showResource ? (offer.resources.join(", ") || "자원 없음") : undefined))}
-                </div>
-              );
-            })}
+            {byLevel(group, false)}
+            {flatDenyBlock(group)}
           </div>
         ))}
 
@@ -396,20 +460,8 @@ export function ActionPicker({
                   {group.label}
                   {blockToggle(group)}
                 </span>
-                {ACCESS_ORDER.map((access) => {
-                  const ofLevel = group.entries.filter((e) => e.access === access);
-                  if (ofLevel.length === 0) return null;
-                  return (
-                    <div key={access} className="pick-level">
-                      <span className="level-name">{access}</span>
-                      {ofLevel.map((offer) =>
-                        item(offer.action,
-                             group.showResource
-                               ? (offer.resources.join(", ") || "자원 없음")
-                               : undefined))}
-                    </div>
-                  );
-                })}
+                {byLevel(group, false)}
+                {flatDenyBlock(group)}
               </div>
             ))}
           </details>
