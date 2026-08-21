@@ -286,3 +286,47 @@ test('the preview says it is a preview, and shows the fence', () => {
             + 'approver never saw');
   assert.ok(block.includes('INLINE_LIMIT'), 'the quota is not shown beside the size');
 });
+
+const PICKER = readFileSync(new URL('../src/components/ActionPicker.tsx', import.meta.url), 'utf8');
+
+test('an action that names no resource is offered, not filtered away', () => {
+  // It used to be removed from the offering under allow_only. That was the wrong answer to a real
+  // constraint: 전체 선택 across EC2 then quietly skipped 257 of its 793 actions, and nothing on
+  // the page said which, or why, or that they existed. An approver who ticked everything believed
+  // they had covered everything.
+  assert.ok(!/intent === "allow_only" && offer\.account_level/.test(PICKER),
+            'account-level actions are hidden again, so 전체 선택 skips them in silence');
+  assert.ok(PICKER.includes('flatDenyBlock'), 'they have no block of their own');
+  assert.ok(PICKER.includes('자원을 지목하지 않는 동작'),
+            'the block does not say what these actions are');
+  assert.ok(PICKER.includes('평면 거부'),
+            'the block does not say that ticking one denies it outright');
+});
+
+test('전체 선택 on a service does not sweep in the flat denies', () => {
+  // A flat Deny is unconditional and is a different decision from narrowing. Sweeping them in
+  // under a button labelled 전체 선택 would make that decision on the administrator's behalf.
+  const toggle = PICKER.slice(PICKER.indexOf('const blockToggle ='),
+                              PICKER.indexOf('const byLevel ='));
+  assert.ok(toggle.includes('!o.account_level'),
+            'the service 전체 선택 selects account-level actions too');
+  // And the flat block has its own.
+  const flat = PICKER.slice(PICKER.indexOf('const flatDenyBlock ='),
+                            PICKER.indexOf('// The resource button sits OUTSIDE'));
+  assert.ok(flat.includes('selectAll(flat'), 'the flat block has no 전체 선택 of its own');
+});
+
+test('the editor emits a flat deny for an action that names no resource', () => {
+  // Whatever intent the rest are under. Under tag_condition it would be worse than refused: the
+  // condition tests a resource tag, an action with no resource has none, so the statement matches
+  // nothing and reads on the page as a restriction that is in place.
+  const emit = IMPACT.slice(IMPACT.indexOf('const accountLevel ='),
+                            IMPACT.indexOf('// Keyed off what the policy GRANTS'));
+  assert.ok(emit.includes('accountLevel(choice.action)'),
+            'the editor no longer splits by whether the action reaches a resource');
+  assert.match(emit, /intent: "deny_only" as const[\s\S]{0,60}resources: \[\]/,
+               'the account-level branch no longer emits a flat deny');
+  // Unknown is not empty. An action the reference does not carry must not be guessed at.
+  assert.ok(emit.includes('entry ? entry[1].length === 0 : false'),
+            'an action missing from the reference is being treated as account-level');
+});

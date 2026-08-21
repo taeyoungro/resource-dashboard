@@ -738,7 +738,34 @@ function RestrictionEditor({
   const [tagKey, setTagKey] = useState(() => existing[0]?.tag_key ?? "");
   const [tagValues, setTagValues] = useState(() => (existing[0]?.tag_values ?? []).join(","));
 
-  /** One restriction per action, which is one statement per action once the container builds it. */
+  /**
+   * Which chosen actions name no resource at all.
+   *
+   * The same test the picker's Offer.account_level is built from, read here because the editor is
+   * where a restriction is composed and this decides which KIND of statement an action can be in.
+   * An action absent from the reference is not assumed to be account-level - unknown is not empty,
+   * and the container refuses what it cannot resolve rather than guessing.
+   */
+  const accountLevel = (action: string) => {
+    const [service, ...rest] = action.split(":");
+    const entry = reference?.services[service]?.[rest.join(":")];
+    return entry ? entry[1].length === 0 : false;
+  };
+
+  /**
+   * One restriction per action, split by whether the action reaches a resource.
+   *
+   * An action that names no resource cannot be narrowed - it can only be denied outright. A
+   * NotResource list denies it whatever is in the list, because its resource is "*" and "*" is in
+   * no list, and a Resource list of ARNs never matches it at all. So the only statement that means
+   * anything for one of these is a flat Deny, which is intent deny_only with no resources, and
+   * generator/restriction.py refuses every other shape.
+   *
+   * That is a DIFFERENT decision from the one being made about the resource-bearing actions, and
+   * the page says so beside the picker rather than making it silently. What is not acceptable is
+   * the old behaviour: under allow_only these actions were not offered at all, so 전체 선택 across
+   * EC2 quietly skipped 257 of 793 actions and nothing said which or why.
+   */
   const emit = (
     nextIntent: Restriction["intent"],
     nextChoices: Choice[],
@@ -749,16 +776,21 @@ function RestrictionEditor({
     setChoices(nextChoices);
     setTagKey(key);
     setTagValues(values);
-    onChange(nextChoices.map((choice) => ({
-      policy,
-      intent: nextIntent,
-      actions: [choice.action],
-      ...(nextIntent === "tag_condition"
-        ? {
-          tag_key: key.trim(),
-          tag_values: values.split(",").map((v) => v.trim()).filter(Boolean),
-        }
-        : { resources: choice.resources }),
+    onChange(nextChoices.map((choice) => (accountLevel(choice.action)
+      // A flat Deny, whatever intent the rest are under. Under tag_condition it would be worse than
+      // refused: the condition tests a resource tag, an action with no resource has none, so the
+      // statement would match nothing and read on the page as a restriction that is in place.
+      ? { policy, intent: "deny_only" as const, actions: [choice.action], resources: [] }
+      : {
+        policy,
+        intent: nextIntent,
+        actions: [choice.action],
+        ...(nextIntent === "tag_condition"
+          ? {
+            tag_key: key.trim(),
+            tag_values: values.split(",").map((v) => v.trim()).filter(Boolean),
+          }
+          : { resources: choice.resources }),
     })));
   };
 
