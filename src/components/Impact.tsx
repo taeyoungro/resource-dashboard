@@ -11,6 +11,7 @@ import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
 import { INLINE_LIMIT, composeInline, inlineBytes, readable }
   from "../../server/inlinePreview.js";
+import { serviceFold } from "../../server/serviceFold.js";
 
 /**
  * What the permission set will reach, and the place a restriction is chosen.
@@ -894,6 +895,46 @@ function RestrictionEditor({
           ))}
         </ul>
       )}
+
+      {(() => {
+        // The one action this list could be written as, when it can. Offered rather than applied:
+        // the wildcard becomes the administrator's decision and travels as the action, because a
+        // page that quietly widened [8 names] into athena:* would be restricting actions this
+        // approval does not grant - which is the one thing generator/restriction.py refuses by
+        // name, and which after B-1 it can now actually see.
+        if (intent === "tag_condition" || choices.length === 0) return null;
+        const one = new Set(choices.map((c) => JSON.stringify([...c.resources].sort())));
+        // One resource clause, because the statement it would become is one statement. A mixed set
+        // is several statements and folding them together is not this offer.
+        if (one.size !== 1) return null;
+        const folded = serviceFold({
+          actions: choices.map((c) => c.action),
+          resources: choices[0].resources,
+          intent,
+          groups: affected,
+          granted,
+        });
+        if (!folded) return null;
+        return (
+          <p className="fold-offer">
+            <button type="button" onClick={() => emit(intent, [{
+              action: folded.wildcard, resources: choices[0].resources,
+            }])}>
+              <code>{folded.wildcard}</code> 하나로 접기
+            </button>
+            {" "}
+            <span className="muted small">
+              {intent === "deny_only"
+                ? `이 자원에 닿는 ${folded.covers}개를 전부 골랐다. 나머지 ${folded.adds.length}개는
+                   이 자원 유형에 닿지 않으므로 문장에 걸리지 않는다 —`
+                : `이 정책이 주는 ${folded.covers}개를 전부 골랐다 —`}
+              {" "}같은 것을 거부하면서 문장이 하나가 된다.
+              {folded.adds.length > 0 && intent === "allow_only"
+                && ` 다만 ${folded.adds.join(", ")}까지 함께 거부된다.`}
+            </span>
+          </p>
+        );
+      })()}
 
       {(() => {
         // Estimated, and said so. The exact number depends on statements this write preserves, which

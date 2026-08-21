@@ -330,3 +330,20 @@ test('the editor emits a flat deny for an action that names no resource', () => 
   assert.ok(emit.includes('entry ? entry[1].length === 0 : false'),
             'an action missing from the reference is being treated as account-level');
 });
+
+test('the service wildcard is offered, never applied', () => {
+  // The wildcard becomes the administrator's decision and travels as the action. A page that
+  // quietly widened [8 names] into athena:* would be restricting actions this approval does not
+  // grant, which generator/restriction.py refuses by name - and which after B-1 it can see.
+  const offer = IMPACT.slice(IMPACT.indexOf('// The one action this list could be written as'),
+                             IMPACT.indexOf('// Estimated, and said so'));
+  assert.ok(offer.includes('serviceFold({'), 'the offer no longer asks the shared module');
+  assert.ok(offer.includes('<button'), 'the fold is applied without the administrator choosing it');
+  assert.ok(offer.includes('folded.adds'), 'what the wildcard additionally denies is not shown');
+  // One resource clause only. A mixed set is several statements and folding them together is a
+  // different operation from this one.
+  assert.ok(offer.includes('one.size !== 1'),
+            'the offer no longer requires a single resource clause');
+  assert.ok(offer.includes('intent === "tag_condition"'),
+            'a tag condition is being offered a wildcard, where the members carry no tag');
+});

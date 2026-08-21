@@ -918,3 +918,16 @@ dialog.picker button.commit {
 }
 .pick-flat > summary .block-all { margin-left: auto; }
 .pick-flat > p { margin: 6px 0 4px; line-height: 1.5; }
+
+
+/* The offer to write a list of actions as one service wildcard. Set apart from the size warning
+   below it: that one says something is wrong, this one says something is possible. */
+.fold-offer {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--panel);
+  line-height: 1.55;
+}
+.fold-offer > button { margin-right: 4px; }
