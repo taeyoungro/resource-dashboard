@@ -150,7 +150,39 @@ export function ActionPicker({
   // So it is offered under every intent now, in its own block, and ticking one composes a flat Deny
   // instead - which is what the editor emits and what the container will accept. The block says so;
   // this is a different decision from the one being made about the rest and it is made knowingly.
+  /** Every offer by action name, so a row can ask whether its action names a resource at all. */
+  const offerFor = useMemo(() => {
+    const map = new Map<string, Offer>();
+    for (const group of covered) {
+      for (const offer of group.offers) map.set(offer.action, offer);
+    }
+    return map;
+  }, [covered]);
+
   const usable = (offer: Offer) => !protectedActions.includes(offer.action);
+
+  /**
+   * Whether an action still NEEDS a resource before the container will write it.
+   *
+   * generator/restriction.py refuses a decision that names no resource unless every action in it is
+   * account-level - a flat Deny on "*" being the only shape that restricts one of those. An action
+   * that DOES take a resource and has none is refused, and rightly: allow_only would compose an
+   * empty NotResource, which denies everywhere, and deny_only would compose Resource "*", which
+   * denies the action outright rather than on the resources the administrator meant.
+   *
+   * That refusal used to arrive on submit, after the whole restriction was assembled. Same rule,
+   * asked here instead.
+   *
+   * null for an action the reference does not carry - one typed by hand. Nothing here can say
+   * whether it names a resource, and the container has a floor list of its own, so the escape hatch
+   * stays open and the refusal stays where it can be made correctly.
+   */
+  const needsResource = (action: string): boolean | null => {
+    if (intent === 'tag_condition') return false;
+    const offer = offerFor.get(action);
+    if (!offer) return null;
+    return !offer.account_level;
+  };
 
   // Everything the dialog offers, regardless of the search. Anything in the draft that is NOT in here
   // gets its own group: an action typed earlier, or one that was ticked under deny_only and became
@@ -203,6 +235,16 @@ export function ActionPicker({
   // An action with no resources yet. Reported in the footer rather than refused: for an action that
   // reaches nothing it is the correct and only state, and the container decides which of those is a
   // legitimate flat deny.
+  /**
+   * Chosen, takes a resource, and has none - the shape generator/restriction.py refuses.
+   *
+   * Separate from `unscoped` below, which counts every choice with an empty list including the
+   * account-level ones a flat Deny covers. Those are fine; these are not, and conflating the two
+   * either blocks a legitimate flat Deny or lets an empty NotResource through.
+   */
+  const unwritable = draft.filter((c) => c.resources.length === 0
+    && needsResource(c.action) === true);
+
   const unscoped = draft.filter((c) => c.resources.length === 0);
 
   // What a bulk apply would reach. An action that names no resource type, or one whose type nothing in
@@ -359,12 +401,23 @@ export function ActionPicker({
   const item = (action: string, resource?: string) => {
     const chosenFor = held(action);
     const reachable = reachedBy(action);
+    // Needs a resource, and the assessment holds none it can reach. Nothing the administrator can
+    // pick will ever scope it, so whatever is ticked here the container refuses - it is not ticked,
+    // and the row says why rather than being quietly absent. An approver looking for an action
+    // needs to find out it is unrestrictable, not fail to find it.
+    const dead = needsResource(action) === true && reachable.length === 0;
     return (
       <div key={action} className="pick-row">
-        <label className={chosenFor ? "pick-item on" : "pick-item"}>
-          <input type="checkbox" checked={Boolean(chosenFor)} onChange={() => toggle(action)} />
+        <label className={[chosenFor ? "pick-item on" : "pick-item", dead ? "dead" : ""]
+          .filter(Boolean).join(" ")}
+               title={dead
+                 ? "이 평가에 이 동작이 닿는 자원이 없다. 자원을 지정할 수 없으므로 제한을 쓸 수 없다"
+                 : undefined}>
+          <input type="checkbox" checked={Boolean(chosenFor)} disabled={dead}
+                 onChange={() => toggle(action)} />
           <code>{action}</code>
           {resource && <span className="rtype">{resource}</span>}
+          {dead && <span className="rtype">닿는 자원 없음</span>}
         </label>
         {chosenFor && intent !== "tag_condition" && (
           <button
@@ -519,6 +572,16 @@ export function ActionPicker({
           {intent !== "tag_condition" && unscoped.length > 0
             && ` · 자원 미지정 ${unscoped.length}개`}
         </span>
+        {/* Named, not counted. "자원 미지정 3개" tells an administrator that something is wrong and
+            not which row to open, and the footer is where they are looking when 적용 will not
+            press. */}
+        {unwritable.length > 0 && (
+          <span className="unwritable">
+            자원을 지정해야 쓸 수 있다 —{" "}
+            {unwritable.slice(0, 3).map((c) => c.action).join(", ")}
+            {unwritable.length > 3 && ` 외 ${unwritable.length - 3}개`}
+          </span>
+        )}
         {intent !== "tag_condition" && (
           <button
             type="button"
@@ -538,7 +601,17 @@ export function ActionPicker({
         <button type="button" className="grow" onClick={() => onCancel()}>
           취소
         </button>
-        <button type="button" className="commit" onClick={() => onCommit(draft)}>
+        <button
+          type="button"
+          className="commit"
+          disabled={unwritable.length > 0}
+          title={unwritable.length > 0
+            ? `자원을 지정하지 않은 동작이 ${unwritable.length}개 있다: `
+              + `${unwritable.slice(0, 3).map((c) => c.action).join(", ")}`
+              + `${unwritable.length > 3 ? " 외" : ""}`
+            : undefined}
+          onClick={() => onCommit(draft)}
+        >
           적용
         </button>
       </footer>

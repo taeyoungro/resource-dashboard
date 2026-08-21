@@ -347,3 +347,42 @@ test('the service wildcard is offered, never applied', () => {
   assert.ok(offer.includes('intent === "tag_condition"'),
             'a tag condition is being offered a wildcard, where the members carry no tag');
 });
+
+test('an action that still needs a resource cannot be committed', () => {
+  // generator/restriction.py refuses a decision naming no resource unless every action in it is
+  // account-level: allow_only would compose an empty NotResource, which denies everywhere, and
+  // deny_only would compose Resource "*", which denies the action outright rather than on the
+  // resources the administrator meant. That refusal used to arrive on submit, after the whole
+  // restriction was assembled.
+  assert.ok(PICKER.includes('const needsResource ='), 'the gate is gone');
+  assert.match(PICKER, /const unwritable = draft\.filter\([\s\S]{0,120}needsResource\(c\.action\) === true\)/,
+               'the unwritable set no longer asks whether the action needs a resource');
+  assert.match(PICKER, /className="commit"[\s\S]{0,120}disabled=\{unwritable\.length > 0\}/,
+               '적용 presses while a choice cannot be written');
+  // Named in the footer, not counted. "자원 미지정 3개" says something is wrong and not which row.
+  assert.ok(PICKER.includes('자원을 지정해야 쓸 수 있다'), 'the footer does not name them');
+});
+
+test('an account-level action is not asked for a resource it cannot have', () => {
+  // The flat Deny is the only shape that restricts one, and it needs no resources. Blocking those
+  // would leave no expressible way to restrict them at all.
+  assert.ok(PICKER.includes('return !offer.account_level;'),
+            'account-level actions are being asked for resources');
+});
+
+test('an action the reference does not carry is not blocked here', () => {
+  // Typed by hand - the escape hatch for what the reference does not cover. Nothing on this page
+  // can say whether it names a resource, and the container has a floor list of its own, so the
+  // refusal stays where it can be made correctly.
+  assert.match(PICKER, /if \(!offer\) return null;/,
+               'an unknown action is being judged rather than passed through');
+});
+
+test('an action nothing in the assessment reaches is unselectable, and says why', () => {
+  // Whatever is ticked there the container refuses. An approver looking for the action needs to
+  // find out it is unrestrictable, not fail to find it - so the row is present and disabled.
+  assert.match(PICKER, /const dead = needsResource\(action\) === true && reachable\.length === 0/);
+  assert.ok(PICKER.includes('disabled={dead}'), 'the checkbox is still tickable');
+  assert.ok(PICKER.includes('닿는 자원 없음'), 'the row does not say why it is disabled');
+  assert.match(CSS, /\.pick-item\.dead\b/, 'a disabled row looks the same as an enabled one');
+});
