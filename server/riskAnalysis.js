@@ -30,14 +30,67 @@ export class AnalysisError extends Error {}
 export const ANALYSIS_VERSION = 1;
 
 /**
- * How many candidates go in one request.
+ * How many candidates go in one request, and how many requests are in flight at once.
  *
- * Not one request per candidate: the frame, the deployment block and the digest are identical
- * across a run, so batching lets all of it be read from cache and paid for once. Not one request
- * for all of them either - the answer is the output, and sixty narratives in one response is where
- * a truncated answer starts costing verdicts. A failed batch loses its own candidates and no more.
+ * These two numbers are what the run's wall clock is made of, and they were tuned against a real
+ * assessment: six policies, twenty-two candidates, roughly two minutes.
+ *
+ * What costs the time is OUTPUT. A verdict is a Korean narrative, a containment block and seven
+ * answers - call it five hundred tokens - so ten of them in one response is five thousand tokens
+ * generated in series, and three such batches one after another is the two minutes. Input barely
+ * matters by comparison: the frame, the deployment block and the digest come to about nine thousand
+ * tokens and prefill is fast.
+ *
+ * So: smaller batches, sent together. Four candidates is about two thousand output tokens, and six
+ * of those in flight at once means the run takes as long as its SLOWEST batch rather than the sum
+ * of all of them. Twenty-two candidates go from three-in-series to six-at-once.
+ *
+ * The costs of going this way, both real and both bounded:
+ *   - the frame and the digest are re-sent per batch, and there are more batches now, so input
+ *     tokens roughly double. Input is a fifth the price of output and the usage line shows it.
+ *   - concurrent calls can be throttled. converse.js retries a throttle with backoff, which is the
+ *     one refusal that a plain retry does fix.
  */
-const BATCH = 10;
+const BATCH = 4;
+const CONCURRENCY = 6;
+
+/**
+ * How long a run may take before it stops STARTING work. Milliseconds.
+ *
+ * Not a timeout on a request - it never cancels a batch already in flight, because a batch that was
+ * paid for should be read. It bounds the queue: when the deadline passes, batches not yet started
+ * are reported as unanswered rather than quietly waited for.
+ *
+ * A bound rather than a hope. Without one, a slow day for the model turns a one-minute screen into
+ * a five-minute one and nothing says so; with one, the reader gets the verdicts that arrived and a
+ * line naming the candidates that did not.
+ */
+const DEADLINE_MS = 60_000;
+
+/**
+ * Run `work` over `items`, `limit` at a time, in order, stopping early when `deadline` says to.
+ *
+ * Results keep the input's order whatever finishes first, because the failure list and the log line
+ * are read by a person comparing two runs - batch 3 has to mean the same thing every time.
+ */
+async function pool(items, limit, work, { shouldStop = () => false, onSkip = null } = {}) {
+  const results = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      if (shouldStop()) {
+        if (onSkip) onSkip(index, items[index]);
+        continue;
+      }
+      results[index] = await work(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
 
 /**
  * The ceiling a model-proposed grade is held to, by where the path ends.
@@ -584,7 +637,8 @@ function findingOf({ verdict, candidate, grant }, digest) {
  * above testable at all.
  */
 export async function analyse({ digest, client, model, candidates = null, maxTokens = 16000,
-                                batchSize = BATCH, onProgress = null }) {
+                                batchSize = BATCH, concurrency = CONCURRENCY,
+                                deadlineMs = DEADLINE_MS, onProgress = null }) {
   if (!digest) throw new AnalysisError('no digest to analyse');
   if (!client) throw new AnalysisError('no model client configured');
   if (!model) throw new AnalysisError('no model id configured');
@@ -599,10 +653,16 @@ export async function analyse({ digest, client, model, candidates = null, maxTok
   // the run held one HTTP request open for minutes, whatever terminates TLS in front returned
   // 504, and the log line said what the answer contained and nothing about how long it took to
   // get - so there was no way to tell a slow model from a hung one without a browser open.
-  const timing = { totalMs: 0, batchMs: [] };
+  //
+  // batchMs is per batch and they OVERLAP now, so it does not sum to totalMs. That is the point:
+  // the gap between the largest entry and the total is how much the concurrency actually bought.
+  const timing = { totalMs: 0, batchMs: new Array(groups.length).fill(0), concurrency, deadlineMs };
   const started = Date.now();
+  let done = 0;
 
-  for (const [index, batch] of groups.entries()) {
+  const overdue = () => deadlineMs > 0 && Date.now() - started >= deadlineMs;
+
+  await pool(groups, concurrency, async (batch, index) => {
     const body = request(digest, batch, { model, maxTokens });
     const batchStarted = Date.now();
     try {
@@ -630,12 +690,26 @@ export async function analyse({ digest, client, model, candidates = null, maxTok
       failures.push({ batch: index + 1, candidates: batch.map((c) => c.id),
                       why: error.message ?? String(error) });
     }
-    timing.batchMs.push(Date.now() - batchStarted);
+    timing.batchMs[index] = Date.now() - batchStarted;
+    done += 1;
     if (onProgress) {
-      onProgress({ batch: index + 1, of: groups.length, elapsedMs: Date.now() - started });
+      onProgress({ batch: done, of: groups.length, elapsedMs: Date.now() - started });
     }
-  }
+  }, {
+    shouldStop: overdue,
+    // Never silently. A candidate nobody asked about reads exactly like a candidate the model found
+    // nothing in, and the whole point of the deadline is that the reader knows which they have.
+    onSkip: (index, batch) => {
+      failures.push({
+        batch: index + 1,
+        candidates: batch.map((c) => c.id),
+        why: `not asked - the run passed its ${Math.round(deadlineMs / 1000)}s budget before this `
+          + 'batch started. Raise OPT_RISK_ANALYSIS_DEADLINE_SECONDS or narrow the request.',
+      });
+    },
+  });
   timing.totalMs = Date.now() - started;
+  failures.sort((a, b) => a.batch - b.batch);
 
   const { accepted, dropped, fabricated } = validate(verdicts, { candidates: list, digest });
 
@@ -734,9 +808,9 @@ export function sha256Of(findings) {
  * Lazily because the analysis is optional: a deployment that has not enabled it should not fail to
  * start over a package it never calls, and the tests must exercise every line above without one.
  */
-export async function bedrockClient({ region, onDegrade = null }) {
+export async function bedrockClient({ region, onDegrade = null, onRetry = null }) {
   const { bedrockConverse } = await import('./converse.js');
   // No keys. The instance profile is the credential, and the SDK resolves it through the default
   // AWS provider chain - the same chain the S3 client on this host already uses.
-  return bedrockConverse({ region, onDegrade });
+  return bedrockConverse({ region, onDegrade, onRetry });
 }

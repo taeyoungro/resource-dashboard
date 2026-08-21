@@ -423,3 +423,115 @@ test('the analysis refuses to run without a client, a model or a digest', async 
   await assert.rejects(() => analyse({ digest: SIMPLE, client: stub([]) }), /no model id/);
   await assert.rejects(() => analyse({ client: stub([]), model: MODEL }), /no digest/);
 });
+
+
+// ---- what the wall clock is made of -------------------------------------------------------------
+//
+// Six policies, twenty-two candidates, roughly two minutes when the batches went out one after
+// another. The time is OUTPUT: a verdict is a Korean narrative, a containment block and seven
+// answers, so ten of them in one response is five thousand tokens generated in series. Smaller
+// batches sent together turns a sum into a maximum.
+
+/** A client that records how many calls are in flight at once, and holds each for one tick. */
+function concurrentStub(verdictsFor, { hold = () => 1 } = {}) {
+  const state = { inFlight: 0, peak: 0, calls: 0, order: [] };
+  state.messages = {
+    async create(body) {
+      state.calls += 1;
+      state.inFlight += 1;
+      state.peak = Math.max(state.peak, state.inFlight);
+      const ids = [...JSON.stringify(body.messages[0].content[1].text).matchAll(/C\d+/g)]
+        .map((m) => m[0]);
+      await new Promise((resolve) => { setTimeout(resolve, hold(ids)); });
+      state.inFlight -= 1;
+      state.order.push(ids[0]);
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ verdicts: verdictsFor(ids) }) }],
+        usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0,
+                 cache_creation_input_tokens: 0 },
+      };
+    },
+  };
+  return state;
+}
+
+const manyCandidates = (n) => Array.from({ length: n }, (_, i) => ({
+  id: `C${i + 1}`, edge: 'run-existing', outcome: 'code_execution_as', policy: 'p', policy_id: 'P1',
+  target: null, control_plane: [], steps: [{ capability: 'modify_code', actions: ACTIONS }],
+  also_granted: [], reservations: [],
+}));
+
+const verdictsFor = (ids) => ids.map((id) => ({ ...VERDICT, candidate_id: id,
+                                                cited_actions: ACTIONS }));
+
+test('batches go out together rather than one after another', async () => {
+  // The whole fix. Twenty-two candidates at four per batch is six requests; if they queue the run
+  // takes the sum of them, and if they overlap it takes the slowest.
+  const client = concurrentStub(verdictsFor);
+  const result = await analyse({
+    digest: SIMPLE, client, model: MODEL, candidates: manyCandidates(22),
+    batchSize: 4, concurrency: 6,
+  });
+  assert.equal(client.calls, 6, 'twenty-two candidates at four per batch is six requests');
+  assert.equal(client.peak, 6, `only ${client.peak} request(s) were ever in flight at once`);
+  assert.equal(result.findings.length, 22);
+  assert.equal(result.timing.concurrency, 6);
+});
+
+test('the concurrency is a ceiling, not a target', async () => {
+  // An account's token budget is shared, and six at once is already enough to be throttled. A
+  // deployment that lowers this must actually get fewer.
+  const client = concurrentStub(verdictsFor);
+  await analyse({ digest: SIMPLE, client, model: MODEL, candidates: manyCandidates(22),
+                  batchSize: 4, concurrency: 2 });
+  assert.equal(client.peak, 2);
+});
+
+test('failures are numbered by batch and not by what finished first', async () => {
+  // The failure list and the log line are read by a person comparing two runs. Batch 3 has to mean
+  // the same thing every time, whatever order the answers came back in.
+  const client = concurrentStub(verdictsFor, { hold: (ids) => (ids[0] === 'C1' ? 12 : 1) });
+  const result = await analyse({ digest: SIMPLE, client, model: MODEL,
+                                 candidates: manyCandidates(8), batchSize: 4, concurrency: 4 });
+  assert.equal(client.order[0], 'C5', 'the fixture did not actually finish out of order');
+  assert.equal(result.findings.length, 8);
+});
+
+test('the deadline stops starting batches and names the candidates nobody asked about', async () => {
+  // A bound rather than a hope. Without one a slow day turns a one-minute screen into a five-minute
+  // one and nothing says so; with one the reader gets what arrived plus a line naming what did not.
+  const client = concurrentStub(verdictsFor, { hold: () => 30 });
+  const result = await analyse({
+    digest: SIMPLE, client, model: MODEL, candidates: manyCandidates(40),
+    batchSize: 4, concurrency: 2, deadlineMs: 40,
+  });
+  assert.ok(client.calls < 10, `every batch was sent anyway (${client.calls} of 10)`);
+  const unasked = result.failures.filter((f) => /not asked/.test(f.why));
+  assert.ok(unasked.length > 0, 'batches were skipped without being reported');
+  // Named, not counted. An absent candidate reads exactly like one the model found nothing in.
+  assert.ok(unasked[0].candidates.length > 0);
+  assert.deepEqual(result.failures.map((f) => f.batch),
+                   [...result.failures.map((f) => f.batch)].sort((a, b) => a - b));
+});
+
+test('a batch already in flight when the deadline passes is still read', async () => {
+  // It was paid for. Cancelling it would spend the tokens and throw the answer away, which is the
+  // thing the 504 did before the run was detached from its request.
+  const client = concurrentStub(verdictsFor, { hold: () => 25 });
+  const result = await analyse({
+    digest: SIMPLE, client, model: MODEL, candidates: manyCandidates(8),
+    batchSize: 4, concurrency: 4, deadlineMs: 1,
+  });
+  // Both batches start before the first deadline check, so both answers arrive.
+  assert.equal(result.findings.length, 8);
+  assert.equal(result.failures.length, 0);
+});
+
+test('a deadline of zero turns the bound off', async () => {
+  const client = concurrentStub(verdictsFor, { hold: () => 5 });
+  const result = await analyse({ digest: SIMPLE, client, model: MODEL,
+                                 candidates: manyCandidates(12), batchSize: 4, concurrency: 1,
+                                 deadlineMs: 0 });
+  assert.equal(client.calls, 3);
+  assert.equal(result.failures.length, 0);
+});

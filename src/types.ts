@@ -590,6 +590,13 @@ export interface ModelAnalysis {
   candidates: number;
   answered?: number;
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  /**
+   * How long the run took, and the shape that made it that long.
+   *
+   * batchMs entries OVERLAP - batches are sent concurrently - so they do not sum to totalMs. The
+   * gap between the largest entry and the total is what the concurrency actually bought.
+   */
+  timing?: { totalMs: number; batchMs: number[]; concurrency: number; deadlineMs: number };
   findings_sha256?: string;
   /** Present only when the whole run was thrown away for citing an action granted nowhere. */
   discarded?: { why: string; fabricated: { id: string; action: string }[] };

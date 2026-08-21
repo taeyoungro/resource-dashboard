@@ -165,11 +165,12 @@ test('a field the endpoint refuses is dropped once, and the request goes again',
 });
 
 test('a refusal that is not about a field is not retried', async () => {
-  // Sending less cannot fix a throttle, a denial or a model that is not enabled, and a blind retry
-  // would double the cost of every outage.
+  // Sending less cannot fix a denial or a model that is not enabled, and a blind retry would double
+  // the cost of every outage. A throttle is the exception and is tested separately below: it is
+  // fixed by sending the SAME thing after a wait, which is a different move from sending less.
   for (const [status, message] of [[403, 'not authorized to perform: bedrock:InvokeModel'],
-                                   [429, 'Too many requests'],
-                                   [400, 'The provided model identifier is invalid']]) {
+                                   [400, 'The provided model identifier is invalid'],
+                                   [400, 'The model returned an unexpected answer']]) {
     let calls = 0;
     const client = converseClient({
       send: async () => {
@@ -209,4 +210,61 @@ test('a refusal about two fields conflicting is retried, not just an unknown one
     assert.equal(calls, 2, 'the conflict was not retried');
     assert.equal(answer.content[0].text, '{"verdicts":[]}');
   });
+});
+
+
+// ---- throttling, which is what concurrency buys -------------------------------------------------
+
+/** A send that throttles the first `n` calls, then answers. */
+function throttlingSend(n, { status = 429, name = 'ThrottlingException' } = {}) {
+  const state = { calls: 0 };
+  state.send = async () => {
+    state.calls += 1;
+    if (state.calls <= n) {
+      const error = new Error('Too many requests, please wait before trying again.');
+      error.$metadata = { httpStatusCode: status };
+      error.name = name;
+      throw error;
+    }
+    return { output: { message: { content: [{ toolUse: { input: { verdicts: [] } } }] } },
+             stopReason: 'tool_use', usage: {} };
+  };
+  return state;
+}
+
+test('a throttle is retried with the same request, after a wait', async () => {
+  // The analysis sends its batches together now - six requests at once against one account's token
+  // budget is exactly the shape that gets throttled. A throttle that is not retried costs the
+  // candidates in that batch and reports them as failed, which is a worse answer for no reason:
+  // unlike a refused field, this one IS fixed by asking again.
+  const waits = [];
+  const state = throttlingSend(2);
+  const client = converseClient({
+    send: state.send,
+    sleep: async (ms) => { waits.push(ms); },
+    onRetry: ({ attempt, waitMs }) => waits.push(`reported ${attempt}@${waitMs}`),
+  });
+  const answer = await client.messages.create(BODY);
+  assert.equal(state.calls, 3, 'the throttle was not retried twice');
+  assert.equal(answer.content[0].text, '{"verdicts":[]}');
+  // Backoff, and reported. A run that spent half its budget waiting is a run whose concurrency is
+  // too high for the account, and the log line is the only place that would say so.
+  assert.deepEqual(waits, ['reported 1@400', 400, 'reported 2@800', 800]);
+});
+
+test('a throttle that never clears is given up on rather than retried forever', async () => {
+  // Bounded. The deadline in analyse() is the outer bound, but a client that retried without a cap
+  // would sit inside one batch spending the whole budget on it.
+  const state = throttlingSend(99);
+  const client = converseClient({ send: state.send, sleep: async () => {}, retries: 2 });
+  await assert.rejects(() => client.messages.create(BODY), /Too many requests/);
+  assert.equal(state.calls, 3, 'the retry cap did not hold');
+});
+
+test('a throttle is recognised by name as well as by status', async () => {
+  // The SDK does not always carry a status on a throttle - it does always carry the name.
+  const state = throttlingSend(1, { status: undefined, name: 'ThrottlingException' });
+  const client = converseClient({ send: state.send, sleep: async () => {} });
+  await client.messages.create(BODY);
+  assert.equal(state.calls, 2);
 });

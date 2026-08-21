@@ -147,12 +147,37 @@ export function fromConverse(answer) {
 }
 
 /**
+ * Whether a failure is the service asking to be asked again later.
+ *
+ * Distinct from refusesAField above, and the difference decides what a retry may change. A refused
+ * FIELD is fixed by sending less; a throttle is fixed by sending the SAME thing after a wait, and
+ * sending less there would answer a different question for no reason.
+ *
+ * This began to matter when the analysis started sending its batches concurrently: six requests at
+ * once against one account's token budget is exactly the shape that gets throttled, and a throttle
+ * that is not retried costs four candidates and reports them as failed.
+ */
+function throttled(error) {
+  const status = error?.$metadata?.httpStatusCode ?? error?.status;
+  if (status === 429 || status === 503) return true;
+  const name = `${error?.name ?? ''}`;
+  return /Throttling|TooManyRequests|ServiceUnavailable|ServiceQuotaExceeded/i.test(name);
+}
+
+/** Backoff for attempt n, in milliseconds. Deterministic - a test must be able to wait it out. */
+const backoffMs = (attempt) => 400 * 2 ** (attempt - 1);
+
+/**
  * A client shaped like the Anthropic one, talking Converse underneath.
  *
  * `send` is injected so the translation is testable without the network and without the AWS SDK -
  * in production it is a BedrockRuntimeClient's send, bound to a ConverseCommand.
+ *
+ * `sleep` is injected for the same reason: the throttle backoff below is real time, and a test that
+ * waited it out would be a test nobody runs.
  */
-export function converseClient({ send, onDegrade = null }) {
+export function converseClient({ send, onDegrade = null, onRetry = null, retries = 2,
+                                 sleep = (ms) => new Promise((r) => { setTimeout(r, ms); }) }) {
   async function ask(input) {
     const shaped = fromConverse(await send(input));
     if (shaped.content.length === 0) {
@@ -161,12 +186,28 @@ export function converseClient({ send, onDegrade = null }) {
     return shaped;
   }
 
+  /** The same request again, after a wait, while the service is asking us to slow down. */
+  async function askThroughThrottle(input) {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await ask(input);
+      } catch (error) {
+        // Bounded, and never for anything else. A blind retry doubles the cost of every outage,
+        // which is why a denial and a bad model id still fail on the first answer.
+        if (!throttled(error) || attempt > retries) throw error;
+        const wait = backoffMs(attempt);
+        if (onRetry) onRetry({ attempt, waitMs: wait, why: error.message ?? String(error) });
+        await sleep(wait);
+      }
+    }
+  }
+
   return {
     messages: {
       async create(body) {
         const input = converseInput(body);
         try {
-          return await ask(input);
+          return await askThroughThrottle(input);
         } catch (error) {
           // One retry, and only for the one thing sending less can fix. The optional field is the
           // model-specific block; everything else in the request is the analysis itself, and
@@ -174,7 +215,7 @@ export function converseClient({ send, onDegrade = null }) {
           if (!input.additionalModelRequestFields || !refusesAField(error)) throw error;
           const { additionalModelRequestFields: dropped, ...plain } = input;
           if (onDegrade) onDegrade({ dropped, why: error.message });
-          return ask(plain);
+          return askThroughThrottle(plain);
         }
       },
     },
@@ -182,7 +223,7 @@ export function converseClient({ send, onDegrade = null }) {
 }
 
 /** The production client. Imported lazily, like the Anthropic one, for the same reason. */
-export async function bedrockConverse({ region, onDegrade = null }) {
+export async function bedrockConverse({ region, onDegrade = null, onRetry = null }) {
   let BedrockRuntimeClient;
   let ConverseCommand;
   try {
@@ -192,5 +233,6 @@ export async function bedrockConverse({ region, onDegrade = null }) {
       + `model cannot be called: ${error.message}`);
   }
   const client = new BedrockRuntimeClient({ region });
-  return converseClient({ send: (input) => client.send(new ConverseCommand(input)), onDegrade });
+  return converseClient({ send: (input) => client.send(new ConverseCommand(input)),
+                          onDegrade, onRetry });
 }

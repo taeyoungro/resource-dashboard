@@ -414,6 +414,13 @@ function Summary({ answer, findings }: { answer: RiskAnalysisAnswer; findings: F
           ? ` · 그중 ${answer.candidates_covered_by_rules}건은 규칙이 이미 찾은 경로`
           : ""}
         {" · "}질의 크기 {(answer.digest_bytes / 1024).toFixed(1)} KB
+        {/* 걸린 시간과 그것을 그렇게 만든 모양. 묶음들이 겹쳐 돌므로 가장 느린 묶음과 전체의
+            차이가 동시 실행으로 실제로 번 시간이다. */}
+        {model?.timing
+          ? ` · ${(model.timing.totalMs / 1000).toFixed(1)}초 (${model.timing.batchMs.length}묶음 ·`
+            + ` 동시 ${model.timing.concurrency} · 가장 느린 묶음`
+            + ` ${(Math.max(0, ...model.timing.batchMs) / 1000).toFixed(1)}초)`
+          : ""}
         {" · "}규칙 <code>{answer.rules_sha256.slice(0, 12)}</code>
         {model ? <> · 모델 <code>{model.model_id}</code> · 프롬프트 <code>{model.prompt_version}</code></> : null}
       </div>
