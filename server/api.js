@@ -268,6 +268,11 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // did not ask for, and that is worth a line rather than a silence.
         onDegrade: ({ dropped, why }) => log.warn(
           'analysis dropped %s and retried: %s', Object.keys(dropped).join(','), why),
+        // Throttling. Expected now that batches go out together, and worth a line rather than a
+        // silence: a run that spent half its budget waiting is a run whose concurrency is too high
+        // for this account, and nothing else would say so.
+        onRetry: ({ attempt, waitMs, why }) => log.warn(
+          'analysis throttled attempt=%d waiting=%dms: %s', attempt, waitMs, why),
       });
     }
     return client;
@@ -524,16 +529,20 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
             model: config.bedrockModelId,
             maxTokens: config.riskAnalysisMaxTokens,
             batchSize: config.riskAnalysisBatch,
+            concurrency: config.riskAnalysisConcurrency,
+            deadlineMs: config.riskAnalysisDeadlineMs,
             onProgress: ({ batch, of, elapsedMs }) => report({ batches: of, done: batch, elapsedMs }),
           });
           const a = done.analysis;
           log.info(
             'analysis plan=%s candidates=%d covered=%d answered=%d findings=%d rejected=%d '
-            + 'dropped=%d failed=%d digest=%dB in=%d out=%d cached=%d took=%dms slowest=%dms',
+            + 'dropped=%d failed=%d digest=%dB in=%d out=%d cached=%d took=%dms slowest=%dms '
+            + 'batches=%d at=%d',
             id, a.candidates, done.candidates_covered_by_rules, a.answered ?? 0, a.findings.length,
             a.rejected.length, a.dropped.length, a.failures.length, done.digest_bytes,
             a.usage.input, a.usage.output, a.usage.cacheRead,
             a.timing?.totalMs ?? 0, Math.max(0, ...(a.timing?.batchMs ?? [0])),
+            (a.timing?.batchMs ?? []).length, a.timing?.concurrency ?? 1,
           );
         } catch (error) {
           // The rules still stand. An analysis outage is not an approval outage - the same rule the

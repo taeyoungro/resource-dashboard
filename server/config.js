@@ -134,7 +134,18 @@ export function load() {
     // exists so the frame, the deployment block and the digest are paid for once and read from
     // cache after that, and so a failed request costs its own candidates and no others.
     riskAnalysisMaxTokens: integer('OPT_RISK_ANALYSIS_MAX_TOKENS', 16000),
-    riskAnalysisBatch: integer('OPT_RISK_ANALYSIS_BATCH', 10),
+    riskAnalysisBatch: integer('OPT_RISK_ANALYSIS_BATCH', 4),
+
+    // What the run's wall clock is made of. A verdict is roughly five hundred output tokens, so a
+    // batch of four is two thousand generated in series; six of those in flight means the run takes
+    // as long as its slowest batch rather than the sum. Raising the batch or lowering the
+    // concurrency both make it longer.
+    riskAnalysisConcurrency: integer('OPT_RISK_ANALYSIS_CONCURRENCY', 6),
+
+    // When to stop STARTING batches. Not a cancel: a batch already in flight was paid for and is
+    // read. Batches never started are reported by name, so an approver knows which candidates went
+    // unasked instead of reading their absence as "the model found nothing". 0 turns it off.
+    riskAnalysisDeadlineMs: integer('OPT_RISK_ANALYSIS_DEADLINE_SECONDS', 60) * 1000,
 
     // Resources this deployment cannot name for itself, declared by an operator. An EC2 instance
     // carries no configured name, so the instances running the listener and this dashboard are
