@@ -19,10 +19,14 @@
 //   adaptive thinking   passed through Converse's own field for model-specific parameters, and
 //                       dropped with one retry if the endpoint refuses it - whether a given region
 //                       accepts one is not knowable from here and is therefore not assumed
-//   prompt caching      cachePoint is supported by some models and rejected by others, and the
-//                       failure is a 400 on every request rather than a silent cost. So it is not
-//                       sent here at all: the frame and the digest are paid for on every batch, and
-//                       what that costs is visible in the usage line rather than guessed at
+//   prompt caching      carried, as cachePoint blocks placed after the content they end. Bedrock
+//                       has no automatic caching, so a request without them pays full price for
+//                       every byte of every batch - and the analysis re-sends about thirteen
+//                       thousand tokens of frame, deployment block and digest per batch. It was
+//                       left out while any model might answer, because a model that rejects the
+//                       field 400s every request; with one model configured that is a question
+//                       with an answer, and a refusal now turns the markers off for the process
+//                       rather than failing the run
 //
 // The adapter returns the Anthropic response shape - content blocks and a usage object - so
 // analyse() and everything it feeds does not know how the answer was carried. That is deliberate:
@@ -39,7 +43,9 @@ export class ConverseError extends Error {}
  * came back "extraneous key [output_config] is not permitted".
  */
 function refusesAField(error) {
-  const text = `${error?.message ?? ''}`;
+  // The name as well as the message. Bedrock raises ValidationException with a message that often
+  // names only the field, and reading the message alone missed the whole class.
+  const text = `${error?.name ?? ''} ${error?.message ?? ''}`;
   const status = error?.$metadata?.httpStatusCode ?? error?.status;
   if (status && status !== 400) return false;
   return /extraneous key|unsupported|not permitted|unknown field|validation/i.test(text)
@@ -48,23 +54,59 @@ function refusesAField(error) {
     // while the retry above sat there: the list only recognised fields nobody had heard of, and a
     // conflict between two fields it knew perfectly well read as an ordinary refusal.
     || /may not be (enabled|used|set)|cannot be (used|combined|set)|not (supported|allowed) with/i
-      .test(text);
+      .test(text)
+    // A field the endpoint knows and does not implement, which is how a model without prompt
+    // caching answers a cachePoint: "cachePoint is not supported for this model", "this model
+    // doesn't support prompt caching". Neither says extraneous, unknown or with.
+    || /(not|does ?n[o']t|do ?n[o']t|cannot|can ?n[o']t) support/i.test(text);
 }
 
 /** The tool a schema becomes. One name, used in the request and read back out of the answer. */
 const TOOL = 'record_verdicts';
 
-/** Anthropic-shaped body in, Converse command input out. */
-export function converseInput(body) {
-  const system = (body.system ?? [])
-    .filter((block) => block?.type === 'text' && block.text)
-    .map((block) => ({ text: block.text }));
+/**
+ * A cache breakpoint, in the shape Converse takes.
+ *
+ * Converse does not carry cache_control as a property of the block it applies to - it is a block of
+ * its own, placed AFTER the content it ends. So an Anthropic-shaped array of three marked blocks
+ * becomes six: text, marker, text, marker, text, marker.
+ *
+ * Bedrock has no automatic caching, so a request that does not carry these pays full price for
+ * every byte of every batch. That is what the analysis was doing: the frame, the deployment block
+ * and the digest are identical across a run's batches and came to about thirteen thousand tokens,
+ * re-sent seven times for one assessment.
+ */
+const CACHE_POINT = { cachePoint: { type: 'default' } };
+
+/** Whether a block asked to be cached. Anthropic's spelling; the only one the callers use. */
+const marked = (block) => block?.cache_control?.type === 'ephemeral';
+
+/** Text blocks, with a cache marker after each block that asked for one. */
+function textBlocks(blocks, { cache }) {
+  const out = [];
+  for (const block of blocks) {
+    if (block?.type !== 'text' || !block.text) continue;
+    out.push({ text: block.text });
+    if (cache && marked(block)) out.push(CACHE_POINT);
+  }
+  return out;
+}
+
+/**
+ * Anthropic-shaped body in, Converse command input out.
+ *
+ * cache is false when the endpoint has refused a cachePoint - see converseClient below. It changes
+ * nothing else about the request: the same bytes go out, at full price.
+ */
+export function converseInput(body, { cache = true } = {}) {
+  const system = textBlocks(body.system ?? [], { cache });
 
   const messages = (body.messages ?? []).map((message) => ({
     role: message.role,
-    content: (Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content }])
-      .filter((block) => block?.type === 'text' && block.text)
-      .map((block) => ({ text: block.text })),
+    content: textBlocks(
+      Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content }],
+      { cache },
+    ),
   }));
 
   const input = {
@@ -117,6 +159,13 @@ export function converseInput(body) {
     input.additionalModelRequestFields = { thinking };
   }
   return input;
+}
+
+/** Whether a translated request carries any cache marker at all. */
+export function hasCachePoint(input) {
+  const blocks = [...(input?.system ?? []),
+                  ...(input?.messages ?? []).flatMap((m) => m.content ?? [])];
+  return blocks.some((block) => block?.cachePoint);
 }
 
 /** Converse output back into the Anthropic response shape. */
@@ -202,24 +251,50 @@ export function converseClient({ send, onDegrade = null, onRetry = null, retries
     }
   }
 
-  return {
-    messages: {
-      async create(body) {
-        const input = converseInput(body);
-        try {
-          return await askThroughThrottle(input);
-        } catch (error) {
-          // One retry, and only for the one thing sending less can fix. The optional field is the
-          // model-specific block; everything else in the request is the analysis itself, and
-          // retrying without a piece of that would be answering a different question quietly.
-          if (!input.additionalModelRequestFields || !refusesAField(error)) throw error;
-          const { additionalModelRequestFields: dropped, ...plain } = input;
-          if (onDegrade) onDegrade({ dropped, why: error.message });
-          return askThroughThrottle(plain);
+  // Whether this endpoint takes cache markers AT ALL. Set false only when a refusal says the
+  // markers were the problem, and then never set back: that refusal is a property of the model and
+  // the region rather than of one request, so retrying it would buy a wasted call on every batch of
+  // every analysis for the rest of the process. A refusal that does not name them is not evidence
+  // about them, and turning caching off for the process on one unrelated 400 would be a silent and
+  // permanent doubling of the bill.
+  let cache = true;
+  const aboutCaching = (error) => /cache/i.test(`${error?.name ?? ''} ${error?.message ?? ''}`);
+
+  async function create(body) {
+    // The two things the request carries that the analysis does not depend on, given up one at a
+    // time. Everything else in the request IS the analysis, and retrying without a piece of that
+    // would be answering a different question quietly.
+    //
+    // The markers go first because they are the only part whose removal costs nothing but money:
+    // the same bytes are sent either way. Dropping the model-specific block changes what the model
+    // was asked to do, so it is the second resort. Each flag flips once, so this is three attempts
+    // at the very most.
+    let markers = cache;
+    let extras = true;
+    for (;;) {
+      const input = converseInput(body, { cache: markers });
+      if (!extras) delete input.additionalModelRequestFields;
+      try {
+        return await askThroughThrottle(input);
+      } catch (error) {
+        if (!refusesAField(error)) throw error;
+        if (markers && hasCachePoint(input)) {
+          markers = false;
+          if (aboutCaching(error)) cache = false;
+          if (onDegrade) onDegrade({ dropped: { cachePoint: true }, why: error.message });
+          continue;
         }
-      },
-    },
-  };
+        if (extras && input.additionalModelRequestFields) {
+          extras = false;
+          if (onDegrade) onDegrade({ dropped: input.additionalModelRequestFields, why: error.message });
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  return { messages: { create } };
 }
 
 /** The production client. Imported lazily, like the Anthropic one, for the same reason. */
