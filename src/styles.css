@@ -886,6 +886,19 @@ dialog.picker button.commit {
   border-radius: 6px;
 }
 
+/* The same line inside one policy's block, and it must not read as a second document. Set back
+   rather than panelled: the block it sits in is already a panel, and a box inside a box says
+   "separate thing" about an excerpt whose whole point is that it is not one. */
+.impact .policy-preview {
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0 0;
+  font-size: 0.84rem;
+}
+
 .policy-dialog {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -912,6 +925,31 @@ dialog.picker button.commit {
   line-height: 1.5;
   white-space: pre;
   tab-size: 2;
+}
+
+/* One row per statement the policy puts into the document: the Sid it will be WRITTEN under, then
+   the actions. The Sid leads because it is what ties this row to a line in the document above - an
+   approver reading both is matching on that string and nothing else. */
+.statement-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.statement-list > li {
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.statement-list > li:first-child { border-top: none; }
+.statement-list .sid { font-weight: 700; margin-right: 8px; }
+.statement-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+}
+/* An action in this policy's statement that another policy put there. Marked rather than hidden:
+   the statement is shown whole because a trimmed copy is a statement nobody will write, and an
+   approver has to be able to tell which half of it they are responsible for. */
+.statement-actions .from-elsewhere {
+  color: var(--muted);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
 }
 
 

@@ -9,8 +9,9 @@ import { localDate, localTime } from "../time";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
-import { INLINE_LIMIT, composeInline, inlineBytes, readable }
-  from "../../server/inlinePreview.js";
+import {
+  INLINE_LIMIT, composeInline, inlineBytes, policyContribution, readable, readableStatements,
+} from "../../server/inlinePreview.js";
 import { serviceFold } from "../../server/serviceFold.js";
 
 /**
@@ -247,6 +248,151 @@ function InlinePreview({ restrictions, accountId, fenceServices, nested }: {
 }
 
 /**
+ * What ONE attached policy puts into the shared document, behind a button of its own.
+ *
+ * The preview above answers "what am I about to write". This answers the question an approver asks
+ * next, once four policies are open and eleven actions are ticked across them: "which of those
+ * statements is THIS policy's, and how much of the quota is it spending?" Reading that off the
+ * combined document meant matching action names by eye across a hundred lines.
+ *
+ * What it must not become is a per-policy DOCUMENT. The permission set has one inline policy and a
+ * Deny in it applies whatever policy prompted it, so four documents shown side by side would be four
+ * things that do not exist standing in front of the one that does. So server/inlinePreview.js
+ * composes the whole document and reads this policy's part back OUT of it, and three things follow
+ * that the page has to show rather than smooth over:
+ *
+ *   the Sid numbers have gaps        2 and 3 belong to another policy. Renumbering to 1, 2 would be
+ *                                    a document nobody will write
+ *   a statement can be shared        the fold groups by resource clause, not by policy, so one
+ *                                    statement can carry two policies' actions. It is shown whole,
+ *                                    with the other policy's actions marked
+ *   the byte figure is marginal      what the document GROWS by because of this policy, not the sum
+ *                                    of the statements - those share bytes with statements this
+ *                                    policy did not pay for
+ *
+ * Rendered as a bare JSON array rather than a Version/Statement object, for the same reason: an
+ * excerpt that is a valid standalone policy is a wrong answer somebody can screenshot.
+ */
+function PolicyInlinePreview({
+  policy, name, restrictions, accountId, fenceServices, policyFenceServices, nested,
+}: {
+  policy: string;
+  /** The policy as a person names it. The identifier is an ARN for an AWS managed policy. */
+  name: string;
+  /** EVERY restriction, not this policy's. The whole document is what this is read out of. */
+  restrictions: Restriction[];
+  accountId: string;
+  fenceServices: string[];
+  /** The services this policy's own PassRole grant names. Its fence statements, if it earns any. */
+  policyFenceServices: string[];
+  nested: (action: string) => boolean;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const view = useMemo(
+    () => policyContribution(restrictions, policy,
+                             { accountId, fenceServices, policyFenceServices, nested }),
+    [restrictions, policy, accountId, fenceServices, policyFenceServices, nested],
+  );
+
+  const shared = view.statements.filter((s) => s.others.length > 0);
+  const actions = view.statements.reduce((n, s) => n + s.ours.length, 0);
+
+  return (
+    <div className="inline-preview policy-preview">
+      <button type="button" onClick={() => dialog.current?.showModal()}>
+        이 정책의 문장 보기
+      </button>
+      <span className="muted small">
+        {view.statements.length === 0
+          ? "이 정책이 문서에 넣는 문장이 없다"
+          : `문장 ${view.statements.length}개 · 동작 ${actions}개 · `
+            + `문서를 ${view.share.toLocaleString()}바이트 늘린다`}
+        {view.fence.length > 0 && ` · 울타리 ${view.fence.length}개`}
+      </span>
+
+      <dialog ref={dialog} className="policy-dialog"
+              onClick={(e) => { if (e.target === dialog.current) dialog.current?.close(); }}>
+        <div className="policy-dialog-body">
+          <h4>
+            이 정책이 넣는 문장 <span className="muted">— <code>{name}</code></span>
+          </h4>
+          <p className="muted small">
+            권한 세트의 인라인 문서는 <strong>하나</strong>이고, 이것은 그 문서에서 이 정책이 넣는
+            부분만 떼어 본 것이다 — 따로 만들어지는 문서가 아니다. 그래서{" "}
+            <code>Sid</code> 번호가 중간에 비어 있을 수 있다. 비어 있는 번호는 다른 정책의 문장이다.
+          </p>
+
+          {view.statements.length === 0 ? (
+            <p className="muted">
+              이 정책에서 고른 동작이 없다. 위의 <strong>인라인 정책 보기</strong>에 있는 문장은 모두
+              다른 정책에서 온 것이다.
+            </p>
+          ) : (
+            <>
+              <p className={view.total > INLINE_LIMIT ? "error" : "muted small"}>
+                이 정책이 늘리는 크기 {view.share.toLocaleString()}바이트 · 문서 전체{" "}
+                {view.total.toLocaleString()}바이트 / 한도 {INLINE_LIMIT.toLocaleString()}바이트
+                {view.total > INLINE_LIMIT && " — 문서 전체가 한도를 넘는다"}
+              </p>
+              {/* Marginal, and it has to say so. Folding means the sum of these statements' bytes is
+                  larger than what the document grows by - two policies sharing one resource clause
+                  pay for it once, and an approver adding four per-policy figures would get a number
+                  bigger than the document. */}
+              <p className="muted small">
+                늘리는 크기는 <strong>이 정책을 뺐을 때와의 차이</strong>다. 문장이 다른 정책과 접히면
+                자원 절은 한 번만 계산되므로, 정책별 크기를 더해도 문서 크기가 되지 않는다.
+              </p>
+
+              {shared.length > 0 && (
+                <p className="warn-inline">
+                  {shared.length}개 문장은 다른 정책과 <strong>같은 문장</strong>이다. 자원 절이 같은
+                  동작은 한 문장으로 접히기 때문이고, 아래에는 그 문장이 통째로 나온다 — 다른 정책에서
+                  온 동작까지 함께다.
+                </p>
+              )}
+
+              <ul className="statement-list">
+                {view.statements.map(({ statement, ours, others }) => (
+                  <li key={statement.Sid}>
+                    <code className="sid">{statement.Sid}</code>
+                    <span className="muted small">
+                      {ours.length}개
+                      {others.length > 0 && ` · 다른 정책 ${others.length}개와 공유`}
+                    </span>
+                    <div className="statement-actions">
+                      {ours.map((a) => <code key={a}>{a}</code>)}
+                      {others.map((a) => <code key={a} className="from-elsewhere">{a}</code>)}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+
+              <pre className="policy-json">{readableStatements(
+                view.statements.map((s) => s.statement),
+              )}</pre>
+            </>
+          )}
+
+          {view.fence.length > 0 && (
+            <>
+              <p className="muted small">
+                이 정책이 <code>iam:PassRole</code>을 주기 때문에 파이프라인이 붙이는 울타리다. 위의
+                크기 계산에는 들어 있지 않다 — 제한을 고르든 말든 같은 문장이 붙는다.
+              </p>
+              <pre className="policy-json">{readableStatements(view.fence)}</pre>
+            </>
+          )}
+
+          <div className="row">
+            <button type="button" onClick={() => dialog.current?.close()}>닫기</button>
+          </div>
+        </div>
+      </dialog>
+    </div>
+  );
+}
+
+/**
  * The four sections, in the order they are read.
  *
  * They used to be four values of one dropdown, so a policy could carry exactly one of them and
@@ -463,6 +609,16 @@ function PolicyBlock({
   const relatedServices = [...new Set(related.map((g) => g.service))].sort();
   const relatedSensitive = related.some((g) => g.sensitive_hits > 0);
 
+  // The same question the writer asks the action table, for the per-policy view below. The editor
+  // asks it too and holds its own memo - two callers, one derivation, and neither can be the other's
+  // because the excerpt is composed from EVERY policy's restrictions and the editor only holds this
+  // policy's draft.
+  const nested = useMemo(() => nestedActions(reference), [reference]);
+  // Stable across renders, so the excerpt's memo is not rebuilt by a fresh empty array every time.
+  const policyFenceServices = useMemo(
+    () => passroleGrant?.services ?? [], [passroleGrant],
+  );
+
   const set = (next: Restriction[]) => {
     const others = restrictions.filter((r) => r.policy !== policy.identifier);
     onChange([...others, ...next]);
@@ -551,6 +707,21 @@ function PolicyBlock({
           fenceServices={fenceServices}
           accountId={accountId}
         />
+
+        {/* BELOW the editor, because it is the editor's result. The document-wide preview sits above
+            the policy list for the opposite reason - it summarises all of them and nothing on the
+            page is its cause. Here the cause is the four sections directly above, and a result
+            printed before its cause reads as a heading. */}
+        <PolicyInlinePreview
+          policy={policy.identifier}
+          name={policyName(policy.identifier)}
+          restrictions={restrictions}
+          accountId={accountId}
+          fenceServices={fenceServices}
+          policyFenceServices={policyFenceServices}
+          nested={nested}
+        />
+
         {/* At the BOTTOM of the restriction area, on the operator's direction: it says what the
             picker above will not offer, so it reads as a footnote to the choosing, not a headline
             above it. The declaration path stays unrestrictable either way. */}

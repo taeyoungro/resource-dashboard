@@ -184,16 +184,108 @@ export function inlineBytes(document) {
   return new TextEncoder().encode(serialise(document)).length;
 }
 
+const READ_ORDER = ['Sid', 'Effect', 'Action', 'NotAction', 'Resource', 'NotResource', 'Condition'];
+
+const ordered = (one) => Object.fromEntries(
+  Object.keys(one)
+    .sort((a, b) => (READ_ORDER.indexOf(a) + 1 || 99) - (READ_ORDER.indexOf(b) + 1 || 99))
+    .map((k) => [k, one[k]]),
+);
+
 /** The document as a person reads it - indented, keys in the order IAM documents are written. */
 export function readable(document) {
-  const ORDER = ['Sid', 'Effect', 'Action', 'NotAction', 'Resource', 'NotResource', 'Condition'];
-  const ordered = (one) => Object.fromEntries(
-    Object.keys(one)
-      .sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99))
-      .map((k) => [k, one[k]]),
-  );
   return JSON.stringify({
     Version: document.Version,
     Statement: document.Statement.map(ordered),
   }, null, 2);
+}
+
+/**
+ * An EXCERPT of a document - statements alone, no Version.
+ *
+ * Deliberately not document-shaped. A per-policy view rendered with readable() would be a complete,
+ * valid, well-formed IAM policy that does not exist anywhere, and an approver who screenshots it has
+ * a wrong answer with a screenshot. A bare array cannot be mistaken for the thing that gets written.
+ */
+export function readableStatements(statements) {
+  return JSON.stringify((statements ?? []).map(ordered), null, 2);
+}
+
+/**
+ * What ONE attached policy puts into the shared document.
+ *
+ * The permission set has one inline document and every Deny in it applies whatever policy prompted
+ * it - which is why composeInline runs across every policy and why a per-policy DOCUMENT would be a
+ * lie. This is not that. It composes the whole document once and then reads this policy's
+ * contribution back out of it, so every Sid shown is the Sid that will be written.
+ *
+ * Attribution is by CLAUSE, not by action name, and the difference is not academic. Two policies
+ * can restrict the SAME action on different resources - AmazonS3FullAccess on one bucket and a
+ * customer managed policy on another - and that is two statements, both carrying s3:GetObject.
+ * Matching on the name put both of them in both excerpts, so each policy's view showed a Deny on a
+ * bucket it had nothing to do with. So this rebuilds the clause each of this policy's decisions
+ * folds into, using the same statement() and clause() the fold itself uses, and matches on that.
+ *
+ * Three more things that only fall out of doing it this way round:
+ *
+ *   the Sids have GAPS          AdminDeny1 and AdminDeny4 with nothing between them, because 2 and
+ *                               3 came from another policy. The gaps are the proof that this is a
+ *                               view of something bigger. Renumbering would produce a document that
+ *                               does not exist.
+ *   statements are SHARED       the fold groups by resource clause, not by policy, so one statement
+ *                               can carry actions from two policies. Both excerpts show it, whole,
+ *                               with `others` naming what came from elsewhere. Showing a trimmed
+ *                               copy would be showing a statement nobody will write.
+ *   the cost is MARGINAL        `share` is what the document grows by BECAUSE of this policy, not
+ *                               the sum of the bytes of the statements above. A policy whose actions
+ *                               all fold into a statement another policy already pays for costs
+ *                               only its action names, and the sum would double-count every byte
+ *                               of the resource clause they share.
+ *
+ * The PassRole fence is in neither figure: it is composed from the assessment's grants and is the
+ * same with or without this policy's restrictions, so it cancels out of the subtraction. It is
+ * returned separately, filtered to the services THIS policy's grant names.
+ */
+export function policyContribution(restrictions, policy, options = {}) {
+  const all = (restrictions ?? []).filter((r) => (r.actions ?? []).length > 0);
+  const document = composeInline(all, options);
+  const without = composeInline(all.filter((r) => r.policy !== policy), options);
+
+  // Which actions this policy puts into which clause. The same two functions the fold uses, so the
+  // key is the fold's own key and a decision lands where its statement lands.
+  const nested = options.nested ?? (() => false);
+  const mine = new Map();
+  for (const restriction of all) {
+    if (restriction.policy !== policy) continue;
+    for (const action of restriction.actions ?? []) {
+      const key = clause(statement('', restriction, action, nested));
+      const held = mine.get(key) ?? new Set();
+      held.add(action);
+      mine.set(key, held);
+    }
+  }
+
+  const statements = [];
+  for (const one of document.Statement) {
+    const held = mine.get(clause(one));
+    if (!held) continue;
+    const names = Array.isArray(one.Action) ? one.Action : [one.Action];
+    const ours = names.filter((n) => held.has(n));
+    if (ours.length === 0) continue;
+    statements.push({ statement: one, ours, others: names.filter((n) => !held.has(n)) });
+  }
+
+  const fenced = new Set(options.policyFenceServices ?? []);
+  const fence = document.Statement.filter(
+    (one) => fenced.has(one.Condition?.StringEquals?.['iam:PassedToService']),
+  );
+
+  const total = inlineBytes(document);
+  return {
+    statements,
+    fence,
+    total,
+    without: inlineBytes(without),
+    share: total - inlineBytes(without),
+  };
 }

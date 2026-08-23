@@ -279,7 +279,8 @@ test('the page does not compose the policy itself', () => {
 
 test('the preview says it is a preview, and shows the fence', () => {
   const block = IMPACT.slice(IMPACT.indexOf('function InlinePreview('),
-                             IMPACT.indexOf('const INTENT_LABEL'));
+                             IMPACT.indexOf('function PolicyInlinePreview('));
+  assert.ok(block.length > 0 && block.length < IMPACT.length, 'the slice caught the wrong component');
   assert.ok(block.includes('미리보기'), 'the preview no longer says the writer is the authority');
   assert.ok(block.includes('fenceServices'),
             'the fence is not in the preview, so the deployed document would have a statement the '
@@ -519,4 +520,40 @@ test('an action nothing in the assessment reaches is unselectable, and says why'
   assert.ok(PICKER.includes('disabled={off}'), 'the checkbox is still tickable');
   assert.ok(PICKER.includes('닿는 자원 없음'), 'the row does not say why it is disabled');
   assert.match(CSS, /\.pick-item\.dead\b/, 'a disabled row looks the same as an enabled one');
+});
+
+test('the per-policy view is read OUT of the whole document, never composed on its own', () => {
+  // The permission set has ONE inline document and a Deny in it applies whatever policy prompted
+  // it. Four per-policy documents side by side would be four things that do not exist standing in
+  // front of the one that does - and each would renumber its Sids, so an approver matching the
+  // excerpt against the deployed policy would be matching against a document nobody wrote.
+  const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
+                             IMPACT.indexOf('const SECTIONS'));
+  assert.ok(block.length > 0, 'the per-policy view is gone');
+  assert.ok(block.includes('policyContribution('),
+            'the per-policy view no longer asks the module that reads the composed document');
+  assert.ok(!block.includes('composeInline('),
+            'the per-policy view composes a document of its own, which is a document nobody writes');
+  // It is handed EVERY restriction, not this policy's. That is what makes the Sids real.
+  assert.match(IMPACT, /<PolicyInlinePreview[\s\S]{0,400}restrictions=\{restrictions\}/,
+               "the per-policy view is given one policy's restrictions, so its Sids are invented");
+  assert.ok(!/<PolicyInlinePreview[\s\S]{0,400}restrictions=\{ours\}/.test(IMPACT));
+});
+
+test('the per-policy view says the three things that make it honest', () => {
+  // Each of these is a place the obvious implementation is wrong, so each has to be on the screen
+  // rather than only in a comment.
+  const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
+                             IMPACT.indexOf('const SECTIONS'));
+  assert.ok(block.includes('Sid'), 'nothing explains why the Sid numbers have gaps');
+  assert.ok(block.includes('공유'), 'a statement shared with another policy is not marked');
+  assert.ok(block.includes('다른 정책'), 'the other policy\'s actions are not distinguished');
+  assert.ok(block.includes('더해도'),
+            'the page does not say the per-policy sizes do not add up to the document');
+  // Rendered as a bare array, not a Version/Statement object - an excerpt that is a valid
+  // standalone policy is a wrong answer somebody can screenshot.
+  assert.ok(block.includes('readableStatements('), 'the excerpt is rendered as a whole document');
+  assert.ok(!block.includes('readable('), 'the excerpt is rendered with the document renderer');
+  assert.match(CSS, /\.statement-actions \.from-elsewhere\b/,
+               "another policy's action in a shared statement looks the same as this policy's");
 });
