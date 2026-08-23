@@ -297,10 +297,30 @@ test('an action that names no resource is offered, not filtered away', () => {
   assert.ok(!/intent === "allow_only" && offer\.account_level/.test(PICKER),
             'account-level actions are hidden again, so 전체 선택 skips them in silence');
   assert.ok(PICKER.includes('flatDenyBlock'), 'they have no block of their own');
-  assert.ok(PICKER.includes('자원을 지목하지 않는 동작'),
+  assert.ok(PICKER.includes('자원 목록으로 좁힐 수 없는 동작'),
             'the block does not say what these actions are');
+  assert.ok(PICKER.includes('자원을 인자로 받지'),
+            'the block no longer distinguishes the action that HAS no resource');
   assert.ok(PICKER.includes('평면 거부'),
             'the block does not say that ticking one denies it outright');
+});
+
+test('an action that MAKES the resource it names shares that block, with its own sentence', () => {
+  // The second way a list of ARNs is no scope, and the one nothing was checking.
+  // Deny lambda:CreateFunction NotResource [testLambda, testLambda2] reads as "you may create a
+  // function called testLambda or testLambda2", and both already exist.
+  assert.ok(PICKER.includes('creates_target'), 'the offer does not carry the answer');
+  assert.match(PICKER, /const flatOnly = \(offer: Offer\) =>[\s\S]{0,80}creates_target/,
+               'the two reasons are not sharing one test, so only one of them reaches the block');
+  // Distinct wording. "자원을 인자로 받지 않는다" beside lambda:CreateFunction is simply false -
+  // it does name a resource, and the resource is the one it is about to make.
+  assert.ok(PICKER.includes('만드는'), 'the block does not say why these are here');
+  assert.ok(PICKER.includes('lambda:CreateFunction'), 'the sentence names no example');
+  // And every place that asked "can this be scoped" asks the generalised question.
+  for (const site of ['return !flatOnly(offer);', '!flatOnly(o) &&',
+                      'flatOnly(e) === accountOnly', 'group.entries.filter(flatOnly)']) {
+    assert.ok(PICKER.includes(site), `a scoping decision still reads account_level alone: ${site}`);
+  }
 });
 
 test('전체 선택 on a service does not sweep in the flat denies', () => {
@@ -308,8 +328,8 @@ test('전체 선택 on a service does not sweep in the flat denies', () => {
   // under a button labelled 전체 선택 would make that decision on the administrator's behalf.
   const toggle = PICKER.slice(PICKER.indexOf('const blockToggle ='),
                               PICKER.indexOf('const byLevel ='));
-  assert.ok(toggle.includes('!o.account_level'),
-            'the service 전체 선택 selects account-level actions too');
+  assert.ok(toggle.includes('!flatOnly(o)'),
+            'the service 전체 선택 selects actions a resource list cannot scope');
   // And the flat block has its own.
   const flat = PICKER.slice(PICKER.indexOf('const flatDenyBlock ='),
                             PICKER.indexOf('// The resource button sits OUTSIDE'));
@@ -320,15 +340,18 @@ test('the editor emits a flat deny for an action that names no resource', () => 
   // Whatever intent the rest are under. Under tag_condition it would be worse than refused: the
   // condition tests a resource tag, an action with no resource has none, so the statement matches
   // nothing and reads on the page as a restriction that is in place.
-  const emit = IMPACT.slice(IMPACT.indexOf('const accountLevel ='),
+  const emit = IMPACT.slice(IMPACT.indexOf('const flatOnly ='),
                             IMPACT.indexOf('// Keyed off what the policy GRANTS'));
-  assert.ok(emit.includes('accountLevel(choice.action)'),
-            'the editor no longer splits by whether the action reaches a resource');
+  assert.ok(emit.includes('flatOnly(choice.action)'),
+            'the editor no longer splits by whether a resource list can scope the action');
   assert.match(emit, /intent: "deny_only" as const[\s\S]{0,60}resources: \[\]/,
-               'the account-level branch no longer emits a flat deny');
-  // Unknown is not empty. An action the reference does not carry must not be guessed at.
-  assert.ok(emit.includes('entry ? entry[1].length === 0 : false'),
-            'an action missing from the reference is being treated as account-level');
+               'the flat branch no longer emits a flat deny');
+  // Both reasons, one branch. The second is the action that makes what it names.
+  assert.ok(emit.includes('entry[1].length === 0 || entry[2] === true'),
+            'the editor splits on only one of the two reasons');
+  // Unknown is neither. An action the reference does not carry must not be guessed at.
+  assert.ok(emit.includes(': false'),
+            'an action missing from the reference is being treated as flat-only');
 });
 
 test('the service wildcard is offered, never applied', () => {
@@ -396,7 +419,7 @@ test('전체 선택 does not sweep in what nothing can scope', () => {
 test('an account-level action is not asked for a resource it cannot have', () => {
   // The flat Deny is the only shape that restricts one, and it needs no resources. Blocking those
   // would leave no expressible way to restrict them at all.
-  assert.ok(PICKER.includes('return !offer.account_level;'),
+  assert.ok(PICKER.includes('return !flatOnly(offer);'),
             'account-level actions are being asked for resources');
 });
 

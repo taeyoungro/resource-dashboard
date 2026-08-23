@@ -12,31 +12,78 @@
 //
 // Regenerate after changing restriction.py:
 //
-//     cd event_pipeline && python3 - <<'EOF' > ../resource-dashboard/server/fixtures/inline-preview.json
-//     ... see the header of that file
-//     EOF
-//
+//     cd event_pipeline && python3 scripts/gen_inline_preview_fixture.py
 //     npm run check
+//
+// Existing cases are rebuilt from the decisions already in the file, so only the bytes move.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { INLINE_LIMIT, composeInline, inlineBytes, readable, serialise } from './inlinePreview.js';
+import {
+  INLINE_LIMIT, composeInline, inlineBytes, readable, serialise, subResource,
+} from './inlinePreview.js';
 
 const FIXTURES = JSON.parse(
   readFileSync(new URL('./fixtures/inline-preview.json', import.meta.url), 'utf8'),
 );
+
+/**
+ * The one thing the JavaScript cannot work out for itself: whether an action operates BELOW the
+ * resource an index can hold. The Python knows from the action table; the fixture carries its
+ * answer; the page gets the same answer from action_reference.nested_types.
+ */
+const nestedOf = (c) => {
+  const set = new Set(c.nested_actions ?? []);
+  return (action) => set.has(action);
+};
 
 test('every fixture composes to the bytes the container composed', () => {
   for (const c of FIXTURES.cases) {
     const document = composeInline(c.restrictions, {
       accountId: c.account_id ?? FIXTURES.account_id,
       fenceServices: c.fence_services ?? [],
+      nested: nestedOf(c),
     });
     assert.equal(serialise(document), c.serialised,
                  `${c.label}: the preview and generator/restriction.py disagree`);
     assert.equal(inlineBytes(document), c.bytes, `${c.label}: byte count`);
   }
+});
+
+test('a container ARN brings what is inside it, and only where it should', () => {
+  // The bug in one line: arn:aws:s3:::b does not match arn:aws:s3:::b/key, so a NotResource list of
+  // bucket ARNs denied every object operation INSIDE the buckets it was there to keep.
+  const bucket = 'arn:aws:s3:::opt-solution-markers';
+  const one = (action, nested) => composeInline(
+    [{ policy: 'p', intent: 'allow_only', actions: [action], resources: [bucket] }],
+    { accountId: FIXTURES.account_id, nested: () => nested },
+  ).Statement[0];
+  assert.deepEqual(one('s3:GetObject', true).NotResource, [bucket, `${bucket}/*`]);
+  // And not where the resource has nothing under it. ssm has no child type, and /* on a parameter
+  // ARN would put every parameter below it in the same list.
+  assert.deepEqual(one('s3:GetBucketPolicy', false).NotResource, [bucket]);
+});
+
+test('the separator is read off the ARN, not assumed', () => {
+  // Taking the LAST separator is the version that looks right and gets log groups wrong: the '/' in
+  // the group name comes after the ':' that follows the type.
+  assert.equal(subResource('arn:aws:s3:::b'), 'arn:aws:s3:::b/*');
+  assert.equal(subResource('arn:aws:dynamodb:us-east-1:1:table/t'),
+               'arn:aws:dynamodb:us-east-1:1:table/t/*');
+  assert.equal(subResource('arn:aws:lambda:us-east-1:1:function:fn'),
+               'arn:aws:lambda:us-east-1:1:function:fn:*');
+  assert.equal(subResource('arn:aws:logs:us-east-1:1:log-group:/aws/lambda/x'),
+               'arn:aws:logs:us-east-1:1:log-group:/aws/lambda/x:*');
+});
+
+test('the fixtures actually exercise both answers', () => {
+  // A fixture set where nothing was nested would pass while the JavaScript never expanded anything.
+  assert.ok(FIXTURES.cases.some((c) => (c.nested_actions ?? []).length > 0),
+            'no fixture covers an action that acts below the picked resource');
+  assert.ok(FIXTURES.cases.some((c) => (c.nested_actions ?? []).length === 0
+                                       && (c.restrictions ?? []).length > 0),
+            'no fixture covers an action that acts on the picked resource itself');
 });
 
 test('the fixtures actually cover the fold, in both directions', () => {

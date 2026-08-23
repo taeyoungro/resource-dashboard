@@ -120,15 +120,35 @@ function primaryService(identifier: string, candidates: string[]): string | null
  * shape - one to estimate the size, one to show the policy - is two things to drift.
  */
 function preview(intent: Restriction["intent"], choices: Choice[], tag: string, values: string[],
-                 accountId: string, fenceServices: string[]) {
+                 accountId: string, fenceServices: string[], nested: (action: string) => boolean) {
   const restrictions: Restriction[] = choices.map((choice) => ({
     policy: "", intent, actions: [choice.action],
     ...(intent === "tag_condition"
       ? { tag_key: tag, tag_values: values }
       : { resources: choice.resources }),
   }));
-  const document = composeInline(restrictions, { accountId, fenceServices });
+  const document = composeInline(restrictions, { accountId, fenceServices, nested });
   return { document, bytes: inlineBytes(document) };
+}
+
+/**
+ * Whether an action operates BELOW the resource an index can hold - so the ARN picked for it is a
+ * container and the statement needs what is inside it too.
+ *
+ * The writer asks generator/actions.Table.under_another_type. This asks the same question of the
+ * same data: the reference names each action's resource types, and nested_types names the types
+ * that sit under another one. No reference, or an assessment written before it carried the map,
+ * means no expansion - which is what those assessments were written under.
+ */
+function nestedActions(reference: ImpactActionReference | null): (action: string) => boolean {
+  const nested = reference?.nested_types ?? {};
+  return (action: string) => {
+    const [service, name] = [action.slice(0, action.indexOf(":")), action.slice(action.indexOf(":") + 1)];
+    const types = nested[service];
+    if (!types?.length) return false;
+    const entry = reference?.services?.[service]?.[name];
+    return Boolean(entry?.[1]?.some((t) => types.includes(t)));
+  };
 }
 
 /** Which services the PassRole fence will name. Its statements are in the same document. */
@@ -179,17 +199,18 @@ const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {
  * server/inlinePreview.js composes it, and a fixture test pins that module byte-for-byte against
  * generator/restriction.py. A preview that differs from what gets written would be worse than none.
  */
-function InlinePreview({ restrictions, accountId, fenceServices }: {
+function InlinePreview({ restrictions, accountId, fenceServices, nested }: {
   restrictions: Restriction[];
   accountId: string;
   fenceServices: string[];
+  nested: (action: string) => boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const active = restrictions.filter((r) => r.actions.length > 0);
   const { document: composed, bytes } = useMemo(() => {
-    const doc = composeInline(active, { accountId, fenceServices });
+    const doc = composeInline(active, { accountId, fenceServices, nested });
     return { document: doc, bytes: inlineBytes(doc) };
-  }, [active, accountId, fenceServices]);
+  }, [active, accountId, fenceServices, nested]);
 
   if (active.length === 0 && fenceServices.length === 0) return null;
   const over = bytes > INLINE_LIMIT;
@@ -286,6 +307,7 @@ export function Impact({
           restrictions={restrictions}
           accountId={assessment.account_id}
           fenceServices={fenceServicesOf(assessment.passrole_grants)}
+          nested={nestedActions(assessment.action_reference ?? null)}
         />
       )}
 
@@ -725,6 +747,11 @@ function RestrictionEditor({
 }) {
   const [picking, setPicking] = useState(false);
 
+  // The same question the writer asks the action table, answered from the reference the assessment
+  // carried. The size estimate below is wrong without it: a bucket brings its objects into the
+  // statement, and those bytes count against the same quota.
+  const nested = useMemo(() => nestedActions(reference), [reference]);
+
   // The draft, seeded once. Every change emits the whole set upward, so the parent's array stays the
   // single source of truth for what gets submitted while this holds the parts a restriction needs
   // before it is one - an intent with no actions yet, or a tag key half typed.
@@ -740,17 +767,23 @@ function RestrictionEditor({
   const [tagValues, setTagValues] = useState(() => (existing[0]?.tag_values ?? []).join(","));
 
   /**
-   * Which chosen actions name no resource at all.
+   * Which chosen actions a list of ARNs cannot scope, for either of the two reasons.
    *
-   * The same test the picker's Offer.account_level is built from, read here because the editor is
-   * where a restriction is composed and this decides which KIND of statement an action can be in.
-   * An action absent from the reference is not assumed to be account-level - unknown is not empty,
-   * and the container refuses what it cannot resolve rather than guessing.
+   * The same test the picker's flat block is built from, read here because the editor is where a
+   * restriction is composed and this decides which KIND of statement an action can be in:
+   *
+   *   names no resource type      ec2:DescribeVpcs. Its resource is "*", which is in no list
+   *   makes the one it names      lambda:CreateFunction. The list enumerates what EXISTS, and this
+   *                               action's target is named at call time - "you may create a
+   *                               function called testLambda" is not a control
+   *
+   * An action absent from the reference is neither: unknown is not empty, and the container refuses
+   * what it cannot resolve rather than guessing.
    */
-  const accountLevel = (action: string) => {
+  const flatOnly = (action: string) => {
     const [service, ...rest] = action.split(":");
     const entry = reference?.services[service]?.[rest.join(":")];
-    return entry ? entry[1].length === 0 : false;
+    return entry ? entry[1].length === 0 || entry[2] === true : false;
   };
 
   /**
@@ -777,7 +810,7 @@ function RestrictionEditor({
     setChoices(nextChoices);
     setTagKey(key);
     setTagValues(values);
-    onChange(nextChoices.map((choice) => (accountLevel(choice.action)
+    onChange(nextChoices.map((choice) => (flatOnly(choice.action)
       // A flat Deny, whatever intent the rest are under. Under tag_condition it would be worse than
       // refused: the condition tests a resource tag, an action with no resource has none, so the
       // statement would match nothing and read on the page as a restriction that is in place.
@@ -819,6 +852,9 @@ function RestrictionEditor({
             // No resource type at all. generator/restriction.py refuses an allow_only restriction on
             // one of these, so the picker greys it out for that intent.
             account_level: entry[1].length === 0,
+            // It MAKES the resource it names, so an enumeration of what exists is no scope for it.
+            // Same remedy, different sentence - see the flat block in ActionPicker.
+            creates_target: entry[2] === true,
           };
         })
         .filter((o): o is Offer => o !== null);
@@ -942,7 +978,7 @@ function RestrictionEditor({
         // not get as far as an approval marker to find that out.
         const { bytes } = preview(intent, choices, tagKey,
                                   tagValues.split(",").map((v) => v.trim()).filter(Boolean),
-                                  accountId, fenceServices);
+                                  accountId, fenceServices, nested);
         if (choices.length === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
         return (
           <p className={bytes > INLINE_LIMIT ? "error" : "warn-inline"}>

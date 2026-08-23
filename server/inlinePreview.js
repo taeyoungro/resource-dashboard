@@ -41,8 +41,42 @@ export function serialise(value) {
   return JSON.stringify(value);
 }
 
+/**
+ * The pattern naming everything UNDER an ARN. Mirrors restriction.sub_resource.
+ *
+ * An index holds containers - Resource Explorer reports a bucket and never an object - so the ARN
+ * picked for s3:GetObject is the bucket, and arn:aws:s3:::b does not match arn:aws:s3:::b/key.
+ *
+ * The separator is whichever of ':' or '/' comes FIRST in the resource section, because that is the
+ * one following the resource TYPE and a later one belongs to the name. Taking the last separator is
+ * the version that looks right and gets arn:aws:logs:…:log-group:/aws/lambda/x wrong.
+ */
+export function subResource(arn) {
+  const head = String(arn).split(':');
+  const tail = head.length > 5 ? head.slice(5).join(':') : '';
+  const slash = tail.indexOf('/');
+  const colon = tail.indexOf(':');
+  return (colon >= 0 && (slash < 0 || colon < slash)) ? `${arn}:*` : `${arn}/*`;
+}
+
+/**
+ * The ARNs one action's statement lists. Mirrors restriction._resources.
+ *
+ * `nested` answers what generator/actions.Table.under_another_type answers on the writing side:
+ * does this action operate BELOW the resource an index can hold. Impact.tsx builds it from the
+ * assessment's action_reference, which carries nested_types for exactly this.
+ *
+ * Only when it does. ssm has no child type, and appending /* to a parameter ARN would put every
+ * parameter below it in the same list - under allow_only, a permission nobody granted.
+ */
+function resourcesFor(restriction, action, nested) {
+  const picked = [...(restriction.resources ?? [])].sort();
+  if (picked.length === 0 || !nested(action)) return picked;
+  return [...new Set([...picked, ...picked.map(subResource)])].sort();
+}
+
 /** One action, one statement - before the fold. Mirrors restriction._statement. */
-function statement(sid, restriction, action) {
+function statement(sid, restriction, action, nested) {
   const base = { Sid: sid, Effect: 'Deny', Action: action };
   if (restriction.intent === 'tag_condition') {
     return {
@@ -55,7 +89,7 @@ function statement(sid, restriction, action) {
       },
     };
   }
-  const resources = [...(restriction.resources ?? [])].sort();
+  const resources = resourcesFor(restriction, action, nested);
   if (restriction.intent === 'allow_only') {
     // The complement: what is KEPT is listed, so anything not listed - including whatever is
     // created after this is written - is denied.
@@ -126,11 +160,12 @@ export function fenceStatements(services, accountId) {
  * show four documents that do not exist and hide the one that does, including how the four together
  * spend a single 10,240 character quota.
  */
-export function composeInline(restrictions, { accountId, fenceServices = [] } = {}) {
+export function composeInline(restrictions,
+                              { accountId, fenceServices = [], nested = () => false } = {}) {
   const built = [];
   for (const restriction of restrictions ?? []) {
     for (const action of restriction.actions ?? []) {
-      built.push(statement(`${ADMIN_DENY_SID}${built.length + 1}`, restriction, action));
+      built.push(statement(`${ADMIN_DENY_SID}${built.length + 1}`, restriction, action, nested));
     }
   }
   return {

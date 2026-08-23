@@ -17,7 +17,8 @@
     }
    ],
    "bytes": 213,
-   "serialised": "{\"Statement\":[{\"Action\":[\"lambda:InvokeFunction\",\"lambda:InvokeFunctionUrl\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:testLambda\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+   "serialised": "{\"Statement\":[{\"Action\":[\"lambda:InvokeFunction\",\"lambda:InvokeFunctionUrl\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:testLambda\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "nested_actions": []
   },
   {
    "label": "두 동작이 다른 자원 — 접히지 않는다",
@@ -43,8 +44,11 @@
      ]
     }
    ],
-   "bytes": 235,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:ListBucket\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep/*\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}"
+   "bytes": 259,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:ListBucket\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep/*\",\"arn:aws:s3:::keep/*/*\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}",
+   "nested_actions": [
+    "s3:GetObject"
+   ]
   },
   {
    "label": "여러 정책이 한 문서로",
@@ -82,7 +86,8 @@
     }
    ],
    "bytes": 392,
-   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:StopInstances\",\"ec2:TerminateInstances\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:us-east-1:718100330247:instance/i-0aaa\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"lambda:UpdateFunctionCode\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:a\",\"arn:aws:lambda:us-east-1:718100330247:function:b\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}"
+   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:StopInstances\",\"ec2:TerminateInstances\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:us-east-1:718100330247:instance/i-0aaa\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"lambda:UpdateFunctionCode\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:a\",\"arn:aws:lambda:us-east-1:718100330247:function:b\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}",
+   "nested_actions": []
   },
   {
    "label": "deny_only 자원 없음 -> 평면 거부",
@@ -97,7 +102,8 @@
     }
    ],
    "bytes": 121,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:ListAllMyBuckets\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:ListAllMyBuckets\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "nested_actions": []
   },
   {
    "label": "태그 조건",
@@ -117,7 +123,8 @@
     }
    ],
    "bytes": 216,
-   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:StopInstances\",\"ec2:TerminateInstances\"],\"Condition\":{\"StringEquals\":{\"aws:ResourceTag/env\":[\"prod\",\"stage\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:StopInstances\",\"ec2:TerminateInstances\"],\"Condition\":{\"StringEquals\":{\"aws:ResourceTag/env\":[\"prod\",\"stage\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "nested_actions": []
   },
   {
    "label": "정렬 안 된 입력도 같은 바이트",
@@ -135,8 +142,12 @@
      ]
     }
    ],
-   "bytes": 176,
-   "serialised": "{\"Statement\":[{\"Action\":[\"s3:DeleteObject\",\"s3:PutObject\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::alpha\",\"arn:aws:s3:::zeta\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+   "bytes": 221,
+   "serialised": "{\"Statement\":[{\"Action\":[\"s3:DeleteObject\",\"s3:PutObject\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::alpha\",\"arn:aws:s3:::alpha/*\",\"arn:aws:s3:::zeta\",\"arn:aws:s3:::zeta/*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "nested_actions": [
+    "s3:DeleteObject",
+    "s3:PutObject"
+   ]
   },
   {
    "label": "울타리만 (서비스 둘)",
@@ -147,7 +158,125 @@
    ],
    "account_id": "718100330247",
    "bytes": 465,
-   "serialised": "{\"Statement\":[{\"Action\":\"iam:PassRole\",\"Condition\":{\"StringEquals\":{\"iam:PassedToService\":\"ec2.amazonaws.com\"}},\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:iam::718100330247:role/mirror-denyrole\"],\"Sid\":\"PassRoleAllowlistFence1\"},{\"Action\":\"iam:PassRole\",\"Condition\":{\"StringEquals\":{\"iam:PassedToService\":\"lambda.amazonaws.com\"}},\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:iam::718100330247:role/mirror-denyrole\"],\"Sid\":\"PassRoleAllowlistFence2\"}],\"Version\":\"2012-10-17\"}"
+   "serialised": "{\"Statement\":[{\"Action\":\"iam:PassRole\",\"Condition\":{\"StringEquals\":{\"iam:PassedToService\":\"ec2.amazonaws.com\"}},\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:iam::718100330247:role/mirror-denyrole\"],\"Sid\":\"PassRoleAllowlistFence1\"},{\"Action\":\"iam:PassRole\",\"Condition\":{\"StringEquals\":{\"iam:PassedToService\":\"lambda.amazonaws.com\"}},\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:iam::718100330247:role/mirror-denyrole\"],\"Sid\":\"PassRoleAllowlistFence2\"}],\"Version\":\"2012-10-17\"}",
+   "nested_actions": []
+  },
+  {
+   "label": "객체에 작용하는 동작 — 버킷 안쪽까지 나온다",
+   "restrictions": [
+    {
+     "policy": "AmazonS3FullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "s3:GetObject"
+     ],
+     "resources": [
+      "arn:aws:s3:::opt-solution-markers"
+     ]
+    }
+   ],
+   "nested_actions": [
+    "s3:GetObject"
+   ],
+   "bytes": 189,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "버킷 자체에 작용하는 동작 — 버킷만",
+   "restrictions": [
+    {
+     "policy": "AmazonS3FullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "s3:GetBucketPolicy"
+     ],
+     "resources": [
+      "arn:aws:s3:::opt-solution-markers"
+     ]
+    }
+   ],
+   "nested_actions": [],
+   "bytes": 157,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetBucketPolicy\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "두 종류가 섞이면 접히지 않는다",
+   "restrictions": [
+    {
+     "policy": "AmazonS3FullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "s3:GetObject",
+      "s3:GetBucketPolicy"
+     ],
+     "resources": [
+      "arn:aws:s3:::opt-solution-markers"
+     ]
+    }
+   ],
+   "nested_actions": [
+    "s3:GetObject"
+   ],
+   "bytes": 308,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"s3:GetBucketPolicy\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "deny_only도 안쪽까지 거부한다",
+   "restrictions": [
+    {
+     "policy": "AmazonS3FullAccess",
+     "intent": "deny_only",
+     "actions": [
+      "s3:DeleteObject"
+     ],
+     "resources": [
+      "arn:aws:s3:::opt-solution-markers"
+     ]
+    }
+   ],
+   "nested_actions": [
+    "s3:DeleteObject"
+   ],
+   "bytes": 189,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:DeleteObject\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "자식 유형이 없는 서비스는 그대로 (ssm)",
+   "restrictions": [
+    {
+     "policy": "AmazonSSMFullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "ssm:GetParameter"
+     ],
+     "resources": [
+      "arn:aws:ssm:us-east-1:718100330247:parameter/prod"
+     ]
+    }
+   ],
+   "nested_actions": [],
+   "bytes": 171,
+   "serialised": "{\"Statement\":[{\"Action\":\"ssm:GetParameter\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ssm:us-east-1:718100330247:parameter/prod\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "구분자는 ARN에서 읽는다 (logs는 콜론)",
+   "restrictions": [
+    {
+     "policy": "CloudWatchLogsFullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "logs:GetLogEvents"
+     ],
+     "resources": [
+      "arn:aws:logs:us-east-1:718100330247:log-group:/aws/lambda/x"
+     ]
+    }
+   ],
+   "nested_actions": [
+    "logs:GetLogEvents"
+   ],
+   "bytes": 246,
+   "serialised": "{\"Statement\":[{\"Action\":\"logs:GetLogEvents\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:logs:us-east-1:718100330247:log-group:/aws/lambda/x\",\"arn:aws:logs:us-east-1:718100330247:log-group:/aws/lambda/x:*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
   }
  ]
 }
