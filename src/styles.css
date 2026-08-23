@@ -946,3 +946,17 @@ dialog.picker button.commit {
   margin-right: auto;
   padding-left: 8px;
 }
+
+/* What went, and it is not an error - 적용 presses. Muted rather than red for exactly that reason:
+   red beside a working button reads as "fix me" and there is nothing here to fix. */
+.dropped-actions {
+  color: var(--muted);
+  font-size: 12px;
+  margin-right: auto;
+  padding-left: 8px;
+}
+
+/* Both can be on at once - some actions waiting on a pick, others with nothing to pick. Two auto
+   margins in a flex row split the free space and put a gap between the two messages; one is enough
+   to push the buttons right, so the second gives its up. */
+.unwritable ~ .dropped-actions { margin-right: 0; }
