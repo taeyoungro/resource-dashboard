@@ -134,7 +134,13 @@ const ASSESSMENT = {
   action_reference: {
     reference_version: 'a'.repeat(64),
     retrieved_at: '2026-08-11T00:00:00Z',
-    services: { sqs: { DeleteMessage: ['Write', ['queue']], ListQueues: ['Read', []] } },
+    services: { sqs: {
+      DeleteMessage: ['Write', ['queue']],
+      ListQueues: ['Read', []],
+      // The third element: this action MAKES every resource it names, so the enumeration - a
+      // list of what exists - is no scope for it.
+      CreateQueue: ['Write', ['queue'], true],
+    } },
   },
   coverage: { complete: true, services_failed: [], truncated_groups: [], policies_unreadable: [] },
 };
@@ -399,6 +405,56 @@ test('an account-level action cannot be narrowed by an allow_only restriction', 
     }),
     /names no resource/,
   );
+});
+
+test('an action that makes the resource it names cannot be given a list of them', async () => {
+  // Deny sqs:CreateQueue NotResource [the queue that exists] reads as "you may create a queue
+  // called this", about a queue that is already there. The inline writer refuses it; the point of
+  // refusing here is that the person hears the reason while they are still choosing, rather than
+  // finding out after the approval has been sitting in a bucket.
+  const { route } = harness({ pushed: PUSHED });
+  for (const intent of ['allow_only', 'deny_only']) {
+    await assert.rejects(
+      () => route['POST /api/plans/:id/decision']({
+        params: { id: PLAN_ID },
+        body: decision({
+          restrictions: [{ ...restriction, intent, actions: ['sqs:CreateQueue'] }],
+          expected_impact_sha256: ASSESSMENT_SHA,
+        }),
+      }),
+      /brings the resource it names into being/,
+      intent,
+    );
+  }
+});
+
+test('a tag condition on an action that makes its target is refused as dead', async () => {
+  // Provably, not as a matter of taste: aws:ResourceTag reads the tags of a resource that exists.
+  const { route } = harness({ pushed: PUSHED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ policy: restriction.policy, intent: 'tag_condition',
+                         actions: ['sqs:CreateQueue'], tag_key: 'env', tag_values: ['prod'] }],
+        expected_impact_sha256: ASSESSMENT_SHA,
+      }),
+    }),
+    /never match/,
+  );
+});
+
+test('the same action with no resources is the shape that gets through', async () => {
+  const { route } = harness({ pushed: PUSHED });
+  const answer = await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ policy: restriction.policy, intent: 'deny_only',
+                       actions: ['sqs:CreateQueue'], resources: [] }],
+      expected_impact_sha256: ASSESSMENT_SHA,
+    }),
+  });
+  assert.ok(answer);
 });
 
 test('an account-level action cannot be denied against named resources', async () => {

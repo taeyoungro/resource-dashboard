@@ -763,12 +763,18 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // as a control and denies nothing. The inline writer refuses both; this says so first, with the
         // name, rather than letting an approval sit in a bucket and be refused later.
         const accountLevel = new Set();
+        // The other way a list of ARNs is not a scope: the action MAKES every resource it names, so
+        // the enumeration - a list of what exists - says "you may create one called this" about
+        // things already there. Same remedy, same reason to say it here rather than in a bucket.
+        const makesTarget = new Set();
         for (const [service, block] of Object.entries(
           stored.document.action_reference?.services ?? {},
         )) {
           for (const [name, entry] of Object.entries(block)) {
             if (Array.isArray(entry?.[1]) && entry[1].length === 0) {
               accountLevel.add(`${service}:${name}`);
+            } else if (entry?.[2] === true) {
+              makesTarget.add(`${service}:${name}`);
             }
           }
         }
@@ -814,6 +820,26 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
             }
           }
           const named = Array.isArray(restriction.resources) ? restriction.resources : [];
+          for (const action of actions) {
+            if (!makesTarget.has(action.trim())) continue;
+            if (named.length > 0) {
+              throw new HttpError(
+                400,
+                `${action} brings the resource it names into being. The list enumerates what `
+                + 'EXISTS, so naming resources here says "you may create one called this" about '
+                + 'things that are already there. Deny it with no resources, which denies creating '
+                + 'any.',
+              );
+            }
+            if (restriction.intent === 'tag_condition') {
+              throw new HttpError(
+                400,
+                `${action} brings the resource it names into being, and a tag condition on it can `
+                + 'never match: aws:ResourceTag reads the tags of a resource that exists, and this '
+                + 'one does not until the call succeeds.',
+              );
+            }
+          }
           for (const arn of named) {
             if (typeof arn !== 'string' || !enumerated.has(arn)) {
               throw new HttpError(
