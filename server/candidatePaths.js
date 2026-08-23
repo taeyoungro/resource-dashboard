@@ -139,6 +139,15 @@ const EDGES = [
   },
 ];
 
+/**
+ * Every edge and what it means, once.
+ *
+ * A candidate carries the same sentence as every other candidate of its edge, so twenty-six
+ * candidates over seven edges sent the same eleven sentences four times each. The frame states them
+ * once instead and the candidate carries only its edge id - which it carried already.
+ */
+export const EDGE_LEGEND = EDGES.map(({ id, why }) => ({ id, why }));
+
 /** Why a candidate cannot be asserted outright. Empty means nothing stands in the way. */
 function reservations(grant, unit, digest) {
   const out = [];

@@ -931,3 +931,18 @@ dialog.picker button.commit {
   line-height: 1.55;
 }
 .fold-offer > button { margin-right: 4px; }
+
+
+/* An action the assessment holds nothing for. Ticking it can only end in the container refusing the
+   restriction, so the checkbox is disabled and the row says why rather than being quietly absent -
+   an approver looking for an action needs to find out it is unrestrictable, not fail to find it. */
+.pick-item.dead { opacity: 0.55; cursor: not-allowed; }
+.pick-item.dead code { text-decoration: line-through; }
+
+/* Why 적용 will not press. In the footer, where the eye already is when the button does not work. */
+.unwritable {
+  color: var(--danger);
+  font-size: 12px;
+  margin-right: auto;
+  padding-left: 8px;
+}

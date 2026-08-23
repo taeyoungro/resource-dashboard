@@ -20,9 +20,10 @@
 
 import { createHash } from 'node:crypto';
 
-import { OUTCOME, candidates as proposeCandidates } from './candidatePaths.js';
+import { EDGE_LEGEND, OUTCOME, candidates as proposeCandidates } from './candidatePaths.js';
 import { CAP } from './capabilities.js';
 import { RULES } from './rules.js';
+import { wireCandidates, wireDigest } from './wire.js';
 
 export class AnalysisError extends Error {}
 
@@ -47,7 +48,9 @@ export const ANALYSIS_VERSION = 1;
  *
  * The costs of going this way, both real and both bounded:
  *   - the frame and the digest are re-sent per batch, and there are more batches now, so input
- *     tokens roughly double. Input is a fifth the price of output and the usage line shows it.
+ *     tokens roughly double. That was the whole cost of small batches until the transport started
+ *     carrying cache markers; with them the re-sent prefix is read rather than paid for, and the
+ *     batch size stops being a cost decision - see request() below and the ordering in analyse().
  *   - concurrent calls can be throttled. converse.js retries a throttle with backoff, which is the
  *     one refusal that a plain retry does fix.
  */
@@ -220,6 +223,7 @@ export const VERDICT_SCHEMA = {
 function frame() {
   const outcomes = Object.values(OUTCOME).map((o) => `  - ${o}`).join('\n');
   const capabilities = Object.values(CAP).map((c) => `  - ${c}`).join('\n');
+  const edges = EDGE_LEGEND.map((e) => `  ${e.id}: ${e.why}`).join('\n');
   const rules = RULES.map((r) => `  ${r.id} [${r.category}/${r.escalationGrade}] ${r.title}`)
     .join('\n');
 
@@ -320,11 +324,27 @@ WHAT YOU AUTHOR. The category, the proposed grade, the title, the narrative, you
 the containment block. Status, restrictability, target lists, the asset grade and the final grade
 are computed from your answers and from the assessment; do not try to state them.
 
+HOW TO READ THE TWO DOCUMENTS. The digest is the whole grant; the candidates are the questions. They
+are written so that nothing is said twice, which means some of what a candidate needs is one lookup
+away rather than on the candidate:
+
+  - A candidate's target names a resource TYPE and a count. The ARNs of that type, and whether they
+    are all of them, are on the digest unit whose t is the same string, under the same policy_id.
+  - A unit with arn_prefix carries its sample as tails: the ARN is arn_prefix followed by the tail.
+    Without arn_prefix the sample entries are whole ARNs. This is notation and nothing more.
+  - A candidate's edge id is a shorthand for the reason below; the candidate does not restate it.
+    A candidate with target null reaches nothing that exists yet - it is a capability of the grant
+    rather than a reach over the current inventory.
+  - budget.dropped says what was left out of the digest. Its why is a key into budget.why.
+
 Outcome vocabulary, where a path ENDS:
 ${outcomes}
 
 Capability vocabulary, what an action CAN do:
 ${capabilities}
+
+Edge vocabulary, why each kind of candidate is proposed at all:
+${edges}
 
 The deterministic rules, whose findings are shown to the approver alongside yours:
 ${rules}
@@ -359,11 +379,11 @@ appear in any candidate, and its absence is not evidence that it is out of reach
 
 /** The digest, as the model receives it. Serialised once per run and shared by every batch. */
 function assessment(digest) {
-  return `<assessment_digest>\n${JSON.stringify(digest)}\n</assessment_digest>`;
+  return `<assessment_digest>\n${JSON.stringify(wireDigest(digest))}\n</assessment_digest>`;
 }
 
 function batchBlock(batch) {
-  return `<candidates>\n${JSON.stringify(batch, null, 1)}\n</candidates>\n\n`
+  return `<candidates>\n${JSON.stringify(wireCandidates(batch), null, 1)}\n</candidates>\n\n`
     + `Judge these ${batch.length} candidates. Answer for every one, including the ones you find `
     + 'are not paths - a rejected candidate is an answer the approver needs.';
 }
@@ -377,6 +397,12 @@ function batchBlock(batch) {
  *   3. the digest           - identical for every batch of THIS assessment
  * The batch itself carries no marker: it differs every request, and marking it would write a cache
  * entry per batch that nothing ever reads.
+ *
+ * These are only worth anything if the transport carries them, and until recently it did not -
+ * converse.js dropped them and every batch paid full price for all three. It carries them now, and
+ * analyse() below sends one batch alone first so that the rest have something to read. Without that
+ * ordering the markers make the run MORE expensive, not less: six concurrent requests behind the
+ * same cold prefix each write it.
  *
  * No thinking is asked for, and that is a decision rather than an omission. The schema travels as a
  * FORCED tool call, and on Bedrock a forced tool choice and enabled thinking cannot both be set -
@@ -662,7 +688,7 @@ export async function analyse({ digest, client, model, candidates = null, maxTok
 
   const overdue = () => deadlineMs > 0 && Date.now() - started >= deadlineMs;
 
-  await pool(groups, concurrency, async (batch, index) => {
+  const askBatch = async (batch, index) => {
     const body = request(digest, batch, { model, maxTokens });
     const batchStarted = Date.now();
     try {
@@ -695,18 +721,40 @@ export async function analyse({ digest, client, model, candidates = null, maxTok
     if (onProgress) {
       onProgress({ batch: done, of: groups.length, elapsedMs: Date.now() - started });
     }
-  }, {
-    shouldStop: overdue,
+  };
+
+  const notAsked = (index, batch) => {
     // Never silently. A candidate nobody asked about reads exactly like a candidate the model found
     // nothing in, and the whole point of the deadline is that the reader knows which they have.
-    onSkip: (index, batch) => {
-      failures.push({
-        batch: index + 1,
-        candidates: batch.map((c) => c.id),
-        why: `not asked - the run passed its ${Math.round(deadlineMs / 1000)}s budget before this `
-          + 'batch started. Raise OPT_RISK_ANALYSIS_DEADLINE_SECONDS or narrow the request.',
-      });
-    },
+    failures.push({
+      batch: index + 1,
+      candidates: batch.map((c) => c.id),
+      why: `not asked - the run passed its ${Math.round(deadlineMs / 1000)}s budget before this `
+        + 'batch started. Raise OPT_RISK_ANALYSIS_DEADLINE_SECONDS or narrow the request.',
+    });
+  };
+
+  // The first batch alone, then the rest together.
+  //
+  // Every batch of a run sends the same frame, deployment block and digest - about thirteen
+  // thousand tokens - and those are marked as a cache prefix. A cache entry is written when a
+  // request COMPLETES, so batches that go out together cannot read each other's: firing all of
+  // them at once means every one of them writes the prefix at the write premium and none of them
+  // reads it, which costs MORE than sending no markers at all. One request first, and the rest
+  // read what it wrote.
+  //
+  // What it costs in wall clock is one round trip, and less than that whenever the batch count
+  // exceeds the concurrency - seven batches at six-at-once was already two waves. It is skipped
+  // when there is nothing to warm the cache FOR.
+  if (groups.length > 1) {
+    if (overdue()) notAsked(0, groups[0]);
+    else await askBatch(groups[0], 0);
+  }
+  const rest = groups.length > 1 ? groups.slice(1) : groups;
+  const offset = groups.length > 1 ? 1 : 0;
+  await pool(rest, concurrency, (batch, index) => askBatch(batch, index + offset), {
+    shouldStop: overdue,
+    onSkip: (index, batch) => notAsked(index + offset, batch),
   });
   timing.totalMs = Date.now() - started;
   failures.sort((a, b) => a.batch - b.batch);

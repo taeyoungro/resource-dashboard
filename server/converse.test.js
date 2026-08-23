@@ -4,7 +4,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { ConverseError, converseClient, converseInput, fromConverse } from './converse.js';
+import {
+  ConverseError, converseClient, converseInput, fromConverse, hasCachePoint,
+} from './converse.js';
 import { VERDICT_SCHEMA } from './riskAnalysis.js';
 
 const BODY = {
@@ -25,10 +27,10 @@ const BODY = {
 test('the system array and the user turn survive, and the model id moves to modelId', () => {
   const input = converseInput(BODY);
   assert.equal(input.modelId, 'us.anthropic.claude-sonnet-4-6');
-  assert.deepEqual(input.system, [{ text: 'frame' }, { text: 'deployment' }]);
+  assert.deepEqual(input.system.filter((b) => b.text), [{ text: 'frame' }, { text: 'deployment' }]);
   assert.equal(input.messages.length, 1);
   assert.equal(input.messages[0].role, 'user');
-  assert.deepEqual(input.messages[0].content.map((b) => b.text.slice(0, 12)),
+  assert.deepEqual(input.messages[0].content.filter((b) => b.text).map((b) => b.text.slice(0, 12)),
                    ['<assessment_', '<candidates>']);
   assert.deepEqual(input.inferenceConfig, { maxTokens: 16000 });
 });
@@ -49,9 +51,35 @@ test('what Converse cannot carry is dropped, not translated into something else'
   // Converse has no top-level thinking field. It goes through the one field reserved for
   // model-specific parameters, and the client retries once without it if the endpoint refuses it.
   assert.equal('thinking' in input, false);
-  // cachePoint is accepted by some models and rejected by others with a 400 on every request, so it
-  // is not sent at all. The cost of that shows up in the usage line rather than as a surprise.
-  assert.equal(JSON.stringify(input).includes('cachePoint'), false);
+});
+
+test('a marked block becomes the block plus a cache point AFTER it', () => {
+  // The placement is the whole of it. cache_control is a property of the block it applies to;
+  // cachePoint is a block of its own that ENDS the prefix before it. Put one before the content it
+  // was meant to cover and the cached prefix is everything except that content.
+  const input = converseInput(BODY);
+  assert.deepEqual(input.system, [
+    { text: 'frame' }, { cachePoint: { type: 'default' } },
+    { text: 'deployment' }, { cachePoint: { type: 'default' } },
+  ]);
+  const content = input.messages[0].content;
+  assert.match(content[0].text, /assessment_digest/);
+  assert.deepEqual(content[1], { cachePoint: { type: 'default' } });
+  // The batch is last and unmarked: it differs every request, so a marker there would write an
+  // entry per batch that nothing ever reads.
+  assert.match(content[2].text, /candidates/);
+  assert.equal(content.length, 3);
+  assert.equal(hasCachePoint(input), true);
+});
+
+test('cache markers can be turned off without changing anything else', () => {
+  const on = converseInput(BODY);
+  const off = converseInput(BODY, { cache: false });
+  assert.equal(hasCachePoint(off), false);
+  assert.deepEqual(off.system, on.system.filter((b) => b.text));
+  assert.deepEqual(off.messages[0].content, on.messages[0].content.filter((b) => b.text));
+  assert.deepEqual(off.toolConfig, on.toolConfig);
+  assert.deepEqual(off.additionalModelRequestFields, on.additionalModelRequestFields);
 });
 
 test('a schema turns thinking off, explicitly, because the two cannot both be set', () => {
@@ -155,13 +183,75 @@ test('a field the endpoint refuses is dropped once, and the request goes again',
   });
 
   const answer = await client.messages.create({ ...BODY, model: 'us.anthropic.claude-sonnet-4-6' });
-  assert.equal(sent.length, 2);
-  assert.ok(sent[0].additionalModelRequestFields, 'the first attempt did not carry the field');
-  assert.equal('additionalModelRequestFields' in sent[1], false);
+  // Two rungs, cheapest first. The markers go before the model-specific block because dropping
+  // them changes only the price - the same bytes are sent - while dropping the block changes what
+  // the model was asked to do. So a refusal of the block costs one wasted attempt, and a refusal
+  // of the markers costs none.
+  assert.equal(sent.length, 3);
+  assert.ok(hasCachePoint(sent[0]), 'the first attempt did not carry the markers');
+  assert.equal(hasCachePoint(sent[1]), false);
+  assert.ok(sent[1].additionalModelRequestFields, 'the second attempt gave up two things at once');
+  assert.equal('additionalModelRequestFields' in sent[2], false);
   assert.equal(answer.content[0].text, '{"verdicts":[]}');
   // Reported rather than swallowed: the run answered under a different configuration from the one
   // it asked for, and the log is where somebody finds out why the answers changed.
   assert.deepEqual(degraded.dropped, { thinking: { type: 'disabled' } });
+});
+
+test('an endpoint that refuses cache markers is asked without them, once and then always', async () => {
+  // Whether a region and a model take cachePoint is a property of the endpoint, not of a request.
+  // Retrying it per batch would buy one wasted call on every batch of every analysis, which is the
+  // shape of failure the markers were added to remove.
+  const sent = [];
+  const degraded = [];
+  const client = converseClient({
+    send: async (input) => {
+      sent.push(input);
+      if (hasCachePoint(input)) {
+        const error = new Error('The model returned the following errors: cachePoint is not '
+          + 'supported for this model.');
+        error.$metadata = { httpStatusCode: 400 };
+        throw error;
+      }
+      return { output: { message: { content: [{ toolUse: { input: { verdicts: [] } } }] } },
+               stopReason: 'tool_use', usage: {} };
+    },
+    onDegrade: (event) => { degraded.push(event); },
+  });
+
+  await client.messages.create(BODY);
+  await client.messages.create(BODY);
+  await client.messages.create(BODY);
+  assert.equal(sent.length, 4, 'the markers were tried again after being refused');
+  assert.deepEqual(sent.map(hasCachePoint), [true, false, false, false]);
+  assert.equal(degraded.length, 1);
+  assert.deepEqual(degraded[0].dropped, { cachePoint: true });
+});
+
+test('a refusal that is not about caching does not turn caching off for good', async () => {
+  // The markers are given up first because losing them is free, which means they are given up on
+  // refusals that have nothing to do with them. Making that stick would be a silent and permanent
+  // doubling of the bill on the strength of one unrelated 400.
+  const sent = [];
+  let failFirst = true;
+  const client = converseClient({
+    send: async (input) => {
+      sent.push(input);
+      if (failFirst) {
+        failFirst = false;
+        const error = new Error('Malformed input request: #: extraneous key [speed] is not '
+          + 'permitted.');
+        error.$metadata = { httpStatusCode: 400 };
+        throw error;
+      }
+      return { output: { message: { content: [{ toolUse: { input: { verdicts: [] } } }] } },
+               stopReason: 'tool_use', usage: {} };
+    },
+  });
+
+  await client.messages.create(BODY);
+  await client.messages.create(BODY);
+  assert.deepEqual(sent.map(hasCachePoint), [true, false, true]);
 });
 
 test('a refusal that is not about a field is not retried', async () => {
