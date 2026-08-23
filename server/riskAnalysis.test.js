@@ -464,18 +464,33 @@ const manyCandidates = (n) => Array.from({ length: n }, (_, i) => ({
 const verdictsFor = (ids) => ids.map((id) => ({ ...VERDICT, candidate_id: id,
                                                 cited_actions: ACTIONS }));
 
-test('batches go out together rather than one after another', async () => {
-  // The whole fix. Twenty-two candidates at four per batch is six requests; if they queue the run
-  // takes the sum of them, and if they overlap it takes the slowest.
+test('one batch goes first and the rest go out together', async () => {
+  // Two things at once, and they pull against each other.
+  //
+  // Together is the latency fix: twenty-two candidates at four per batch is six requests, and if
+  // they queue the run takes the sum of them. One first is the cost fix: every batch re-sends the
+  // same thirteen thousand tokens of frame and digest behind a cache marker, and a cache entry is
+  // written when a request COMPLETES - so six requests fired at once all write it and none reads
+  // it, which is more expensive than sending no markers at all.
   const client = concurrentStub(verdictsFor);
   const result = await analyse({
     digest: SIMPLE, client, model: MODEL, candidates: manyCandidates(22),
     batchSize: 4, concurrency: 6,
   });
   assert.equal(client.calls, 6, 'twenty-two candidates at four per batch is six requests');
-  assert.equal(client.peak, 6, `only ${client.peak} request(s) were ever in flight at once`);
+  assert.equal(client.peak, 5, `${client.peak} request(s) were in flight at once, not 5`);
+  assert.equal(client.order[0], 'C1', 'the first batch did not finish before the rest began');
   assert.equal(result.findings.length, 22);
   assert.equal(result.timing.concurrency, 6);
+});
+
+test('a single batch is not made to wait for itself', async () => {
+  // There is nothing to warm the cache for, so there is no first request to hold the others behind.
+  const client = concurrentStub(verdictsFor);
+  const result = await analyse({ digest: SIMPLE, client, model: MODEL,
+                                 candidates: manyCandidates(3), batchSize: 4, concurrency: 6 });
+  assert.equal(client.calls, 1);
+  assert.equal(result.findings.length, 3);
 });
 
 test('the concurrency is a ceiling, not a target', async () => {
@@ -490,11 +505,13 @@ test('the concurrency is a ceiling, not a target', async () => {
 test('failures are numbered by batch and not by what finished first', async () => {
   // The failure list and the log line are read by a person comparing two runs. Batch 3 has to mean
   // the same thing every time, whatever order the answers came back in.
-  const client = concurrentStub(verdictsFor, { hold: (ids) => (ids[0] === 'C1' ? 12 : 1) });
+  // C1's batch goes first because it is the one that warms the cache, so the out-of-order pair is
+  // the two behind it: C5 is held and C9 overtakes it.
+  const client = concurrentStub(verdictsFor, { hold: (ids) => (ids[0] === 'C5' ? 12 : 1) });
   const result = await analyse({ digest: SIMPLE, client, model: MODEL,
-                                 candidates: manyCandidates(8), batchSize: 4, concurrency: 4 });
-  assert.equal(client.order[0], 'C5', 'the fixture did not actually finish out of order');
-  assert.equal(result.findings.length, 8);
+                                 candidates: manyCandidates(12), batchSize: 4, concurrency: 4 });
+  assert.deepEqual(client.order, ['C1', 'C9', 'C5'], 'the fixture did not finish out of order');
+  assert.equal(result.findings.length, 12);
 });
 
 test('the deadline stops starting batches and names the candidates nobody asked about', async () => {
@@ -517,13 +534,15 @@ test('the deadline stops starting batches and names the candidates nobody asked 
 test('a batch already in flight when the deadline passes is still read', async () => {
   // It was paid for. Cancelling it would spend the tokens and throw the answer away, which is the
   // thing the 504 did before the run was detached from its request.
-  const client = concurrentStub(verdictsFor, { hold: () => 25 });
+  const client = concurrentStub(verdictsFor, { hold: () => 20 });
   const result = await analyse({
-    digest: SIMPLE, client, model: MODEL, candidates: manyCandidates(8),
-    batchSize: 4, concurrency: 4, deadlineMs: 1,
+    digest: SIMPLE, client, model: MODEL, candidates: manyCandidates(12),
+    batchSize: 4, concurrency: 4, deadlineMs: 60,
   });
-  // Both batches start before the first deadline check, so both answers arrive.
-  assert.equal(result.findings.length, 8);
+  // The first batch returns at ~20ms and the other two start there, inside the budget. They finish
+  // at ~40ms, and the run is over its budget by the time the last of them lands - which changes
+  // nothing, because the deadline stops work from STARTING and never cancels what is in flight.
+  assert.equal(result.findings.length, 12);
   assert.equal(result.failures.length, 0);
 });
 
