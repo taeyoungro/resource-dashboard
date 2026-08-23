@@ -289,77 +289,139 @@ test('the preview says it is a preview, and shows the fence', () => {
 
 const PICKER = readFileSync(new URL('../src/components/ActionPicker.tsx', import.meta.url), 'utf8');
 
-test('an action that names no resource is offered, not filtered away', () => {
-  // It used to be removed from the offering under allow_only. That was the wrong answer to a real
-  // constraint: 전체 선택 across EC2 then quietly skipped 257 of its 793 actions, and nothing on
-  // the page said which, or why, or that they existed. An approver who ticked everything believed
-  // they had covered everything.
-  assert.ok(!/intent === "allow_only" && offer\.account_level/.test(PICKER),
-            'account-level actions are hidden again, so 전체 선택 skips them in silence');
-  assert.ok(PICKER.includes('flatDenyBlock'), 'they have no block of their own');
-  assert.ok(PICKER.includes('자원 목록으로 좁힐 수 없는 동작'),
-            'the block does not say what these actions are');
-  assert.ok(PICKER.includes('자원을 인자로 받지'),
-            'the block no longer distinguishes the action that HAS no resource');
-  assert.ok(PICKER.includes('평면 거부'),
-            'the block does not say that ticking one denies it outright');
+test('the four sections compose - a policy is not one intent at a time', () => {
+  // It was one dropdown, so a policy carried exactly one intent and choosing a second meant giving
+  // up the first. That was never a property of the statements: the permission set holds ONE inline
+  // document and each decision composes its own statement into it, so "이 버킷만 남기고, 그리고
+  // DeleteBucket은 아예 막는다" is two statements and always was.
+  assert.ok(!/<select[\s\S]{0,200}INTENT_LABEL/.test(IMPACT),
+            'the intent is a dropdown again, so the sections are mutually exclusive');
+  assert.match(IMPACT, /const SECTIONS: Restriction\["intent"\]\[\] = \[\s*"allow_only", "deny_only", "deny_action", "tag_condition",/,
+               'the four sections are not declared as a list the editor renders one block per');
+  assert.match(IMPACT, /SECTIONS\.map\(\(intent\) => \{/,
+               'the editor no longer renders a block per section');
+  // The draft is per section, and every section composes into the same emitted list.
+  assert.match(IMPACT, /type Draft = Record<Restriction\["intent"\], Choice\[\]>/,
+               'the editor holds one intent and one action list again');
+  assert.match(IMPACT, /SECTIONS\.flatMap\(\(intent\) => next\[intent\]\.map/,
+               'compose no longer walks every section, so a section would be silently dropped');
 });
 
-test('an action that MAKES the resource it names shares that block, with its own sentence', () => {
+test('an action a resource list cannot scope has a section of its own', () => {
+  // It used to be a fold at the bottom of every picker: the right data in the wrong place, because
+  // ticking it composed a statement of a different KIND from everything else in the dialog and the
+  // fold's own paragraph had to say so. It is a decision, not a side effect - and it is the only
+  // way to say "this user may not call lambda:CreateFunction at all".
+  assert.ok(!PICKER.includes('flatDenyBlock'),
+            'the fold is back inside the picker, so the section is a second way to say one thing');
+  assert.ok(IMPACT.includes('deny_action: "동작 자체 거부"'), 'the section has no name');
+  // The scoped sections do not offer them at all. offeringFor is what removes them.
+  assert.match(IMPACT, /const offeringFor = \(intent: Restriction\["intent"\]\) => \{[\s\S]{0,200}if \(intent === "deny_action"\) return \{ offering: covered, hidden: 0 \}/,
+               '동작 자체 거부 is being filtered like the scoped sections, so it offers nothing');
+  assert.match(IMPACT, /!o\.account_level && !o\.creates_target/,
+               'the scoped offering is filtered on only one of the two reasons');
+  // Not left missing. An approver who cannot find an action has to learn where it went.
+  assert.ok(IMPACT.includes('elsewhere={hidden > 0'), 'the count of what went is not passed on');
+  assert.ok(PICKER.includes('자원 목록으로 좁힐 수 없는 동작'),
+            'the dialog does not say what is missing from its offering');
+  assert.match(CSS, /\.pick-elsewhere\b/, 'the line saying so has no style');
+});
+
+test('one action is never in two sections at once', () => {
+  // 이 자원만 허용 on s3:GetObject and 동작 자체 거부 on s3:GetObject compose a NotResource
+  // statement the flat Deny beside it makes moot - bytes spent to say nothing, and a document an
+  // approver cannot read. Refused at the pick rather than reconciled afterwards, and the row says
+  // WHICH section has it, because that is the answer to the question a disabled checkbox raises.
+  assert.match(IMPACT, /const heldElsewhere = \(intent: Restriction\["intent"\]\) => \(action: string\) => \{/,
+               'nothing answers which other section holds an action');
+  assert.ok(IMPACT.includes('cannotHold={heldElsewhere(intent)}'),
+            'the picker is not given the rule, so a second section can take the same action');
+  assert.ok(IMPACT.includes('이미 "${INTENT_LABEL[other]}"에 있다'),
+            'the refusal does not name the section that has it');
+  assert.match(PICKER, /const taken = chosenFor \? null : cannotHold\(action\)/,
+               'the row no longer asks whether another section holds the action');
+  assert.match(PICKER, /disabled=\{off\}/, 'a row another section holds is still tickable');
+  // And the typed escape hatch goes through the same gate - it is the one way a scoped section
+  // could otherwise take an action its offering never showed.
+  assert.match(PICKER, /const typedRefusal = typed\.trim\(\) \? cannotHold\(typed\.trim\(\)\) : null/,
+               'a hand-typed name bypasses the rule the checkboxes are held to');
+  assert.match(PICKER, /if \(!action \|\| typedRefusal\) return;/, 'the refusal does not stop the add');
+});
+
+test('an action that MAKES the resource it names is kept out for its own reason', () => {
   // The second way a list of ARNs is no scope, and the one nothing was checking.
   // Deny lambda:CreateFunction NotResource [testLambda, testLambda2] reads as "you may create a
   // function called testLambda or testLambda2", and both already exist.
   assert.ok(PICKER.includes('creates_target'), 'the offer does not carry the answer');
   assert.match(PICKER, /const flatOnly = \(offer: Offer\) =>[\s\S]{0,80}creates_target/,
-               'the two reasons are not sharing one test, so only one of them reaches the block');
+               'the two reasons are not sharing one test, so only one of them is kept out');
   // Distinct wording. "자원을 인자로 받지 않는다" beside lambda:CreateFunction is simply false -
   // it does name a resource, and the resource is the one it is about to make.
-  assert.ok(PICKER.includes('만드는'), 'the block does not say why these are here');
-  assert.ok(PICKER.includes('lambda:CreateFunction'), 'the sentence names no example');
+  assert.ok(PICKER.includes('자원을 인자로 받지'),
+            'the line no longer distinguishes the action that HAS no resource');
+  assert.ok(PICKER.includes('만드는'), 'the line does not say why the other half is kept out');
   // And every place that asked "can this be scoped" asks the generalised question.
-  for (const site of ['return !flatOnly(offer);', '!flatOnly(o) &&',
-                      'flatOnly(e) === accountOnly', 'group.entries.filter(flatOnly)']) {
+  for (const site of ['return !flatOnly(offer);', '!flatOnly(offer)']) {
     assert.ok(PICKER.includes(site), `a scoping decision still reads account_level alone: ${site}`);
   }
+  assert.ok(IMPACT.includes('entry[1].length === 0 || entry[2] === true'),
+            'the editor splits on only one of the two reasons');
 });
 
-test('전체 선택 on a service does not sweep in the flat denies', () => {
-  // A flat Deny is unconditional and is a different decision from narrowing. Sweeping them in
-  // under a button labelled 전체 선택 would make that decision on the administrator's behalf.
+test('전체 선택 on a service does not sweep in what this section cannot hold', () => {
+  // The flat denies are no longer in a scoped section's offering at all, so what this guards is
+  // the remaining way in: an action another section already holds, and one nothing can scope.
+  // Sweeping either in under a button labelled 전체 선택 makes a decision on the administrator's
+  // behalf while implying it merely ticked some checkboxes.
   const toggle = PICKER.slice(PICKER.indexOf('const blockToggle ='),
                               PICKER.indexOf('const byLevel ='));
-  assert.ok(toggle.includes('!flatOnly(o)'),
-            'the service 전체 선택 selects actions a resource list cannot scope');
-  // And the flat block has its own.
-  const flat = PICKER.slice(PICKER.indexOf('const flatDenyBlock ='),
-                            PICKER.indexOf('// The resource button sits OUTSIDE'));
-  assert.ok(flat.includes('selectAll(flat'), 'the flat block has no 전체 선택 of its own');
+  assert.ok(toggle.includes('!cannotHold(o.action)'),
+            '전체 선택 selects actions this section cannot hold');
+  assert.ok(toggle.includes('!unreachableAction(o.action)'),
+            '전체 선택 selects actions the dialog cannot then write');
 });
 
-test('the editor emits a flat deny for an action that names no resource', () => {
-  // Whatever intent the rest are under. Under tag_condition it would be worse than refused: the
-  // condition tests a resource tag, an action with no resource has none, so the statement matches
-  // nothing and reads on the page as a restriction that is in place.
-  const emit = IMPACT.slice(IMPACT.indexOf('const flatOnly ='),
-                            IMPACT.indexOf('// Keyed off what the policy GRANTS'));
-  assert.ok(emit.includes('flatOnly(choice.action)'),
-            'the editor no longer splits by whether a resource list can scope the action');
-  assert.match(emit, /intent: "deny_only" as const[\s\S]{0,60}resources: \[\]/,
-               'the flat branch no longer emits a flat deny');
-  // Both reasons, one branch. The second is the action that makes what it names.
-  assert.ok(emit.includes('entry[1].length === 0 || entry[2] === true'),
+test('an existing flat deny is read back into the section that owns it', () => {
+  // Before 동작 자체 거부 existed the editor emitted these as deny_only with an empty resource list
+  // - the only statement one of them ever had. Reading a stored restriction back into the section
+  // that now owns it is reading it back as what it is, not a guess. Leaving it in deny_only would
+  // put an action in a section whose picker will not offer it, with no checkbox to clear it.
+  const seed = IMPACT.slice(IMPACT.indexOf('const [draft, setDraft] = useState<Draft>'),
+                            IMPACT.indexOf('const tagSeed ='));
+  assert.match(seed, /flatOnly\(action\) \? "deny_action" : restriction\.intent/,
+               'a stored flat deny is seeded into the intent it was written under');
+  assert.ok(seed.includes('into === "deny_action" ? []'),
+            'resources ride along into a section whose statement has no resource clause');
+  // Both reasons, one test. The second is the action that makes what it names.
+  const flat = IMPACT.slice(IMPACT.indexOf('const flatOnly = (action: string)'),
+                            IMPACT.indexOf('const [draft, setDraft]'));
+  assert.ok(flat.includes('entry[1].length === 0 || entry[2] === true'),
             'the editor splits on only one of the two reasons');
   // Unknown is neither. An action the reference does not carry must not be guessed at.
-  assert.ok(emit.includes(': false'),
+  assert.ok(flat.includes(': false'),
             'an action missing from the reference is being treated as flat-only');
+});
+
+test('a section that carries no resource clause sends none', () => {
+  // deny_action composes Deny on Resource "*" and tag_condition composes a condition. A resource
+  // list on either would be recorded in the marker and never reach the statement - which is what
+  // the decision route and generator/restriction.py both refuse by name.
+  const compose = IMPACT.slice(IMPACT.indexOf('const compose = (next: Draft'),
+                               IMPACT.indexOf('const emit = (next: Draft'));
+  assert.match(compose, /isScoped\(intent\)\s*\?\s*\{ resources: choice\.resources \}/,
+               'a section that names no resources is being sent a resource list');
+  assert.match(compose, /intent === "tag_condition" \? tag : \{\}/,
+               'deny_action is being sent a tag, or tag_condition is not being sent one');
+  assert.match(IMPACT, /const isScoped = \(intent: Restriction\["intent"\]\) =>\s*intent === "allow_only" \|\| intent === "deny_only";/,
+               'which sections carry a resource list is no longer stated in one place');
 });
 
 test('the service wildcard is offered, never applied', () => {
   // The wildcard becomes the administrator's decision and travels as the action. A page that
   // quietly widened [8 names] into athena:* would be restricting actions this approval does not
   // grant, which generator/restriction.py refuses by name - and which after B-1 it can see.
-  const offer = IMPACT.slice(IMPACT.indexOf('// The one action this list could be written as'),
-                             IMPACT.indexOf('// Estimated, and said so'));
+  const offer = IMPACT.slice(IMPACT.indexOf('const foldOffer ='),
+                             IMPACT.indexOf('const emitted = compose('));
   assert.ok(offer.includes('serviceFold({'), 'the offer no longer asks the shared module');
   assert.ok(offer.includes('<button'), 'the fold is applied without the administrator choosing it');
   assert.ok(offer.includes('folded.adds'), 'what the wildcard additionally denies is not shown');
@@ -369,6 +431,21 @@ test('the service wildcard is offered, never applied', () => {
             'the offer no longer requires a single resource clause');
   assert.ok(offer.includes('intent === "tag_condition"'),
             'a tag condition is being offered a wildcard, where the members carry no tag');
+  // Per section, because the fold is a property of one statement and the sections are separate
+  // statements. Folding across them would offer one wildcard for two different resource clauses.
+  assert.match(IMPACT, /\{foldOffer\(intent, choices\)\}/,
+               'the fold offer is no longer rendered per section');
+  assert.ok(offer.includes('setSection(intent, [{'),
+            'accepting the fold replaces the whole policy rather than the section');
+});
+
+test('the size estimate is over every section at once', () => {
+  // Four sections land in one document and spend one 10,240 character quota. An estimate over the
+  // section being edited would say a restriction fits while the policy it is part of does not.
+  assert.match(IMPACT, /const \{ bytes \} = preview\(emitted, accountId, fenceServices, nested\)/,
+               'the estimate is over one section again');
+  assert.match(IMPACT, /const emitted = compose\(draft, tagKey, tagValues\)/,
+               'what is measured is not what gets sent');
 });
 
 test('an action that still needs a resource cannot be committed', () => {
@@ -437,7 +514,9 @@ test('an action nothing in the assessment reaches is unselectable, and says why'
   assert.match(PICKER, /const dead = unreachableAction\(action\)/);
   assert.match(PICKER, /needsResource\(action\) === true && reachedBy\(action\)\.length === 0/,
                'what counts as unreachable is no longer "takes a resource and can reach none"');
-  assert.ok(PICKER.includes('disabled={dead}'), 'the checkbox is still tickable');
+  assert.match(PICKER, /const off = dead \|\| Boolean\(taken\)/,
+               'the disabled state no longer covers both reasons a row cannot be ticked');
+  assert.ok(PICKER.includes('disabled={off}'), 'the checkbox is still tickable');
   assert.ok(PICKER.includes('닿는 자원 없음'), 'the row does not say why it is disabled');
   assert.match(CSS, /\.pick-item\.dead\b/, 'a disabled row looks the same as an enabled one');
 });

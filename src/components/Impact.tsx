@@ -119,14 +119,8 @@ function primaryService(identifier: string, candidates: string[]): string | null
  * against generator/restriction.py by a fixture test. Two hand-written approximations of the same
  * shape - one to estimate the size, one to show the policy - is two things to drift.
  */
-function preview(intent: Restriction["intent"], choices: Choice[], tag: string, values: string[],
-                 accountId: string, fenceServices: string[], nested: (action: string) => boolean) {
-  const restrictions: Restriction[] = choices.map((choice) => ({
-    policy: "", intent, actions: [choice.action],
-    ...(intent === "tag_condition"
-      ? { tag_key: tag, tag_values: values }
-      : { resources: choice.resources }),
-  }));
+function preview(restrictions: Restriction[], accountId: string, fenceServices: string[],
+                 nested: (action: string) => boolean) {
   const document = composeInline(restrictions, { accountId, fenceServices, nested });
   return { document, bytes: inlineBytes(document) };
 }
@@ -252,11 +246,47 @@ function InlinePreview({ restrictions, accountId, fenceServices, nested }: {
   );
 }
 
+/**
+ * The four sections, in the order they are read.
+ *
+ * They used to be four values of one dropdown, so a policy could carry exactly one of them and
+ * choosing a second meant giving up the first. That was never a property of the statements: the
+ * permission set holds ONE inline document and each decision composes its own statement into it, so
+ * "keep only these buckets, and also deny DeleteBucket outright" is two statements and always was.
+ * The dropdown was the only thing making it one choice.
+ *
+ * 동작 자체 거부 is the section that could not exist under the dropdown at all. Its statement -
+ * Deny on Resource "*" - was reachable only as a side effect: an action a list of ARNs cannot scope
+ * got one written for it whatever the dropdown said, in a fold at the bottom of the picker with a
+ * paragraph explaining that this one is different. It is not a side effect, it is a decision, and
+ * lambda:CreateFunction is what an administrator most often wants to make it about.
+ *
+ * Ordering: the two that narrow, then the one that removes, then the one that follows a tag.
+ */
+const SECTIONS: Restriction["intent"][] = [
+  "allow_only", "deny_only", "deny_action", "tag_condition",
+];
+
 const INTENT_LABEL: Record<Restriction["intent"], string> = {
-  allow_only: "이 자원만 허용 — 이후 생기는 자원은 거부된다",
-  deny_only: "이 자원만 거부 — 이후 생기는 자원은 허용된다",
-  tag_condition: "태그로 거부 — 나중에 태그가 붙는 자원까지 덮는다",
+  allow_only: "이 자원만 허용",
+  deny_only: "이 자원만 거부",
+  deny_action: "동작 자체 거부",
+  tag_condition: "태그로 거부",
 };
+
+const INTENT_NOTE: Record<Restriction["intent"], string> = {
+  allow_only: "고른 자원만 남기고 나머지를 거부한다. 이후에 생기는 자원도 거부된다.",
+  deny_only: "고른 자원만 거부한다. 이후에 생기는 자원은 이 제한에 걸리지 않는다.",
+  deny_action: "자원과 무관하게 동작 자체를 거부한다. 자원 목록으로 좁힐 수 없는 동작도 여기서 고른다.",
+  tag_condition: "태그가 붙은 자원을 거부한다. 나중에 태그가 붙는 자원까지 덮는다.",
+};
+
+/** Whether this section's statements carry a resource list. Mirrors ActionPicker.isScoped. */
+const isScoped = (intent: Restriction["intent"]) =>
+  intent === "allow_only" || intent === "deny_only";
+
+/** One draft per section. Every section is present, most of them usually empty. */
+type Draft = Record<Restriction["intent"], Choice[]>;
 
 export function Impact({
   assessment, source, restrictions, onChange, disabled,
@@ -745,32 +775,19 @@ function RestrictionEditor({
   fenceServices: string[];
   accountId: string;
 }) {
-  const [picking, setPicking] = useState(false);
+  /** Which section's picker is open, or null. One at a time - they are all modal dialogs. */
+  const [picking, setPicking] = useState<Restriction["intent"] | null>(null);
 
   // The same question the writer asks the action table, answered from the reference the assessment
   // carried. The size estimate below is wrong without it: a bucket brings its objects into the
   // statement, and those bytes count against the same quota.
   const nested = useMemo(() => nestedActions(reference), [reference]);
 
-  // The draft, seeded once. Every change emits the whole set upward, so the parent's array stays the
-  // single source of truth for what gets submitted while this holds the parts a restriction needs
-  // before it is one - an intent with no actions yet, or a tag key half typed.
-  const [intent, setIntent] = useState<Restriction["intent"]>(
-    () => existing[0]?.intent ?? "allow_only",
-  );
-  const [choices, setChoices] = useState<Choice[]>(
-    () => existing.flatMap((r) => r.actions.map((action) => ({
-      action, resources: r.resources ?? [],
-    }))),
-  );
-  const [tagKey, setTagKey] = useState(() => existing[0]?.tag_key ?? "");
-  const [tagValues, setTagValues] = useState(() => (existing[0]?.tag_values ?? []).join(","));
-
   /**
-   * Which chosen actions a list of ARNs cannot scope, for either of the two reasons.
+   * Which actions a list of ARNs cannot scope, for either of the two reasons.
    *
-   * The same test the picker's flat block is built from, read here because the editor is where a
-   * restriction is composed and this decides which KIND of statement an action can be in:
+   * The test that decides which SECTION an action can be in, which is why it is here rather than in
+   * the picker: the editor is the thing that has all four.
    *
    *   names no resource type      ec2:DescribeVpcs. Its resource is "*", which is in no list
    *   makes the one it names      lambda:CreateFunction. The list enumerates what EXISTS, and this
@@ -786,46 +803,84 @@ function RestrictionEditor({
     return entry ? entry[1].length === 0 || entry[2] === true : false;
   };
 
+  // The draft, seeded once. Every change emits the whole set upward, so the parent's array stays the
+  // single source of truth for what gets submitted while this holds the parts a restriction needs
+  // before it is one - a section with no actions yet, or a tag key half typed.
+  //
+  // Seeded PER SECTION, and an action a list of ARNs cannot scope lands in 동작 자체 거부 whatever
+  // intent it arrived under. That is not a guess: the only statement one of those ever had was the
+  // flat Deny, and before this section existed the editor emitted it as deny_only with an empty
+  // list. Reading it back into the section that now owns it is reading it back as what it is.
+  const [draft, setDraft] = useState<Draft>(() => {
+    // Fresh arrays, not EMPTY_DRAFT's - it is module-level and shared by every policy block.
+    const seeded: Draft = { allow_only: [], deny_only: [], deny_action: [], tag_condition: [] };
+    for (const restriction of existing) {
+      for (const action of restriction.actions) {
+        const into = flatOnly(action) ? "deny_action" : restriction.intent;
+        if (seeded[into].some((c) => c.action === action)) continue;
+        seeded[into].push({
+          action,
+          resources: into === "deny_action" ? [] : (restriction.resources ?? []),
+        });
+      }
+    }
+    return seeded;
+  });
+  const tagSeed = existing.find((r) => r.intent === "tag_condition");
+  const [tagKey, setTagKey] = useState(() => tagSeed?.tag_key ?? "");
+  const [tagValues, setTagValues] = useState(() => (tagSeed?.tag_values ?? []).join(","));
+
   /**
-   * One restriction per action, split by whether the action reaches a resource.
+   * The sections, as the restrictions they will be sent as. One restriction per ACTION.
    *
-   * An action that names no resource cannot be narrowed - it can only be denied outright. A
-   * NotResource list denies it whatever is in the list, because its resource is "*" and "*" is in
-   * no list, and a Resource list of ARNs never matches it at all. So the only statement that means
-   * anything for one of these is a flat Deny, which is intent deny_only with no resources, and
-   * generator/restriction.py refuses every other shape.
-   *
-   * That is a DIFFERENT decision from the one being made about the resource-bearing actions, and
-   * the page says so beside the picker rather than making it silently. What is not acceptable is
-   * the old behaviour: under allow_only these actions were not offered at all, so 전체 선택 across
-   * EC2 quietly skipped 257 of 793 actions and nothing said which or why.
+   * Four sections compose into one document, and nothing here reconciles them - a Deny is a Deny
+   * whatever prompted it, and the four statements coexist in the inline policy exactly as they read
+   * here. What DOES need holding is that one action never appears in two sections: 이 자원만 허용
+   * on s3:GetObject and 동작 자체 거부 on s3:GetObject compose a NotResource statement the flat Deny
+   * beside it makes moot, which is bytes spent to say nothing and a document an approver cannot
+   * read. The pickers refuse it rather than this reconciling it after the fact.
    */
-  const emit = (
-    nextIntent: Restriction["intent"],
-    nextChoices: Choice[],
-    key = tagKey,
-    values = tagValues,
-  ) => {
-    setIntent(nextIntent);
-    setChoices(nextChoices);
+  const compose = (next: Draft, key: string, values: string): Restriction[] => {
+    const tag = {
+      tag_key: key.trim(),
+      tag_values: values.split(",").map((v) => v.trim()).filter(Boolean),
+    };
+    return SECTIONS.flatMap((intent) => next[intent].map((choice): Restriction => ({
+      policy,
+      intent,
+      actions: [choice.action],
+      ...(isScoped(intent)
+        ? { resources: choice.resources }
+        : intent === "tag_condition" ? tag : {}),
+    })));
+  };
+
+  const emit = (next: Draft, key = tagKey, values = tagValues) => {
+    setDraft(next);
     setTagKey(key);
     setTagValues(values);
-    onChange(nextChoices.map((choice) => (flatOnly(choice.action)
-      // A flat Deny, whatever intent the rest are under. Under tag_condition it would be worse than
-      // refused: the condition tests a resource tag, an action with no resource has none, so the
-      // statement would match nothing and read on the page as a restriction that is in place.
-      ? { policy, intent: "deny_only" as const, actions: [choice.action], resources: [] }
-      : {
-        policy,
-        intent: nextIntent,
-        actions: [choice.action],
-        ...(nextIntent === "tag_condition"
-          ? {
-            tag_key: key.trim(),
-            tag_values: values.split(",").map((v) => v.trim()).filter(Boolean),
-          }
-          : { resources: choice.resources }),
-    })));
+    onChange(compose(next, key, values));
+  };
+
+  /** What one section holds, replaced. The others are carried through untouched. */
+  const setSection = (intent: Restriction["intent"], choices: Choice[]) =>
+    emit({ ...draft, [intent]: choices });
+
+  /** Which OTHER section holds this action, or null. The rule the pickers enforce. */
+  const heldElsewhere = (intent: Restriction["intent"]) => (action: string) => {
+    const other = SECTIONS.find(
+      (other) => other !== intent && draft[other].some((c) => c.action === action),
+    );
+    if (other) return `이미 "${INTENT_LABEL[other]}"에 있다`;
+    // A hand-typed name the reference knows a list of ARNs cannot scope. The checkbox rows for
+    // these are not in a scoped section's offering at all, so this is the one way in.
+    if (isScoped(intent) && flatOnly(action)) {
+      return `${action}은 자원 목록으로 좁힐 수 없다 — "동작 자체 거부"에서 고른다`;
+    }
+    if (intent === "tag_condition" && flatOnly(action)) {
+      return `${action}은 태그를 읽을 자원이 없다 — "동작 자체 거부"에서 고른다`;
+    }
+    return null;
   };
 
   // Keyed off what the policy GRANTS, never off the enumerated groups.
@@ -850,10 +905,10 @@ function RestrictionEditor({
             access: entry[0],
             resources: entry[1],
             // No resource type at all. generator/restriction.py refuses an allow_only restriction on
-            // one of these, so the picker greys it out for that intent.
+            // one of these, so a scoped section does not offer it.
             account_level: entry[1].length === 0,
             // It MAKES the resource it names, so an enumeration of what exists is no scope for it.
-            // Same remedy, different sentence - see the flat block in ActionPicker.
+            // Same remedy, different sentence - see 동작 자체 거부.
             creates_target: entry[2] === true,
           };
         })
@@ -872,114 +927,207 @@ function RestrictionEditor({
     return { covered: listed, uncovered: missing };
   }, [granted, reference, primary]);
 
+  /**
+   * What one section may offer, and how much it kept out.
+   *
+   * 동작 자체 거부 offers everything: its statement is Deny on Resource "*", which every action can
+   * be the subject of. The other three offer only what a list of ARNs can scope - a scoped section
+   * because that list IS the statement, tag_condition because aws:ResourceTag reads the tags of a
+   * resource and these actions have none to read. The count comes back so the dialog can say how
+   * many went and where instead of leaving them missing.
+   */
+  const offeringFor = (intent: Restriction["intent"]) => {
+    if (intent === "deny_action") return { offering: covered, hidden: 0 };
+    let hidden = 0;
+    const offering = covered
+      .map(({ service, offers }) => {
+        const keep = offers.filter((o) => !o.account_level && !o.creates_target);
+        hidden += offers.length - keep.length;
+        return { service, offers: keep };
+      })
+      .filter((g) => g.offers.length > 0);
+    return { offering, hidden };
+  };
+
+  /**
+   * The one action a section's list could be written as, when it can.
+   *
+   * Per section, because the fold is a property of one statement and the sections are separate
+   * statements. serviceFold answers a different question for each intent - see its comments - and
+   * declines outright for tag_condition.
+   */
+  const foldOffer = (intent: Restriction["intent"], choices: Choice[]) => {
+    // Offered rather than applied: the wildcard becomes the administrator's decision and travels as
+    // the action, because a page that quietly widened [8 names] into athena:* would be restricting
+    // actions this approval does not grant - which is the one thing generator/restriction.py
+    // refuses by name, and which after B-1 it can now actually see.
+    if (intent === "tag_condition" || choices.length === 0) return null;
+    const one = new Set(choices.map((c) => JSON.stringify([...c.resources].sort())));
+    // One resource clause, because the statement it would become is one statement. A mixed set is
+    // several statements and folding them together is not this offer.
+    if (one.size !== 1) return null;
+    const folded = serviceFold({
+      actions: choices.map((c) => c.action),
+      resources: choices[0].resources,
+      intent,
+      groups: affected,
+      granted,
+    });
+    if (!folded) return null;
+    return (
+      <p className="fold-offer">
+        <button type="button" disabled={disabled}
+                onClick={() => setSection(intent, [{
+                  action: folded.wildcard, resources: choices[0].resources,
+                }])}>
+          <code>{folded.wildcard}</code> 하나로 접기
+        </button>
+        {" "}
+        <span className="muted small">
+          {intent === "deny_only"
+            ? `이 자원에 닿는 ${folded.covers}개를 전부 골랐다. 나머지 ${folded.adds.length}개는
+               이 자원 유형에 닿지 않으므로 문장에 걸리지 않는다 —`
+            : `이 정책이 주는 ${folded.covers}개를 전부 골랐다 —`}
+          {" "}같은 것을 거부하면서 문장이 하나가 된다.
+          {folded.adds.length > 0 && intent !== "deny_only"
+            && ` 다만 ${folded.adds.join(", ")}까지 함께 거부된다.`}
+        </span>
+      </p>
+    );
+  };
+
+  const emitted = compose(draft, tagKey, tagValues);
+  const totalChosen = SECTIONS.reduce((n, intent) => n + draft[intent].length, 0);
 
   return (
     <div className="editor">
-      {/* Two rows, one form: the label word, then the control beside it. The 동작 row used to be a
-          bordered fieldset carrying an enumeration of what there is to choose from and a sentence
-          for the empty state; both repeated what the dialog says where the choosing happens
-          (per-service groups, and which names must be typed by hand), so the page keeps one line
-          per row. What is CHOSEN still renders below, because it is part of the decision and has
-          to be readable without opening anything. */}
-      <label className="control-row">
-        의도
-        <select
-          disabled={disabled}
-          value={intent}
-          onChange={(e) => {
-            // The three forms take different inputs. A tag condition names no resources, so the
-            // per-action lists are dropped rather than sent and refused - and the actions are kept,
-            // because those are still what the condition applies to.
-            const next = e.target.value as Restriction["intent"];
-            emit(next, next === "tag_condition"
-              ? choices.map((c) => ({ ...c, resources: [] }))
-              : choices);
-          }}
-        >
-          {(Object.keys(INTENT_LABEL) as Restriction["intent"][]).map((intent) => (
-            <option key={intent} value={intent}>
-              {INTENT_LABEL[intent]}
-            </option>
-          ))}
-        </select>
-      </label>
+      {/* Four sections, and they compose. It was one dropdown - pick an intent, pick actions - and
+          picking a second intent meant giving up the first, which was never a property of the
+          statements: the permission set holds one inline document and each decision composes its
+          own statement into it. "이 버킷만 남기고, 그리고 DeleteBucket은 아예 막는다" is two
+          statements and the dropdown was the only thing making it one choice.
 
-      {/* A button, not a list. The offering is in a dialog with its own search and scroll: this page
-          is where a plan is read and approved, and one service with several hundred actions would
-          push the plan off the screen. */}
-      <label className="control-row">
-        동작
-        <button type="button" disabled={disabled} onClick={() => setPicking(true)}>
-          동작과 자원 고르기
-          {choices.length > 0 && ` (${choices.length}개)`}
-        </button>
-      </label>
-
-      {choices.length > 0 && (
-        <ul className="chosen-list">
-          {choices.map((choice) => (
-            <li key={choice.action}>
-              <code>{choice.action}</code>
-              <span className="muted">
-                {intent === "tag_condition"
-                  ? "태그 조건"
-                  : (choice.resources.length > 0
-                    ? `자원 ${choice.resources.length}개`
-                    : "자원 미지정")}
-              </span>
-            </li>
-          ))}
-        </ul>
+          Each section is a button and what it holds. The offering is in a dialog with its own search
+          and scroll, because this page is where a plan is read and approved and one service with
+          several hundred actions would push the plan off the screen. */}
+      {totalChosen > 0 && (
+        <p className="muted small restrict-total">
+          이 정책에서 고른 동작 {totalChosen}개 —{" "}
+          {SECTIONS.filter((intent) => draft[intent].length > 0)
+            .map((intent) => `${INTENT_LABEL[intent]} ${draft[intent].length}개`)
+            .join(", ")}
+        </p>
       )}
 
-      {(() => {
-        // The one action this list could be written as, when it can. Offered rather than applied:
-        // the wildcard becomes the administrator's decision and travels as the action, because a
-        // page that quietly widened [8 names] into athena:* would be restricting actions this
-        // approval does not grant - which is the one thing generator/restriction.py refuses by
-        // name, and which after B-1 it can now actually see.
-        if (intent === "tag_condition" || choices.length === 0) return null;
-        const one = new Set(choices.map((c) => JSON.stringify([...c.resources].sort())));
-        // One resource clause, because the statement it would become is one statement. A mixed set
-        // is several statements and folding them together is not this offer.
-        if (one.size !== 1) return null;
-        const folded = serviceFold({
-          actions: choices.map((c) => c.action),
-          resources: choices[0].resources,
-          intent,
-          groups: affected,
-          granted,
-        });
-        if (!folded) return null;
+      {SECTIONS.map((intent) => {
+        const choices = draft[intent];
+        const { offering, hidden } = offeringFor(intent);
         return (
-          <p className="fold-offer">
-            <button type="button" onClick={() => emit(intent, [{
-              action: folded.wildcard, resources: choices[0].resources,
-            }])}>
-              <code>{folded.wildcard}</code> 하나로 접기
-            </button>
-            {" "}
-            <span className="muted small">
-              {intent === "deny_only"
-                ? `이 자원에 닿는 ${folded.covers}개를 전부 골랐다. 나머지 ${folded.adds.length}개는
-                   이 자원 유형에 닿지 않으므로 문장에 걸리지 않는다 —`
-                : `이 정책이 주는 ${folded.covers}개를 전부 골랐다 —`}
-              {" "}같은 것을 거부하면서 문장이 하나가 된다.
-              {folded.adds.length > 0 && intent === "allow_only"
-                && ` 다만 ${folded.adds.join(", ")}까지 함께 거부된다.`}
-            </span>
-          </p>
+          <section key={intent}
+                   className={choices.length > 0 ? "restrict-section on" : "restrict-section"}>
+            <div className="control-row">
+              <span className="section-name">{INTENT_LABEL[intent]}</span>
+              <button type="button" disabled={disabled} onClick={() => setPicking(intent)}>
+                {isScoped(intent) ? "동작과 자원 고르기" : "동작 고르기"}
+                {choices.length > 0 && ` (${choices.length}개)`}
+              </button>
+              {choices.length > 0 && (
+                <button type="button" className="section-clear" disabled={disabled}
+                        onClick={() => setSection(intent, [])}>
+                  비우기
+                </button>
+              )}
+            </div>
+            <p className="muted small">{INTENT_NOTE[intent]}</p>
+
+            {choices.length > 0 && (
+              <ul className="chosen-list">
+                {choices.map((choice) => (
+                  <li key={choice.action}>
+                    <code>{choice.action}</code>
+                    <span className="muted">
+                      {intent === "tag_condition" && "태그 조건"}
+                      {intent === "deny_action" && "자원 없이 거부"}
+                      {isScoped(intent) && (choice.resources.length > 0
+                        ? `자원 ${choice.resources.length}개`
+                        : "자원 미지정")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {foldOffer(intent, choices)}
+
+            {/* Not refused here. For an action the reference does not carry - one typed by hand -
+                nothing on this page can say whether it names a resource, and the container has a
+                floor list of its own. The ones this page KNOWS cannot be scoped are not in this
+                section's offering at all; they are in 동작 자체 거부. */}
+            {isScoped(intent) && choices.some((c) => c.resources.length === 0) && (
+              <p className="warn-inline">
+                자원을 지정하지 않은 동작이 있다. 직접 적은 이름이면 서버가 판단하고, 자원으로 좁힐
+                수 없는 동작이면 이유를 말하며 거부한다 — 그 경우 <strong>동작 자체 거부</strong>로
+                옮기면 된다.
+              </p>
+            )}
+
+            {intent === "tag_condition" && choices.length > 0 && (
+              <fieldset>
+                <legend>태그</legend>
+                <input
+                  type="text"
+                  placeholder="env"
+                  disabled={disabled}
+                  value={tagKey}
+                  onChange={(e) => emit(draft, e.target.value, tagValues)}
+                />
+                <input
+                  type="text"
+                  placeholder="prod (쉼표로 여러 개)"
+                  disabled={disabled}
+                  value={tagValues}
+                  onChange={(e) => emit(draft, tagKey, e.target.value)}
+                />
+              </fieldset>
+            )}
+
+            {picking === intent && (
+              <ActionPicker
+                policy={policy}
+                intent={intent}
+                chosen={choices}
+                /* An action the policy names literally and the reference does not carry. flatOnly is
+                   false for anything unknown, so this filter removes only the ones this page can
+                   positively say a list of ARNs cannot scope. */
+                named={intent === "deny_action" ? offerable : offerable.filter((a) => !flatOnly(a))}
+                covered={offering}
+                uncovered={uncovered}
+                referenceError={referenceError}
+                protectedActions={protectedActions}
+                affected={affected}
+                primary={primary}
+                cannotHold={heldElsewhere(intent)}
+                elsewhere={hidden > 0
+                  ? { count: hidden, section: INTENT_LABEL.deny_action }
+                  : null}
+                onCommit={(next) => {
+                  setSection(intent, next);
+                  setPicking(null);
+                }}
+                onCancel={() => setPicking(null)}
+              />
+            )}
+          </section>
         );
-      })()}
+      })}
 
       {(() => {
-        // Estimated, and said so. The exact number depends on statements this write preserves, which
-        // only the container can see - but a restriction that is going to be refused for size should
+        // Estimated, and said so - and over ALL FOUR sections, because they land in one document
+        // and spend one quota. The exact number depends on statements this write preserves, which
+        // only the container can see, but a restriction that is going to be refused for size should
         // not get as far as an approval marker to find that out.
-        const { bytes } = preview(intent, choices, tagKey,
-                                  tagValues.split(",").map((v) => v.trim()).filter(Boolean),
-                                  accountId, fenceServices, nested);
-        if (choices.length === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
+        const { bytes } = preview(emitted, accountId, fenceServices, nested);
+        if (totalChosen === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
         return (
           <p className={bytes > INLINE_LIMIT ? "error" : "warn-inline"}>
             인라인 정책 예상 크기 약 {bytes.toLocaleString()}바이트
@@ -991,16 +1139,6 @@ function RestrictionEditor({
           </p>
         );
       })()}
-
-      {/* Not refused here. For an action that reaches nothing - a List action, or one whose resource
-          type is absent from the account - having no resources is the only correct state, and it is
-          the container that knows which of those is a legitimate flat deny. */}
-      {intent !== "tag_condition" && choices.some((c) => c.resources.length === 0) && (
-        <p className="warn-inline">
-          자원을 지정하지 않은 동작이 있다. 자원을 지목하지 않는 계정 단위 동작이면 그대로 두면 되고
-          (동작 자체가 거부된다), 그렇지 않으면 서버가 이유를 말하며 거부한다.
-        </p>
-      )}
 
       {referenceError && (
         <p className="warn-inline">
@@ -1014,46 +1152,6 @@ function RestrictionEditor({
           {omitted.join(", ")}의 동작 목록은 크기 제한을 넘어 평가에 실리지 않았다. 이름을 직접
           적으면 된다.
         </p>
-      )}
-
-      {picking && (
-        <ActionPicker
-          policy={policy}
-          intent={intent}
-          chosen={choices}
-          named={offerable}
-          covered={covered}
-          uncovered={uncovered}
-          referenceError={referenceError}
-          protectedActions={protectedActions}
-          affected={affected}
-          primary={primary}
-          onCommit={(next) => {
-            emit(intent, next);
-            setPicking(false);
-          }}
-          onCancel={() => setPicking(false)}
-        />
-      )}
-
-      {intent === "tag_condition" && (
-        <fieldset>
-          <legend>태그</legend>
-          <input
-            type="text"
-            placeholder="env"
-            disabled={disabled}
-            value={tagKey}
-            onChange={(e) => emit(intent, choices, e.target.value, tagValues)}
-          />
-          <input
-            type="text"
-            placeholder="prod (쉼표로 여러 개)"
-            disabled={disabled}
-            value={tagValues}
-            onChange={(e) => emit(intent, choices, tagKey, e.target.value)}
-          />
-        </fieldset>
       )}
 
       {/* There is no resource fieldset. Resources belong to an action, so they are chosen from the

@@ -78,6 +78,11 @@ function resourcesFor(restriction, action, nested) {
 /** One action, one statement - before the fold. Mirrors restriction._statement. */
 function statement(sid, restriction, action, nested) {
   const base = { Sid: sid, Effect: 'Deny', Action: action };
+  if (restriction.intent === 'deny_action') {
+    // No resource clause to compose. Byte-identical to the flat Deny an unscopable action gets
+    // under deny_only with no resources, so the two fold into one statement.
+    return { ...base, Resource: '*' };
+  }
   if (restriction.intent === 'tag_condition') {
     return {
       ...base,

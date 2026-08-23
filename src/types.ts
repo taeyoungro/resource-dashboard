@@ -283,25 +283,37 @@ export interface RiskAnalysisCitation {
 
 /** One thing an administrator decided, before it is a policy statement.
  *
- * The three intents are not interchangeable. They produce different statements and they go stale in
+ * The four intents are not interchangeable. They produce different statements and they go stale in
  * opposite directions, so the page asks which one is meant rather than guessing:
  *
  *   allow_only     Deny with NotResource. Anything not listed - including resources created
  *                  tomorrow - is denied. Grows with what is KEPT
  *   deny_only      Deny with Resource. Small, and a resource created tomorrow is allowed
+ *   deny_action    Deny with Resource "*". The action itself, whatever it would have touched
  *   tag_condition  Deny with a tag condition. Fixed size however many it covers, and it keeps
  *                  covering resources that get the tag later
+ *
+ * COMPOSABLE, and this is what the editor was rebuilt for. One policy may carry a decision of each,
+ * as separate entries here, and they become separate statements. The page used to offer a single
+ * choice of intent, which is why deny_action could not be said at all - the only flat Deny it could
+ * produce was the one an unscopable action gets by default.
+ *
+ * deny_action is the same STATEMENT as deny_only with no resources and a different DECISION. The
+ * container refuses an empty deny_only unless every action it names is one no list could scope,
+ * because that shape is what "forgot to pick resources" looks like; this one is deliberate.
  */
 export interface Restriction {
   /** Which attached policy prompted this. Recorded; it does not scope the statement. */
   policy: string;
-  intent: "allow_only" | "deny_only" | "tag_condition";
+  intent: RestrictionIntent;
   actions: string[];
-  /** allow_only: what to KEEP. deny_only: what to deny. Empty for tag_condition. */
+  /** allow_only: what to KEEP. deny_only: what to deny. Empty for the other two. */
   resources?: string[];
   tag_key?: string;
   tag_values?: string[];
 }
+
+export type RestrictionIntent = "allow_only" | "deny_only" | "deny_action" | "tag_condition";
 
 export interface DecisionResult {
   written: string;

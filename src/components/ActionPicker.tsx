@@ -37,6 +37,21 @@ import { ResourcePicker } from "./ResourcePicker";
  * key only" inexpressible - and put back the ARN-shape mismatch that generator/restriction.py writes one
  * statement per action to avoid. One action, its own resources, its own statement.
  *
+ * ONE SECTION AT A TIME. The editor now has a section per intent and they compose, so this dialog is
+ * opened for one of them and offers what that section can hold. Two consequences worth naming:
+ *
+ *   the offering is already filtered   an action a list of ARNs cannot scope is not in a scoped
+ *                                      section's offering at all. It used to be here in a fold at
+ *                                      the bottom - the right data in the wrong place, because
+ *                                      ticking it produced a statement of a different KIND from
+ *                                      everything else in the dialog. It belongs to 동작 자체 거부,
+ *                                      and `elsewhere` says so rather than leaving it missing.
+ *   cannotHold is the second gate      an action held by ANOTHER section cannot be held here. Two
+ *                                      sections naming one action is not a composition, it is a
+ *                                      contradiction the bigger of the two statements wins - so the
+ *                                      row is disabled with the section that has it, not silently
+ *                                      moved.
+ *
  * The list comes from the assessment, not from a file of this server's own. It used to be the latter -
  * server/data/aws-actions.json, written by hand, covering SQS - and it was a second copy of data AWS
  * owns which had already drifted from it: four of its twenty entries had the wrong access level or the
@@ -69,11 +84,22 @@ export interface Offer {
 /** Whether a list of enumerated ARNs can scope this action at all, for either reason. */
 const flatOnly = (offer: Offer) => offer.account_level || offer.creates_target;
 
+/**
+ * Whether this section's statements carry a resource clause built from picked ARNs.
+ *
+ * The dividing line for most of what this dialog does: whether a row gets a 자원 고르기 button,
+ * whether 적용 waits for one, whether 자원 일괄 적용 is offered. tag_condition and deny_action both
+ * compose Resource "*" and neither takes a list, for different reasons that do not matter here.
+ */
+const isScoped = (intent: Restriction["intent"]) => intent === "allow_only" || intent === "deny_only";
+
 const INTENT_NOTE: Record<Restriction["intent"], string> = {
   allow_only:
-    "고른 자원만 허용하고 나머지는 거부한다. 자원을 지목하지 않는 계정 단위 동작은 이 의도에서 고를 수 "
-    + "없다 — 거부 목록에 예외로 적을 이름이 없으므로 동작 자체가 막힌다.",
+    "고른 자원만 허용하고 나머지는 거부한다. 이후에 생기는 자원도 거부된다.",
   deny_only: "고른 자원만 거부한다. 이후에 생기는 자원은 이 제한에 걸리지 않는다.",
+  deny_action:
+    "자원과 무관하게 동작 자체를 거부한다. 자원을 고르지 않으며, 고를 것도 없다 — 이 동작은 무엇에 "
+    + "대해서도 호출할 수 없게 된다.",
   tag_condition: "태그가 붙은 자원을 거부한다. 나중에 태그가 붙는 자원까지 덮는다.",
 };
 
@@ -91,7 +117,11 @@ interface Props {
   chosen: Choice[];
   /** Actions the policy literally names, already stripped of wildcards and protected names. */
   named: string[];
-  /** Services whose actions the assessment listed, with the offers themselves. */
+  /**
+   * Services whose actions the assessment listed, with the offers themselves - ALREADY FILTERED to
+   * what this section can hold. The editor does the filtering because it is the thing that knows
+   * what the other sections are.
+   */
   covered: { service: string; offers: Offer[] }[];
   /** Services this policy grants that the assessment did not list. Those are typed. */
   uncovered: string[];
@@ -102,16 +132,31 @@ interface Props {
   affected: ImpactGroup[];
   /** The service the policy is named for. Its block is shown; the others fold away. */
   primary: string | null;
+  /**
+   * Why this section cannot hold an action, or null. Answered by the editor, which is the only
+   * thing that can see the other sections. Two answers today: another section already holds it, and
+   * a hand-typed name a list of ARNs cannot scope.
+   */
+  cannotHold?: (action: string) => string | null;
+  /**
+   * What was kept out of the offering and where it went. Said rather than left missing: an approver
+   * who cannot find lambda:CreateFunction here has to learn it is in another section, not conclude
+   * it is unrestrictable.
+   */
+  elsewhere?: { count: number; section: string } | null;
   onCommit: (choices: Choice[]) => void;
   onCancel: () => void;
 }
 
 export function ActionPicker({
   policy, intent, chosen, named, covered, uncovered, referenceError, protectedActions, affected,
-  primary, onCommit, onCancel,
+  primary, cannotHold = () => null, elsewhere = null, onCommit, onCancel,
 }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const search = useRef<HTMLInputElement>(null);
+
+  /** Whether this section's statements name resources at all. See isScoped. */
+  const scoped = isScoped(intent);
 
   const [draft, setDraft] = useState<Choice[]>(chosen);
   const [query, setQuery] = useState("");
@@ -157,9 +202,10 @@ export function ActionPicker({
   // on the page said which, or why, or that they existed. An approver who ticked everything
   // believed they had covered everything.
   //
-  // So it is offered under every intent now, in its own block, and ticking one composes a flat Deny
-  // instead - which is what the editor emits and what the container will accept. The block says so;
-  // this is a different decision from the one being made about the rest and it is made knowingly.
+  // Then it was offered in every section behind a fold, which fixed the silence and left the shape
+  // wrong: ticking it composed a statement of a different KIND from everything else in the dialog,
+  // and the fold's own paragraph had to say so. It is now a section of its own - 동작 자체 거부 -
+  // and what stands in its place here is `elsewhere`, one line saying how many went and where.
   /** Every offer by action name, so a row can ask whether its action names a resource at all. */
   const offerFor = useMemo(() => {
     const map = new Map<string, Offer>();
@@ -188,7 +234,7 @@ export function ActionPicker({
    * stays open and the refusal stays where it can be made correctly.
    */
   const needsResource = (action: string): boolean | null => {
-    if (intent === 'tag_condition') return false;
+    if (!scoped) return false;
     const offer = offerFor.get(action);
     if (!offer) return null;
     return !flatOnly(offer);
@@ -209,18 +255,19 @@ export function ActionPicker({
    * take: these arrive through 전체 선택, not through a checkbox somebody ticked. The dialog says
    * which ones went and why.
    *
-   * What that leaves undone, said rather than hidden: there is no way here to express "deny
-   * creating a resource type this account has none of". The row is unselectable and a hand-typed
-   * name lands in the same set and is dropped with the rest. It needs a shape of its own before it
-   * can be offered, and inventing one silently out of a 전체 선택 is not it.
+   * And now there IS somewhere for them to go. This used to end "there is no way here to express
+   * 'deny creating a resource type this account has none of' - it needs a shape of its own before
+   * it can be offered". 동작 자체 거부 is that shape: it composes Resource "*" from a decision the
+   * administrator took by choosing the action, so nothing in that section is unreachable and these
+   * rows point at it. Dropping them from a SCOPED section stays right for the reason above.
    */
   const unreachableAction = (action: string) =>
     needsResource(action) === true && reachedBy(action).length === 0;
 
   // Everything the dialog offers, regardless of the search. Anything in the draft that is NOT in here
-  // gets its own group: an action typed earlier, or one that was ticked under deny_only and became
-  // unofferable when the intent changed to allow_only. Without that group it would sit in the
-  // restriction with no checkbox to clear it.
+  // gets its own group: an action typed earlier, or one a stored restriction put in this section
+  // that the section's offering does not carry. Without that group it would sit in the restriction
+  // with no checkbox to clear it.
   const offered = useMemo(() => {
     const set = new Set(named);
     for (const group of covered) {
@@ -344,9 +391,12 @@ export function ActionPicker({
       }))];
     });
 
+  /** Why the typed name cannot be added here, or null. Shown beside the box, not on submit. */
+  const typedRefusal = typed.trim() ? cannotHold(typed.trim()) : null;
+
   const add = () => {
     const action = typed.trim();
-    if (!action) return;
+    if (!action || typedRefusal) return;
     // Add, never toggle. A text box whose second Enter removes what the first one added is a text box
     // that punishes a double press.
     setDraft((current) => (current.some((c) => c.action === action)
@@ -369,98 +419,47 @@ export function ActionPicker({
    * and 적용 stayed grey with no row to go and fix.
    */
   const blockToggle = (group: { service: string; entries: Offer[] }) => {
-    const scoped = group.entries.filter(
-      (o) => !flatOnly(o) && !unreachableAction(o.action),
+    const takeable = group.entries.filter(
+      (o) => !unreachableAction(o.action) && !cannotHold(o.action),
     );
-    if (scoped.length === 0) return null;
-    const all = scoped.every((o) => Boolean(held(o.action)));
+    if (takeable.length === 0) return null;
+    const all = takeable.every((o) => Boolean(held(o.action)));
     return (
       <button
         type="button"
         className="block-all"
-        onClick={() => selectAll(scoped, !all)}
+        onClick={() => selectAll(takeable, !all)}
         title={q ? "검색으로 걸러진 것만 대상이다" : undefined}
       >
-        {all ? "전체 해제" : `전체 선택 ${scoped.length}개`}
+        {all ? "전체 해제" : `전체 선택 ${takeable.length}개`}
       </button>
     );
   };
 
   /**
-   * The actions that reach a resource, by access level. The ordinary case.
+   * The offering, by access level.
    *
-   * `only` picks which half: false is everything that names a resource type, true is everything
-   * that names none. They are never rendered together, because ticking one of each produces two
-   * different KINDS of statement and a single list would hide that.
+   * One list now. It used to be split in two - the actions that reach a resource above, the ones
+   * that cannot be narrowed folded below - because ticking one of each produced two different KINDS
+   * of statement and a single list would have hidden that. The split moved up a level: those
+   * actions are a section of their own, so whatever a section offers here is one kind by
+   * construction and rendering it as one list is now the honest shape rather than the flattening.
    */
-  const byLevel = (group: { entries: Offer[]; showResource: boolean }, accountOnly: boolean) =>
+  const byLevel = (group: { entries: Offer[]; showResource: boolean }) =>
     ACCESS_ORDER.map((access) => {
-      const ofLevel = group.entries.filter(
-        (e) => e.access === access && flatOnly(e) === accountOnly,
-      );
+      const ofLevel = group.entries.filter((e) => e.access === access);
       if (ofLevel.length === 0) return null;
       return (
         <div key={access} className="pick-level">
           <span className="level-name">{access}</span>
           {ofLevel.map((offer) =>
             item(offer.action,
-                 group.showResource && !accountOnly
+                 group.showResource && !flatOnly(offer)
                    ? (offer.resources.join(", ") || "자원 없음")
                    : undefined))}
         </div>
       );
     });
-
-  /**
-   * The actions that name no resource, folded, with what ticking one actually does.
-   *
-   * These cannot be narrowed. A NotResource list denies them whatever is in it - their resource is
-   * "*" and "*" is in no list - and a Resource list of ARNs never matches them. The only statement
-   * that means anything is a flat Deny, so the editor emits deny_only for these whatever intent the
-   * rest are under, and the sentence here is what makes that a decision rather than a surprise.
-   *
-   * Folded because they are the minority case and the ordinary one should be what the eye lands on
-   * - but PRESENT, which is the change. They used to be filtered out of the offering under
-   * allow_only, so 전체 선택 across EC2 skipped 257 of 793 actions in silence.
-   */
-  const flatDenyBlock = (group: { service: string; entries: Offer[]; showResource: boolean }) => {
-    const flat = group.entries.filter(flatOnly);
-    if (flat.length === 0) return null;
-    const all = flat.every((o) => Boolean(held(o.action)));
-    return (
-      <details className="pick-flat" open={Boolean(q)}>
-        <summary>
-          자원 목록으로 좁힐 수 없는 동작 {flat.length}개 — 통째로 거부하는 것만 가능하다
-          <button type="button" className="block-all"
-                  onClick={(e) => { e.preventDefault(); selectAll(flat, !all); }}>
-            {all ? "전체 해제" : `전체 선택 ${flat.length}개`}
-          </button>
-        </summary>
-        <p className="muted small">
-          고르면 지금 고른 나머지와 달리 <strong>평면 거부</strong>(<code>Deny</code> ·{" "}
-          <code>Resource: &quot;*&quot;</code>)로 작성된다 — 조건 없이 완전히 막힌다는 뜻이다. 위의{" "}
-          <strong>인라인 정책 보기</strong>에서 실제 문장을 확인할 수 있다.
-        </p>
-        {/* 두 가지 이유가 섞여 있고, 승인자에게는 다른 문장이다. 하나는 자원이라는 것이 없고,
-            다른 하나는 자원이 아직 없다. */}
-        {flat.some((o) => o.account_level) && (
-          <p className="muted small">
-            <strong>{flat.filter((o) => o.account_level).length}개</strong>는 자원을 인자로 받지
-            않는다. 자원 절에 적을 이름 자체가 없다.
-          </p>
-        )}
-        {flat.some((o) => o.creates_target) && (
-          <p className="muted small">
-            <strong>{flat.filter((o) => o.creates_target).length}개</strong>는 자기가 지목하는 자원을{" "}
-            <strong>만드는</strong> 동작이다. 목록에 있는 자원은 이미 존재하는 것들이므로,{" "}
-            <code>NotResource</code>에 적으면 &quot;이 이름으로는 만들어도 된다&quot;가 되어 통제가
-            되지 않는다. 예: <code>lambda:CreateFunction</code>
-          </p>
-        )}
-        {byLevel(group, true)}
-      </details>
-    );
-  };
 
   // The resource button sits OUTSIDE the label. Inside one, a click on it would also toggle the
   // checkbox the label is for, so ticking an action and scoping it would fight each other.
@@ -470,22 +469,28 @@ export function ActionPicker({
     // Needs a resource, and the assessment holds none it can reach. Nothing the administrator can
     // pick will ever scope it, so whatever is ticked here the container refuses - it is not ticked,
     // and the row says why rather than being quietly absent. An approver looking for an action
-    // needs to find out it is unrestrictable, not fail to find it.
+    // needs to find out it is unrestrictable HERE, not fail to find it.
     const dead = unreachableAction(action);
+    // Held by another section. Not moved and not hidden: which section has it is the answer to the
+    // question the disabled checkbox raises.
+    const taken = chosenFor ? null : cannotHold(action);
+    const off = dead || Boolean(taken);
     return (
       <div key={action} className="pick-row">
-        <label className={[chosenFor ? "pick-item on" : "pick-item", dead ? "dead" : ""]
+        <label className={[chosenFor ? "pick-item on" : "pick-item", off ? "dead" : ""]
           .filter(Boolean).join(" ")}
-               title={dead
-                 ? "이 평가에 이 동작이 닿는 자원이 없다. 자원을 지정할 수 없으므로 제한을 쓸 수 없다"
-                 : undefined}>
-          <input type="checkbox" checked={Boolean(chosenFor)} disabled={dead}
+               title={taken ?? (dead
+                 ? "이 평가에 이 동작이 닿는 자원이 없다. 자원으로 좁힐 수 없으므로 여기서는 쓸 수 "
+                   + "없고, 동작 자체 거부에서는 고를 수 있다"
+                 : undefined)}>
+          <input type="checkbox" checked={Boolean(chosenFor)} disabled={off}
                  onChange={() => toggle(action)} />
           <code>{action}</code>
           {resource && <span className="rtype">{resource}</span>}
-          {dead && <span className="rtype">닿는 자원 없음</span>}
+          {dead && !taken && <span className="rtype">닿는 자원 없음</span>}
+          {taken && <span className="rtype">{taken}</span>}
         </label>
-        {chosenFor && intent !== "tag_condition" && (
+        {chosenFor && scoped && (
           <button
             type="button"
             className={chosenFor.resources.length === 0 ? "scope empty" : "scope"}
@@ -534,6 +539,17 @@ export function ActionPicker({
       </header>
 
       <div className="picker-body">
+        {/* What is NOT here. An approver searching for lambda:CreateFunction in 이 자원만 거부 finds
+            nothing, and the difference between "not offered here" and "cannot be restricted" is the
+            whole of what they need to know. */}
+        {elsewhere && elsewhere.count > 0 && (
+          <p className="muted small pick-elsewhere">
+            자원 목록으로 좁힐 수 없는 동작 {elsewhere.count}개는 여기에 없다 —{" "}
+            <strong>{elsewhere.section}</strong>에서 고른다. 자원을 인자로 받지 않거나, 자기가
+            지목하는 자원을 만드는 동작이라 이미 존재하는 자원의 목록으로는 좁혀지지 않는다.
+          </p>
+        )}
+
         {namedShown.length > 0 && (
           <div className="pick-group">
             <span className="pick-head">이 정책이 직접 지목한 동작 — 목록에 없다</span>
@@ -544,7 +560,7 @@ export function ActionPicker({
         {straysShown.length > 0 && (
           <div className="pick-group">
             <span className="pick-head">
-              목록에 없는 동작 — 직접 적었거나, 의도를 바꾸면서 고를 수 없게 된 것이다
+              목록에 없는 동작 — 직접 적었거나, 이 구역이 제공하지 않는 것이다
             </span>
             <div className="pick-level">{straysShown.map((action) => item(action))}</div>
           </div>
@@ -556,8 +572,7 @@ export function ActionPicker({
               {group.label} — 이 정책이 닿는 서비스
               {blockToggle(group)}
             </span>
-            {byLevel(group, false)}
-            {flatDenyBlock(group)}
+            {byLevel(group)}
           </div>
         ))}
 
@@ -579,8 +594,7 @@ export function ActionPicker({
                   {group.label}
                   {blockToggle(group)}
                 </span>
-                {byLevel(group, false)}
-                {flatDenyBlock(group)}
+                {byLevel(group)}
               </div>
             ))}
           </details>
@@ -618,10 +632,11 @@ export function ActionPicker({
                 }
               }}
             />
-            <button type="button" disabled={!typed.trim()} onClick={add}>
+            <button type="button" disabled={!typed.trim() || Boolean(typedRefusal)} onClick={add}>
               동작 추가
             </button>
           </div>
+          {typedRefusal && <p className="warn-inline">{typedRefusal}</p>}
         </div>
 
         {referenceError && (
@@ -635,8 +650,7 @@ export function ActionPicker({
       <footer>
         <span className="muted">
           고른 동작 {draft.length}개
-          {intent !== "tag_condition" && unscoped.length > 0
-            && ` · 자원 미지정 ${unscoped.length}개`}
+          {scoped && unscoped.length > 0 && ` · 자원 미지정 ${unscoped.length}개`}
         </span>
         {/* Named, not counted. "자원 미지정 3개" tells an administrator that something is wrong and
             not which row to open, and the footer is where they are looking when 적용 will not
@@ -658,7 +672,7 @@ export function ActionPicker({
             {unreachable.length > 3 && ` 외 ${unreachable.length - 3}개`}
           </span>
         )}
-        {intent !== "tag_condition" && (
+        {scoped && (
           <button
             type="button"
             disabled={draft.length === 0 || spreadable.applies === 0}

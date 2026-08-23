@@ -486,6 +486,80 @@ test('an account-level action denied with no resources is the shape that works',
   assert.deepEqual(marker.restrictions[0].actions, ['sqs:ListQueues']);
 });
 
+test('an action a resource list cannot scope is accepted outright as deny_action', async () => {
+  // The section that exists so this can be SAID. sqs:CreateQueue brings the queue it names into
+  // being, so every shape carrying a resource list is refused above - and until deny_action there
+  // was no shape left that meant "may not create a queue at all" except an empty deny_only, which
+  // is also what an administrator produces by forgetting to pick. Same statement, different
+  // decision, and only one of the two is refused for the forgetting.
+  const { route, s3 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ policy: restriction.policy, intent: 'deny_action',
+                       actions: ['sqs:CreateQueue'] }],
+      expected_impact_sha256: ASSESSMENT_SHA,
+    }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal(marker.restrictions[0].intent, 'deny_action');
+  assert.deepEqual(marker.restrictions[0].actions, ['sqs:CreateQueue']);
+});
+
+test('deny_action refuses what it would record and never evaluate', async () => {
+  // It composes Resource "*" and nothing else. A resource list or a tag alongside it would sit in
+  // the marker, describe a decision the statement does not carry, and be refused hours later by the
+  // inline writer - which is the whole reason this route mirrors generator/restriction.py._validate
+  // rather than letting the bucket be the first place it is checked.
+  const { route } = harness({ pushed: PUSHED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ ...restriction, intent: 'deny_action' }],
+        expected_impact_sha256: ASSESSMENT_SHA,
+      }),
+    }),
+    /denies the action outright/,
+  );
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ policy: restriction.policy, intent: 'deny_action',
+                         actions: ['sqs:DeleteMessage'], tag_key: 'env', tag_values: ['prod'] }],
+        expected_impact_sha256: ASSESSMENT_SHA,
+      }),
+    }),
+    /unconditional by construction/,
+  );
+});
+
+test('four sections on one policy are four restrictions in the marker', async () => {
+  // The composability the editor was rebuilt for. A policy carried exactly one intent because the
+  // page had one dropdown, never because the wire could not hold more - a Deny is a Deny whatever
+  // prompted it, and each decision composes its own statement into the one inline document.
+  const { route, s3 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [
+        { policy: restriction.policy, intent: 'allow_only',
+          actions: ['sqs:DeleteMessage'], resources: [QUEUE] },
+        { policy: restriction.policy, intent: 'deny_only',
+          actions: ['sqs:SendMessage'], resources: [QUEUE] },
+        { policy: restriction.policy, intent: 'deny_action', actions: ['sqs:CreateQueue'] },
+        { policy: restriction.policy, intent: 'tag_condition',
+          actions: ['sqs:PurgeQueue'], tag_key: 'env', tag_values: ['prod'] },
+      ],
+      expected_impact_sha256: ASSESSMENT_SHA,
+    }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.deepEqual(marker.restrictions.map((r) => r.intent),
+                   ['allow_only', 'deny_only', 'deny_action', 'tag_condition']);
+});
+
 test('an action with resource types is unaffected by the account-level checks', async () => {
   const { route, s3 } = harness({ pushed: PUSHED });
   await route['POST /api/plans/:id/decision']({

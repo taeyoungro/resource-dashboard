@@ -277,6 +277,99 @@
    ],
    "bytes": 246,
    "serialised": "{\"Statement\":[{\"Action\":\"logs:GetLogEvents\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:logs:us-east-1:718100330247:log-group:/aws/lambda/x\",\"arn:aws:logs:us-east-1:718100330247:log-group:/aws/lambda/x:*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "동작 자체 거부 — 자원 절이 없다",
+   "restrictions": [
+    {
+     "policy": "AWSLambda_FullAccess",
+     "intent": "deny_action",
+     "actions": [
+      "lambda:CreateFunction"
+     ]
+    }
+   ],
+   "nested_actions": [],
+   "bytes": 123,
+   "serialised": "{\"Statement\":[{\"Action\":\"lambda:CreateFunction\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "동작 자체 거부는 자원을 갖는 동작에도 쓴다",
+   "restrictions": [
+    {
+     "policy": "AmazonS3FullAccess",
+     "intent": "deny_action",
+     "actions": [
+      "s3:GetObject"
+     ]
+    }
+   ],
+   "nested_actions": [
+    "s3:GetObject"
+   ],
+   "bytes": 114,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "한 정책에 세 구역이 함께 걸린다",
+   "restrictions": [
+    {
+     "policy": "AmazonS3FullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "s3:GetObject"
+     ],
+     "resources": [
+      "arn:aws:s3:::opt-solution-markers"
+     ]
+    },
+    {
+     "policy": "AmazonS3FullAccess",
+     "intent": "deny_only",
+     "actions": [
+      "s3:PutObject"
+     ],
+     "resources": [
+      "arn:aws:s3:::opt-solution-markers"
+     ]
+    },
+    {
+     "policy": "AmazonS3FullAccess",
+     "intent": "deny_action",
+     "actions": [
+      "s3:CreateBucket"
+     ]
+    }
+   ],
+   "nested_actions": [
+    "s3:GetObject",
+    "s3:PutObject"
+   ],
+   "bytes": 416,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"s3:CreateBucket\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny2\"},{\"Action\":\"s3:PutObject\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny3\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "동작 자체 거부와 계정 단위 평면 거부는 한 문장으로 접힌다",
+   "restrictions": [
+    {
+     "policy": "AmazonEC2FullAccess",
+     "intent": "deny_action",
+     "actions": [
+      "ec2:CreateVpc"
+     ]
+    },
+    {
+     "policy": "AmazonEC2FullAccess",
+     "intent": "deny_only",
+     "actions": [
+      "ec2:DescribeVpcs"
+     ],
+     "resources": []
+    }
+   ],
+   "nested_actions": [],
+   "bytes": 136,
+   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:CreateVpc\",\"ec2:DescribeVpcs\"],\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
   }
  ]
 }

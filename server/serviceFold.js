@@ -93,6 +93,12 @@ export function serviceFold({ actions, resources, intent, groups, granted }) {
     for (const action of [...required]) {
       if (serviceOf(action) !== service) required.delete(action);
     }
+  } else if (intent === 'deny_action') {
+    // Resource "*", so the wildcard reaches every action of the service - including the ones that
+    // name no resource, which is exactly what this intent is for. The bound is therefore the same
+    // as allow_only's: the administrator has to hold the whole service as this policy grants it,
+    // or ticking eight actions would silently become "deny the service".
+    required = new Set(inService(granted));
   } else {
     // tag_condition applies to Resource "*" with a condition on the resource's tag. The wildcard
     // there would reach every action of the service including the ones that carry no resource and
