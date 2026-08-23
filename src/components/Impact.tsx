@@ -120,15 +120,35 @@ function primaryService(identifier: string, candidates: string[]): string | null
  * shape - one to estimate the size, one to show the policy - is two things to drift.
  */
 function preview(intent: Restriction["intent"], choices: Choice[], tag: string, values: string[],
-                 accountId: string, fenceServices: string[]) {
+                 accountId: string, fenceServices: string[], nested: (action: string) => boolean) {
   const restrictions: Restriction[] = choices.map((choice) => ({
     policy: "", intent, actions: [choice.action],
     ...(intent === "tag_condition"
       ? { tag_key: tag, tag_values: values }
       : { resources: choice.resources }),
   }));
-  const document = composeInline(restrictions, { accountId, fenceServices });
+  const document = composeInline(restrictions, { accountId, fenceServices, nested });
   return { document, bytes: inlineBytes(document) };
+}
+
+/**
+ * Whether an action operates BELOW the resource an index can hold - so the ARN picked for it is a
+ * container and the statement needs what is inside it too.
+ *
+ * The writer asks generator/actions.Table.under_another_type. This asks the same question of the
+ * same data: the reference names each action's resource types, and nested_types names the types
+ * that sit under another one. No reference, or an assessment written before it carried the map,
+ * means no expansion - which is what those assessments were written under.
+ */
+function nestedActions(reference: ImpactActionReference | null): (action: string) => boolean {
+  const nested = reference?.nested_types ?? {};
+  return (action: string) => {
+    const [service, name] = [action.slice(0, action.indexOf(":")), action.slice(action.indexOf(":") + 1)];
+    const types = nested[service];
+    if (!types?.length) return false;
+    const entry = reference?.services?.[service]?.[name];
+    return Boolean(entry?.[1]?.some((t) => types.includes(t)));
+  };
 }
 
 /** Which services the PassRole fence will name. Its statements are in the same document. */
@@ -179,17 +199,18 @@ const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {
  * server/inlinePreview.js composes it, and a fixture test pins that module byte-for-byte against
  * generator/restriction.py. A preview that differs from what gets written would be worse than none.
  */
-function InlinePreview({ restrictions, accountId, fenceServices }: {
+function InlinePreview({ restrictions, accountId, fenceServices, nested }: {
   restrictions: Restriction[];
   accountId: string;
   fenceServices: string[];
+  nested: (action: string) => boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const active = restrictions.filter((r) => r.actions.length > 0);
   const { document: composed, bytes } = useMemo(() => {
-    const doc = composeInline(active, { accountId, fenceServices });
+    const doc = composeInline(active, { accountId, fenceServices, nested });
     return { document: doc, bytes: inlineBytes(doc) };
-  }, [active, accountId, fenceServices]);
+  }, [active, accountId, fenceServices, nested]);
 
   if (active.length === 0 && fenceServices.length === 0) return null;
   const over = bytes > INLINE_LIMIT;
@@ -286,6 +307,7 @@ export function Impact({
           restrictions={restrictions}
           accountId={assessment.account_id}
           fenceServices={fenceServicesOf(assessment.passrole_grants)}
+          nested={nestedActions(assessment.action_reference ?? null)}
         />
       )}
 
@@ -725,6 +747,11 @@ function RestrictionEditor({
 }) {
   const [picking, setPicking] = useState(false);
 
+  // The same question the writer asks the action table, answered from the reference the assessment
+  // carried. The size estimate below is wrong without it: a bucket brings its objects into the
+  // statement, and those bytes count against the same quota.
+  const nested = useMemo(() => nestedActions(reference), [reference]);
+
   // The draft, seeded once. Every change emits the whole set upward, so the parent's array stays the
   // single source of truth for what gets submitted while this holds the parts a restriction needs
   // before it is one - an intent with no actions yet, or a tag key half typed.
@@ -942,7 +969,7 @@ function RestrictionEditor({
         // not get as far as an approval marker to find that out.
         const { bytes } = preview(intent, choices, tagKey,
                                   tagValues.split(",").map((v) => v.trim()).filter(Boolean),
-                                  accountId, fenceServices);
+                                  accountId, fenceServices, nested);
         if (choices.length === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
         return (
           <p className={bytes > INLINE_LIMIT ? "error" : "warn-inline"}>

@@ -29,9 +29,21 @@ export declare function fenceStatements(services: string[], accountId: string): 
  * The whole inline document these restrictions become - across EVERY policy, because the permission
  * set has one document and they all spend one quota.
  */
+/** The pattern naming everything under an ARN, with the separator read off the ARN itself. */
+export declare function subResource(arn: string): string;
+
 export declare function composeInline(
   restrictions: Restriction[],
-  options: { accountId: string; fenceServices?: string[] },
+  options: {
+    accountId: string;
+    fenceServices?: string[];
+    /**
+     * Whether an action operates BELOW the resource an index can hold, so the picked ARN is a
+     * container and the statement needs what is inside it. Impact.tsx builds it from the
+     * assessment's action_reference; omitted means no expansion.
+     */
+    nested?: (action: string) => boolean;
+  },
 ): InlineDocument;
 
 export declare function inlineBytes(document: InlineDocument): number;

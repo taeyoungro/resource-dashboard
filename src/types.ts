@@ -365,6 +365,16 @@ export interface ImpactActionReference {
   retrieved_at: string;
   /** service prefix -> bare action name -> [access level, resource types]. */
   services: Record<string, Record<string, [ImpactAccessLevel, string[]]>>;
+  /**
+   * service prefix -> the resource types that sit UNDER another one.
+   *
+   * What an index can hold is the container: Resource Explorer reports a bucket and never an
+   * object. So an action naming one of these operates below the ARN the administrator picked, and
+   * its statement needs the pattern for what is inside as well - arn:aws:s3:::b does not match
+   * arn:aws:s3:::b/key. Absent on assessments written before the container carried it, and an
+   * absent map means no expansion, which is the behaviour those assessments were written under.
+   */
+  nested_types?: Record<string, string[]>;
 }
 
 export type ImpactAccessLevel =
