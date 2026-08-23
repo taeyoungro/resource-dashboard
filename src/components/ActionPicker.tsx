@@ -184,6 +184,29 @@ export function ActionPicker({
     return !offer.account_level;
   };
 
+  /**
+   * Takes a resource, and the assessment holds NONE it can reach.
+   *
+   * Not the same thing as "no resource picked yet", and conflating the two is what this exists to
+   * stop. An action waiting on a pick is a step the administrator has left to take; one of these is
+   * a step nobody can take - athena:CreateCapacityReservation names capacity-reservation and the
+   * account has no capacity reservation, so no list of ARNs will ever scope it. Blocking 적용 on it
+   * is a dead end with no way out of the dialog except 비우기.
+   *
+   * It is dropped rather than written. A flat Deny on "*" would be a defensible reading of
+   * allow_only - "these resources only, and there are none" does mean deny, and for a create action
+   * it is the only reading that restricts anything - but it is a decision the administrator did not
+   * take: these arrive through 전체 선택, not through a checkbox somebody ticked. The dialog says
+   * which ones went and why.
+   *
+   * What that leaves undone, said rather than hidden: there is no way here to express "deny
+   * creating a resource type this account has none of". The row is unselectable and a hand-typed
+   * name lands in the same set and is dropped with the rest. It needs a shape of its own before it
+   * can be offered, and inventing one silently out of a 전체 선택 is not it.
+   */
+  const unreachableAction = (action: string) =>
+    needsResource(action) === true && reachedBy(action).length === 0;
+
   // Everything the dialog offers, regardless of the search. Anything in the draft that is NOT in here
   // gets its own group: an action typed earlier, or one that was ticked under deny_only and became
   // unofferable when the intent changed to allow_only. Without that group it would sit in the
@@ -236,14 +259,25 @@ export function ActionPicker({
   // reaches nothing it is the correct and only state, and the container decides which of those is a
   // legitimate flat deny.
   /**
-   * Chosen, takes a resource, and has none - the shape generator/restriction.py refuses.
+   * Chosen, takes a resource, has none - and there IS one to pick.
    *
-   * Separate from `unscoped` below, which counts every choice with an empty list including the
-   * account-level ones a flat Deny covers. Those are fine; these are not, and conflating the two
-   * either blocks a legitimate flat Deny or lets an empty NotResource through.
+   * The shape generator/restriction.py refuses, and the one 적용 must wait for. Separate from
+   * `unscoped` below, which counts every choice with an empty list including the account-level ones
+   * a flat Deny covers. Those are fine; these are not, and conflating the two either blocks a
+   * legitimate flat Deny or lets an empty NotResource through.
+   *
+   * And separate from `unreachable`: an action nothing can scope is not waiting for anything, so
+   * holding 적용 for it is a dialog with no exit. That distinction is the whole of this pair.
    */
-  const unwritable = draft.filter((c) => c.resources.length === 0
-    && needsResource(c.action) === true);
+  const needsPick = draft.filter((c) => c.resources.length === 0
+    && needsResource(c.action) === true && !unreachableAction(c.action));
+
+  /** Chosen, and nothing in the assessment can ever scope it. Named below, and not written. */
+  const unreachable = draft.filter((c) => c.resources.length === 0
+    && unreachableAction(c.action));
+
+  /** What 적용 hands back. Everything the container can actually compose a statement from. */
+  const writable = draft.filter((c) => !unreachableAction(c.action));
 
   const unscoped = draft.filter((c) => c.resources.length === 0);
 
@@ -318,9 +352,16 @@ export function ActionPicker({
    * statement - a flat Deny, unconditional - and sweeping them in with everything else would make
    * that decision on the administrator's behalf while a button labelled 전체 선택 implied it had
    * merely selected some checkboxes. They have their own 전체 선택 in their own block.
+   *
+   * The unreachable ones go for a second reason. Their own checkbox is disabled, so sweeping them
+   * in here was the one way into a state the dialog could not leave: six athena capacity-reservation
+   * actions arrived through 전체 선택 66개, each needing a resource, none having one to be given,
+   * and 적용 stayed grey with no row to go and fix.
    */
   const blockToggle = (group: { service: string; entries: Offer[] }) => {
-    const scoped = group.entries.filter((o) => !o.account_level);
+    const scoped = group.entries.filter(
+      (o) => !o.account_level && !unreachableAction(o.action),
+    );
     if (scoped.length === 0) return null;
     const all = scoped.every((o) => Boolean(held(o.action)));
     return (
@@ -405,7 +446,7 @@ export function ActionPicker({
     // pick will ever scope it, so whatever is ticked here the container refuses - it is not ticked,
     // and the row says why rather than being quietly absent. An approver looking for an action
     // needs to find out it is unrestrictable, not fail to find it.
-    const dead = needsResource(action) === true && reachable.length === 0;
+    const dead = unreachableAction(action);
     return (
       <div key={action} className="pick-row">
         <label className={[chosenFor ? "pick-item on" : "pick-item", dead ? "dead" : ""]
@@ -575,11 +616,21 @@ export function ActionPicker({
         {/* Named, not counted. "자원 미지정 3개" tells an administrator that something is wrong and
             not which row to open, and the footer is where they are looking when 적용 will not
             press. */}
-        {unwritable.length > 0 && (
+        {needsPick.length > 0 && (
           <span className="unwritable">
             자원을 지정해야 쓸 수 있다 —{" "}
-            {unwritable.slice(0, 3).map((c) => c.action).join(", ")}
-            {unwritable.length > 3 && ` 외 ${unwritable.length - 3}개`}
+            {needsPick.slice(0, 3).map((c) => c.action).join(", ")}
+            {needsPick.length > 3 && ` 외 ${needsPick.length - 3}개`}
+          </span>
+        )}
+        {/* A statement, not a warning. These do not hold 적용 up and there is nothing to go and fix
+            - the reason they are here is that an administrator who ticked 66 and got 60 is owed the
+            other six by name. */}
+        {unreachable.length > 0 && (
+          <span className="dropped-actions">
+            닿는 자원이 없어 빠진다 —{" "}
+            {unreachable.slice(0, 3).map((c) => c.action).join(", ")}
+            {unreachable.length > 3 && ` 외 ${unreachable.length - 3}개`}
           </span>
         )}
         {intent !== "tag_condition" && (
@@ -604,13 +655,15 @@ export function ActionPicker({
         <button
           type="button"
           className="commit"
-          disabled={unwritable.length > 0}
-          title={unwritable.length > 0
-            ? `자원을 지정하지 않은 동작이 ${unwritable.length}개 있다: `
-              + `${unwritable.slice(0, 3).map((c) => c.action).join(", ")}`
-              + `${unwritable.length > 3 ? " 외" : ""}`
-            : undefined}
-          onClick={() => onCommit(draft)}
+          disabled={needsPick.length > 0}
+          title={needsPick.length > 0
+            ? `자원을 지정하지 않은 동작이 ${needsPick.length}개 있다: `
+              + `${needsPick.slice(0, 3).map((c) => c.action).join(", ")}`
+              + `${needsPick.length > 3 ? " 외" : ""}`
+            : unreachable.length > 0
+              ? `${unreachable.length}개 동작은 닿는 자원이 없어 빠진다`
+              : undefined}
+          onClick={() => onCommit(writable)}
         >
           적용
         </button>

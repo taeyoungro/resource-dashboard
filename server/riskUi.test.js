@@ -355,12 +355,42 @@ test('an action that still needs a resource cannot be committed', () => {
   // resources the administrator meant. That refusal used to arrive on submit, after the whole
   // restriction was assembled.
   assert.ok(PICKER.includes('const needsResource ='), 'the gate is gone');
-  assert.match(PICKER, /const unwritable = draft\.filter\([\s\S]{0,120}needsResource\(c\.action\) === true\)/,
-               'the unwritable set no longer asks whether the action needs a resource');
-  assert.match(PICKER, /className="commit"[\s\S]{0,120}disabled=\{unwritable\.length > 0\}/,
+  assert.match(PICKER, /const needsPick = draft\.filter\([\s\S]{0,160}needsResource\(c\.action\) === true/,
+               'the blocking set no longer asks whether the action needs a resource');
+  assert.match(PICKER, /className="commit"[\s\S]{0,120}disabled=\{needsPick\.length > 0\}/,
                '적용 presses while a choice cannot be written');
   // Named in the footer, not counted. "자원 미지정 3개" says something is wrong and not which row.
   assert.ok(PICKER.includes('자원을 지정해야 쓸 수 있다'), 'the footer does not name them');
+});
+
+test('an action nothing can ever scope does not hold 적용 shut', () => {
+  // The dead end this exists to stop. athena:CreateCapacityReservation names capacity-reservation,
+  // the account holds none, so no list of ARNs will ever scope it - and six of them arrived through
+  // 전체 선택 66개 and left 적용 grey with no row to go and fix. Waiting on a pick and having
+  // nothing to pick are different states and the gate has to tell them apart.
+  assert.ok(PICKER.includes('const unreachableAction ='), 'the two states are one state again');
+  assert.match(PICKER, /const needsPick = draft\.filter\([\s\S]{0,160}!unreachableAction\(c\.action\)\)/,
+               '적용 is still held shut by an action nothing can scope');
+  // Dropped rather than written. A flat Deny on "*" is a defensible reading of allow_only and it is
+  // not the administrator's - these arrive through 전체 선택, not through a ticked checkbox.
+  assert.match(PICKER, /const writable = draft\.filter\(\(c\) => !unreachableAction\(c\.action\)\)/,
+               'what cannot be composed is still handed to the container');
+  assert.match(PICKER, /onClick=\{\(\) => onCommit\(writable\)\}/, '적용 hands back the whole draft');
+  // Said, not silently dropped. Ticking 66 and getting 60 is owed an explanation by name.
+  assert.ok(PICKER.includes('닿는 자원이 없어 빠진다'), 'the six that went are not named');
+  assert.match(CSS, /\.dropped-actions\b/, 'the line naming them has no style');
+  assert.ok(!/\.dropped-actions\s*\{[^}]*--danger/.test(CSS),
+            'a line beside a working 적용 is red, which reads as something to fix');
+});
+
+test('전체 선택 does not sweep in what nothing can scope', () => {
+  // The one way into that dead end: the row's own checkbox is disabled, so 전체 선택 was the only
+  // door. Same exclusion as the account-level actions get, for a different reason - those are a
+  // different KIND of statement, these are no statement at all.
+  const toggle = PICKER.slice(PICKER.indexOf('const blockToggle ='),
+                              PICKER.indexOf('const byLevel ='));
+  assert.ok(toggle.includes('!unreachableAction(o.action)'),
+            '전체 선택 selects actions the dialog cannot then write');
 });
 
 test('an account-level action is not asked for a resource it cannot have', () => {
@@ -381,7 +411,9 @@ test('an action the reference does not carry is not blocked here', () => {
 test('an action nothing in the assessment reaches is unselectable, and says why', () => {
   // Whatever is ticked there the container refuses. An approver looking for the action needs to
   // find out it is unrestrictable, not fail to find it - so the row is present and disabled.
-  assert.match(PICKER, /const dead = needsResource\(action\) === true && reachable\.length === 0/);
+  assert.match(PICKER, /const dead = unreachableAction\(action\)/);
+  assert.match(PICKER, /needsResource\(action\) === true && reachedBy\(action\)\.length === 0/,
+               'what counts as unreachable is no longer "takes a resource and can reach none"');
   assert.ok(PICKER.includes('disabled={dead}'), 'the checkbox is still tickable');
   assert.ok(PICKER.includes('닿는 자원 없음'), 'the row does not say why it is disabled');
   assert.match(CSS, /\.pick-item\.dead\b/, 'a disabled row looks the same as an enabled one');
