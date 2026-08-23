@@ -546,10 +546,34 @@ test('the per-policy view says the three things that make it honest', () => {
   const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
                              IMPACT.indexOf('const SECTIONS'));
   assert.ok(block.includes('Sid'), 'nothing explains why the Sid numbers have gaps');
-  assert.ok(block.includes('공유'), 'a statement shared with another policy is not marked');
+  assert.ok(block.includes('같은 문장'), 'a statement shared with another policy is not marked');
   assert.ok(block.includes('다른 정책'), 'the other policy\'s actions are not distinguished');
   assert.ok(block.includes('더해도'),
             'the page does not say the per-policy sizes do not add up to the document');
+
+  // The one that contradicts what the reader is about to assume. Two policies can make the
+  // IDENTICAL decision - one statement both of them produce - and then unticking it here leaves
+  // the Deny standing. Silently, and with share=0 beside a statement listed as this policy's.
+  assert.ok(block.includes('coOwned'), 'co-owned statements are not separated from shared ones');
+  assert.ok(block.includes('여기서\n                  선택을 지워도 그 문장은 남는다')
+            || /선택을 지워도 그 문장은 남는다/.test(block),
+            'the page does not say that unticking a co-owned action leaves the Deny in place');
+  assert.match(CSS, /\.statement-actions \.co-owned\b/,
+               'a co-owned action looks exactly like one this policy controls');
+
+  // alsoBy counts POLICIES; others counts ACTIONS. One policy contributing four actions was
+  // rendered as "shared with 4 policies" on a permission set that had two.
+  assert.ok(block.includes('alsoBy.length}개와 같은 문장'),
+            'the policy count is not taken from the policy identities');
+  assert.ok(!/others\.length}개와 공유/.test(block),
+            'an action count is being printed with the noun 정책');
+
+  // The share is this policy's; the limit is the document's. Colouring the first by the second
+  // turned every policy's dialog red the moment any of them was over.
+  assert.ok(block.includes('wouldFix'),
+            'the dialog does not say whether removing THIS policy would bring the document back');
+  assert.ok(!/className=\{view\.total > INLINE_LIMIT \? "error"/.test(block),
+            "the document-wide limit is colouring the sentence about this policy's own size");
   // Rendered as a bare array, not a Version/Statement object - an excerpt that is a valid
   // standalone policy is a wrong answer somebody can screenshot.
   assert.ok(block.includes('readableStatements('), 'the excerpt is rendered as a whole document');

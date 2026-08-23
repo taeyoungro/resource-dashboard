@@ -326,3 +326,74 @@ test('an excerpt is not shaped like a document', () => {
   assert.ok(text.indexOf('"Sid"') < text.indexOf('"Effect"'));
   assert.ok(text.indexOf('"Effect"') < text.indexOf('"Action"'));
 });
+
+test('two policies that decide the SAME thing are both told the other is there', () => {
+  // The failure this replaced: attribution by clause put the statement in both excerpts, both with
+  // others=[] because the action IS each policy's, and share=0 for both because removing either
+  // leaves the statement standing. So each approver was shown a statement listed as their policy's,
+  // told it added nothing, and given nothing that reconciled the two - and unticking it would not
+  // have removed the Deny.
+  const restrictions = [
+    { policy: 'AmazonS3FullAccess', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+    { policy: 'DataTeamAccess', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+  ];
+  const whole = composeInline(restrictions, { accountId: '1' });
+  assert.equal(whole.Statement.length, 1, 'they did not fold, so this tests nothing');
+
+  for (const [policy, other] of [['AmazonS3FullAccess', 'DataTeamAccess'],
+                                 ['DataTeamAccess', 'AmazonS3FullAccess']]) {
+    const view = policyContribution(restrictions, policy, { accountId: '1' });
+    const [one] = view.statements;
+    assert.deepEqual(one.ours, ['s3:GetObject'], policy);
+    assert.deepEqual(one.shared, ['s3:GetObject'],
+                     `${policy} is not told the action is also another policy's`);
+    assert.deepEqual(one.alsoBy, [other], `${policy} is not told WHICH policy`);
+    // And the marginal cost really is zero, which is why the co-ownership has to be said: on its
+    // own the zero reads as "this policy adds nothing", and every byte of the statement is here
+    // because of these two.
+    assert.equal(view.share, 0, policy);
+  }
+  assert.ok(inlineBytes(whole) > inlineBytes(composeInline([], { accountId: '1' })),
+            'the statement costs nothing, so there is nothing to reconcile');
+});
+
+test('the policy count is policies and the action count is actions', () => {
+  // One policy contributing four actions to a shared statement was rendered as "shared with 4
+  // policies" on a permission set with two attached policies.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+    { policy: 'B', intent: 'deny_only', resources: [BUCKET],
+      actions: ['s3:PutObject', 's3:DeleteObject', 's3:ListBucket', 's3:RestoreObject'] },
+  ];
+  const view = policyContribution(restrictions, 'A', { accountId: '1' });
+  const [one] = view.statements;
+  assert.equal(one.others.length, 4, 'the four foreign actions are not all reported');
+  assert.deepEqual(one.alsoBy, ['B'], 'the policy count is being taken from the action count');
+  assert.deepEqual(one.shared, [], 'nothing here is co-owned');
+});
+
+test('a falsy fence service cannot select a statement that is not a fence', () => {
+  // Optional chaining yields undefined for a statement with no Condition, and undefined is a legal
+  // Set member - so one undefined in the caller's list selected every admin Deny in the document
+  // and rendered it under "the pipeline adds this fence", excluded from the byte figure and shown
+  // twice.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_action', actions: ['s3:CreateBucket'] },
+    { policy: 'A', intent: 'tag_condition', actions: ['s3:GetObject'],
+      tag_key: 'env', tag_values: ['prod'] },
+  ];
+  const view = policyContribution(restrictions, 'A', {
+    accountId: '1',
+    fenceServices: ['lambda.amazonaws.com'],
+    policyFenceServices: [undefined, '', null],
+  });
+  assert.deepEqual(view.fence, [], 'a falsy entry selected statements that are not fences');
+  // The real thing still works beside it.
+  const real = policyContribution(restrictions, 'A', {
+    accountId: '1',
+    fenceServices: ['lambda.amazonaws.com'],
+    policyFenceServices: [undefined, 'lambda.amazonaws.com'],
+  });
+  assert.equal(real.fence.length, 1);
+  assert.match(real.fence[0].Sid, /^PassRoleAllowlistFence/);
+});

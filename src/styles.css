@@ -951,6 +951,14 @@ dialog.picker button.commit {
   text-decoration: underline dotted;
   text-underline-offset: 3px;
 }
+/* An action this policy chose AND another policy chose too. Not the same thing as the above: this
+   one IS this policy's, and unticking it here leaves the statement standing because the other
+   policy's identical decision still composes it. The most misleading row on the screen without a
+   mark, because it looks exactly like a row the approver controls. */
+.statement-actions .co-owned {
+  border-bottom: 2px solid var(--warn);
+  padding-bottom: 1px;
+}
 
 
 /* What this section does NOT offer, and where it went. At the top of the body rather than folded at

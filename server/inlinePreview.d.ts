@@ -61,6 +61,16 @@ export interface PolicyStatement {
   ours: string[];
   /** The actions in the same statement that arrived from another policy. Usually empty. */
   others: string[];
+  /**
+   * Every OTHER policy with a decision in this statement, by identity. Count THIS for a number of
+   * policies - `others` counts actions, and one policy can contribute four of them.
+   */
+  alsoBy: string[];
+  /**
+   * The subset of `ours` that another policy ALSO decided. Removing this policy's decision leaves
+   * these statements standing, which is the one thing an excerpt must not hide.
+   */
+  shared: string[];
 }
 
 export interface PolicyContribution {

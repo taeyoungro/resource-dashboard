@@ -251,34 +251,61 @@ export function policyContribution(restrictions, policy, options = {}) {
   const document = composeInline(all, options);
   const without = composeInline(all.filter((r) => r.policy !== policy), options);
 
-  // Which actions this policy puts into which clause. The same two functions the fold uses, so the
+  // WHICH POLICIES put which action into which clause. The same two functions the fold uses, so the
   // key is the fold's own key and a decision lands where its statement lands.
+  //
+  // Per action rather than per clause, and the set of owners rather than a boolean, because two
+  // policies can make the IDENTICAL decision - AmazonS3FullAccess and a customer managed policy
+  // both denying s3:GetObject on the same bucket is one statement that both of them produce. A
+  // per-clause set of this policy's action names could not see that: the action is in the set, so
+  // the statement reads as exclusively this policy's, `share` is 0 because removing this policy
+  // leaves the statement standing, and an approver who unticks it expects the Deny to go.
   const nested = options.nested ?? (() => false);
-  const mine = new Map();
+  const owners = new Map();
   for (const restriction of all) {
-    if (restriction.policy !== policy) continue;
     for (const action of restriction.actions ?? []) {
       const key = clause(statement('', restriction, action, nested));
-      const held = mine.get(key) ?? new Set();
-      held.add(action);
-      mine.set(key, held);
+      const perAction = owners.get(key) ?? new Map();
+      const held = perAction.get(action) ?? new Set();
+      held.add(restriction.policy);
+      perAction.set(action, held);
+      owners.set(key, perAction);
     }
   }
 
   const statements = [];
   for (const one of document.Statement) {
-    const held = mine.get(clause(one));
-    if (!held) continue;
+    const perAction = owners.get(clause(one));
+    if (!perAction) continue;
     const names = Array.isArray(one.Action) ? one.Action : [one.Action];
-    const ours = names.filter((n) => held.has(n));
+    const ours = names.filter((n) => perAction.get(n)?.has(policy));
     if (ours.length === 0) continue;
-    statements.push({ statement: one, ours, others: names.filter((n) => !held.has(n)) });
+    // Every OTHER policy with a decision in this statement - by identity, so a caller counting them
+    // counts policies. `others` counts ACTIONS, and the two are different numbers.
+    const alsoBy = new Set();
+    for (const name of names) {
+      for (const owner of perAction.get(name) ?? []) if (owner !== policy) alsoBy.add(owner);
+    }
+    statements.push({
+      statement: one,
+      ours,
+      others: names.filter((n) => !perAction.get(n)?.has(policy)),
+      alsoBy: [...alsoBy].sort(),
+      // The actions this policy owns JOINTLY. Removing this policy's decision does not remove
+      // these, which is the one thing an excerpt must not let an approver believe.
+      shared: ours.filter((n) => (perAction.get(n)?.size ?? 0) > 1),
+    });
   }
 
-  const fenced = new Set(options.policyFenceServices ?? []);
-  const fence = document.Statement.filter(
-    (one) => fenced.has(one.Condition?.StringEquals?.['iam:PassedToService']),
-  );
+  // Falsy entries dropped, and the statement's own value checked for truthiness before the lookup.
+  // Optional chaining yields undefined for a statement with no Condition, and undefined is a legal
+  // Set member - so one undefined in the caller's list would select every admin Deny in the
+  // document and render it under "the pipeline adds this fence".
+  const fenced = new Set((options.policyFenceServices ?? []).filter(Boolean));
+  const fence = document.Statement.filter((one) => {
+    const service = one.Condition?.StringEquals?.['iam:PassedToService'];
+    return Boolean(service) && fenced.has(service);
+  });
 
   const total = inlineBytes(document);
   return {
