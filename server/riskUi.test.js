@@ -440,13 +440,71 @@ test('the service wildcard is offered, never applied', () => {
             'accepting the fold replaces the whole policy rather than the section');
 });
 
-test('the size estimate is over every section at once', () => {
-  // Four sections land in one document and spend one 10,240 character quota. An estimate over the
-  // section being edited would say a restriction fits while the policy it is part of does not.
-  assert.match(IMPACT, /const \{ bytes \} = preview\(emitted, accountId, fenceServices, nested\)/,
-               'the estimate is over one section again');
-  assert.match(IMPACT, /const emitted = compose\(draft, tagKey, tagValues\)/,
-               'what is measured is not what gets sent');
+test('nothing sizes a document out of one policy\'s restrictions', () => {
+  // The permission set has ONE inline document and one 10,240 byte quota, so a figure composed from
+  // a subset of the restrictions is not a smaller version of the answer - it is a different number
+  // wearing the same label. The editor used to print exactly that: with 60 actions here and 60 on
+  // another policy it read 5,889 bytes twenty pixels above 11,770 for the same document, and under
+  // its 80% gate it printed nothing, which reads as "it fits".
+  const editor = IMPACT.slice(IMPACT.indexOf('function RestrictionEditor('));
+  assert.ok(!editor.includes('INLINE_LIMIT'),
+            'the editor sizes something again, and it can only see one policy');
+  // The RENDERED form, not the string - the comment where the estimate used to be quotes its label
+  // so the next reader can find this. A label followed by an interpolated byte count is the thing
+  // that must not come back.
+  assert.ok(!/인라인 정책 예상 크기[^\n]*\{/.test(IMPACT), 'the per-policy-only estimate is back');
+
+  // The two that remain both compose EVERY policy's restrictions.
+  const whole = IMPACT.slice(IMPACT.indexOf('function InlinePreview('),
+                             IMPACT.indexOf('function PolicyInlinePreview('));
+  assert.match(whole, /composeInline\(active/, 'the document-wide preview stopped composing');
+  assert.match(IMPACT, /<InlinePreview[\s\S]{0,200}restrictions=\{restrictions\}/);
+  assert.match(IMPACT, /<PolicyInlinePreview[\s\S]{0,400}restrictions=\{restrictions\}/);
+});
+
+test('the per-policy view is not recomposed on every keystroke', () => {
+  // Its memo takes fenceServices as a dependency. Called inline inside restrictable.map that is a
+  // fresh array identity every render, so the memo never hit: each of N policy blocks recomposed
+  // the whole document twice - and serialised every statement - on each character typed into a tag
+  // field. The value changes only when the assessment does.
+  assert.match(IMPACT, /const fenceServices = useMemo\(\s*\(\) => fenceServicesOf\(assessment\.passrole_grants\), \[assessment\.passrole_grants\],\s*\)/,
+               'fenceServices is not memoised, so the per-policy memo never caches');
+  assert.ok(!/fenceServices=\{fenceServicesOf\(/.test(IMPACT),
+            'a fresh array is still being passed down');
+  // The other two array-valued dependencies of the same memo, for the same reason.
+  assert.match(IMPACT, /const policyFenceServices = useMemo\(/);
+  assert.match(IMPACT, /const nested = useMemo\(\(\) => nestedActions\(reference\), \[reference\]\)/);
+});
+
+test('the fence is described as being in the figure it is actually in', () => {
+  // It is in `total` - the document carries it and the quota counts it - and out of `share`, where
+  // it cancels because it stands in both sides of the subtraction. Saying "not in the size above"
+  // was true of one number and false of the other, and the false one is the one compared against
+  // the limit, so an approver discounted 427 bytes that were really there.
+  const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
+                             IMPACT.indexOf('const SECTIONS'));
+  assert.ok(block.includes('늘리는 크기에는 들어 있지 않고'), 'the fence text lost the share half');
+  assert.ok(block.includes('문서 전체 크기와 한도에는 들어 있다'),
+            'the dialog says the fence is outside the number the quota is compared against');
+  assert.ok(!/위의\s*크기 계산에는 들어 있지 않다/.test(block),
+            'the old undifferentiated claim is back');
+});
+
+test('the empty state does not contradict the fence printed under it', () => {
+  // A policy with a PassRole grant puts a statement in the document with nothing ticked, and the
+  // fence renders in this same dialog - so "this policy contributes nothing" was printed directly
+  // above one of its statements. And with nothing chosen anywhere, InlinePreview renders nothing,
+  // so naming it as somewhere to look pointed at a control that is not on the page.
+  const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
+                             IMPACT.indexOf('const SECTIONS'));
+  const empty = block.slice(block.indexOf('view.statements.length === 0 ? ('),
+                            block.indexOf(') : ('));
+  assert.ok(empty.includes('view.fence.length > 0'),
+            'the empty state does not check whether the fence is about to render below it');
+  assert.ok(empty.includes('totalStatements === 0'),
+            'the empty state cannot tell "no document yet" from "all of it is other policies"');
+  assert.ok(!empty.includes('인라인 정책 보기'),
+            'the empty state points at a control that may not be rendered');
 });
 
 test('an action that still needs a resource cannot be committed', () => {

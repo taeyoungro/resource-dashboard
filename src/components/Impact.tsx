@@ -113,18 +113,6 @@ function primaryService(identifier: string, candidates: string[]): string | null
   );
 }
 
-/**
- * The document these choices become, and what it costs.
- *
- * Composed by server/inlinePreview.js rather than here, because that module is pinned byte-for-byte
- * against generator/restriction.py by a fixture test. Two hand-written approximations of the same
- * shape - one to estimate the size, one to show the policy - is two things to drift.
- */
-function preview(restrictions: Restriction[], accountId: string, fenceServices: string[],
-                 nested: (action: string) => boolean) {
-  const document = composeInline(restrictions, { accountId, fenceServices, nested });
-  return { document, bytes: inlineBytes(document) };
-}
 
 /**
  * Whether an action operates BELOW the resource an index can hold - so the ARN picked for it is a
@@ -302,6 +290,9 @@ function PolicyInlinePreview({
   const coOwned = view.statements.filter((s) => s.shared.length > 0);
   const actions = view.statements.reduce((n, s) => n + s.ours.length, 0);
   const overLimit = view.total > INLINE_LIMIT;
+  /** How many statements the WHOLE document has, so the empty state can tell its two cases apart. */
+  const totalStatements = restrictions.filter((r) => (r.actions ?? []).length > 0).length
+    + fenceServices.length;
   // Whether removing this policy entirely would bring the document back under. `without` is the
   // document without it, so this is answerable rather than a guess - and the two answers are
   // different jobs for the approver reading them.
@@ -309,7 +300,12 @@ function PolicyInlinePreview({
 
   return (
     <div className="inline-preview policy-preview">
-      <button type="button" onClick={() => dialog.current?.showModal()}>
+      {/* The policy in the accessible name, not only in the surrounding <details>. Four policy
+          blocks rendered four buttons whose entire name was the same five words, so a screen reader
+          navigating by button list - or a voice control user saying the label - got four
+          indistinguishable targets. The visible text stays short; aria-label carries the rest. */}
+      <button type="button" aria-label={`${name}이 문서에 넣는 문장 보기`}
+              onClick={() => dialog.current?.showModal()}>
         이 정책의 문장 보기
       </button>
       <span className="muted small">
@@ -337,9 +333,18 @@ function PolicyInlinePreview({
           </p>
 
           {view.statements.length === 0 ? (
+            /* Careful about two things it used to get wrong. A policy with a PassRole grant DOES put
+               something in the document even with nothing ticked - the fence renders below this
+               paragraph - so this cannot say the document holds nothing of this policy's. And when
+               nothing is chosen anywhere, InlinePreview renders nothing at all, so pointing at it
+               by name points at a control that is not on the page. */
             <p className="muted">
-              이 정책에서 고른 동작이 없다. 위의 <strong>인라인 정책 보기</strong>에 있는 문장은 모두
-              다른 정책에서 온 것이다.
+              이 정책에서 고른 동작이 없다
+              {view.fence.length > 0
+                ? " — 아래 울타리 문장은 제한이 아니라 이 정책의 iam:PassRole 부여 때문에 붙는 것이다."
+                : totalStatements === 0
+                  ? ". 지금은 문서에 문장이 하나도 없다."
+                  : ", 그래서 지금 문서에 있는 문장은 전부 다른 정책에서 온 것이다."}
             </p>
           ) : (
             <>
@@ -419,9 +424,15 @@ function PolicyInlinePreview({
 
           {view.fence.length > 0 && (
             <>
+              {/* Which figure it is in, precisely. It is in `total` - the document has it and the
+                  quota counts it - and out of `share`, because it is composed from the assessment's
+                  grants rather than from the restrictions, so it stands in both sides of the
+                  subtraction and cancels. Saying "not in the size above" was true of one number and
+                  false of the other, and the false one is the one compared against the limit. */}
               <p className="muted small">
-                이 정책이 <code>iam:PassRole</code>을 주기 때문에 파이프라인이 붙이는 울타리다. 위의
-                크기 계산에는 들어 있지 않다 — 제한을 고르든 말든 같은 문장이 붙는다.
+                이 정책이 <code>iam:PassRole</code>을 주기 때문에 파이프라인이 붙이는 울타리다.
+                제한을 고르든 말든 같은 문장이 붙으므로 <strong>늘리는 크기에는 들어 있지 않고</strong>,
+                문서에는 실제로 붙으므로 <strong>문서 전체 크기와 한도에는 들어 있다.</strong>
               </p>
               <pre className="policy-json">{readableStatements(view.fence)}</pre>
             </>
@@ -485,6 +496,14 @@ export function Impact({
   const baseline = assessment.policies.filter((p) => p.is_baseline);
   const unreadable = assessment.policies.filter((p) => p.unreadable);
 
+  // Memoised because it is an ARRAY, and it is a dependency of the per-policy view's own memo. Called
+  // inline inside restrictable.map it was a new identity on every render, so every policy block
+  // recomposed the whole document twice per keystroke in a tag field - 2N document compositions and
+  // a serialise of every statement, for a value that changes only when the assessment does.
+  const fenceServices = useMemo(
+    () => fenceServicesOf(assessment.passrole_grants), [assessment.passrole_grants],
+  );
+
   const sensitiveTotal = useMemo(
     () =>
       restrictable.reduce(
@@ -526,7 +545,7 @@ export function Impact({
         <InlinePreview
           restrictions={restrictions}
           accountId={assessment.account_id}
-          fenceServices={fenceServicesOf(assessment.passrole_grants)}
+          fenceServices={fenceServices}
           nested={nestedActions(assessment.action_reference ?? null)}
         />
       )}
@@ -545,7 +564,7 @@ export function Impact({
           omitted={assessment.coverage.action_lists_omitted ?? []}
           passroleGrant={(assessment.passrole_grants ?? [])
             .find((g) => g.identifier === policy.identifier) ?? null}
-          fenceServices={fenceServicesOf(assessment.passrole_grants)}
+          fenceServices={fenceServices}
         />
       ))}
 
@@ -748,8 +767,6 @@ function PolicyBlock({
           reference={reference}
           referenceError={referenceError}
           omitted={omitted}
-          fenceServices={fenceServices}
-          accountId={accountId}
         />
 
         {/* BELOW the editor, because it is the editor's result. The document-wide preview sits above
@@ -969,8 +986,6 @@ function RestrictionEditor({
   reference,
   referenceError,
   omitted,
-  fenceServices,
-  accountId,
 }: {
   policy: string;
   /** The service this policy is named for, or null. Its actions go first; the rest fold away. */
@@ -986,17 +1001,9 @@ function RestrictionEditor({
   reference: ImpactActionReference | null;
   referenceError: string | null;
   omitted: string[];
-  /** Services the PassRole fence names. Its statements share the document and the quota. */
-  fenceServices: string[];
-  accountId: string;
 }) {
   /** Which section's picker is open, or null. One at a time - they are all modal dialogs. */
   const [picking, setPicking] = useState<Restriction["intent"] | null>(null);
-
-  // The same question the writer asks the action table, answered from the reference the assessment
-  // carried. The size estimate below is wrong without it: a bucket brings its objects into the
-  // statement, and those bytes count against the same quota.
-  const nested = useMemo(() => nestedActions(reference), [reference]);
 
   /**
    * Which actions a list of ARNs cannot scope, for either of the two reasons.
@@ -1211,7 +1218,6 @@ function RestrictionEditor({
     );
   };
 
-  const emitted = compose(draft, tagKey, tagValues);
   const totalChosen = SECTIONS.reduce((n, intent) => n + draft[intent].length, 0);
 
   return (
@@ -1336,24 +1342,14 @@ function RestrictionEditor({
         );
       })}
 
-      {(() => {
-        // Estimated, and said so - and over ALL FOUR sections, because they land in one document
-        // and spend one quota. The exact number depends on statements this write preserves, which
-        // only the container can see, but a restriction that is going to be refused for size should
-        // not get as far as an approval marker to find that out.
-        const { bytes } = preview(emitted, accountId, fenceServices, nested);
-        if (totalChosen === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
-        return (
-          <p className={bytes > INLINE_LIMIT ? "error" : "warn-inline"}>
-            인라인 정책 예상 크기 약 {bytes.toLocaleString()}바이트
-            {bytes > INLINE_LIMIT
-              ? ` — 권한 세트 한도 ${INLINE_LIMIT.toLocaleString()}바이트를 넘는다. 이대로면 인라인
-                 작성기가 거부한다. 동작을 줄이거나 태그 조건을 쓰면 된다 — 태그 조건은 몇 개를 덮든
-                 문장 하나다.`
-              : ` (한도 ${INLINE_LIMIT.toLocaleString()}바이트)`}
-          </p>
-        );
-      })()}
+      {/* There is no size estimate here any more, and removing it was the fix rather than a
+          simplification. It composed a document from THIS POLICY's sections alone and labelled the
+          result "인라인 정책 예상 크기" against the 10,240 quota - a quota the whole permission set
+          shares. With 60 actions on this policy and 60 on another it read 5,889 bytes twenty pixels
+          above a figure of 11,770 for the same document, and below the 80% gate it printed nothing
+          at all, which reads as "it fits". The number that answers the question is in the per-policy
+          view directly below and in the document-wide preview at the top of the panel, and both of
+          them compose every policy. */}
 
       {referenceError && (
         <p className="warn-inline">
