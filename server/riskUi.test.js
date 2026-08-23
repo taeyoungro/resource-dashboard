@@ -603,7 +603,14 @@ test('the per-policy view says the three things that make it honest', () => {
   // rather than only in a comment.
   const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
                              IMPACT.indexOf('const SECTIONS'));
-  assert.ok(block.includes('Sid'), 'nothing explains why the Sid numbers have gaps');
+  // The needle is the SENTENCE, not the identifier. `block.includes('Sid')` was matched by
+  // `key={statement.Sid}` and `className="sid"` - load-bearing render code no edit removes - so
+  // deleting the entire explanatory paragraph left this green. Proven by deletion: the one sentence
+  // telling an approver that AdminDeny1 followed by AdminDeny4 is a slice of a bigger document
+  // rather than a corrupt one could go, and all 45 tests passed.
+  assert.match(block,
+               /<code>Sid<\/code> 번호가 중간에 비어 있을 수 있다[\s\S]{0,60}비어 있는 번호는/,
+               'nothing explains why the Sid numbers have gaps');
   assert.ok(block.includes('같은 문장'), 'a statement shared with another policy is not marked');
   assert.ok(block.includes('다른 정책'), 'the other policy\'s actions are not distinguished');
   assert.ok(block.includes('더해도'),
