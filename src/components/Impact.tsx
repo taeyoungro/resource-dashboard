@@ -767,17 +767,23 @@ function RestrictionEditor({
   const [tagValues, setTagValues] = useState(() => (existing[0]?.tag_values ?? []).join(","));
 
   /**
-   * Which chosen actions name no resource at all.
+   * Which chosen actions a list of ARNs cannot scope, for either of the two reasons.
    *
-   * The same test the picker's Offer.account_level is built from, read here because the editor is
-   * where a restriction is composed and this decides which KIND of statement an action can be in.
-   * An action absent from the reference is not assumed to be account-level - unknown is not empty,
-   * and the container refuses what it cannot resolve rather than guessing.
+   * The same test the picker's flat block is built from, read here because the editor is where a
+   * restriction is composed and this decides which KIND of statement an action can be in:
+   *
+   *   names no resource type      ec2:DescribeVpcs. Its resource is "*", which is in no list
+   *   makes the one it names      lambda:CreateFunction. The list enumerates what EXISTS, and this
+   *                               action's target is named at call time - "you may create a
+   *                               function called testLambda" is not a control
+   *
+   * An action absent from the reference is neither: unknown is not empty, and the container refuses
+   * what it cannot resolve rather than guessing.
    */
-  const accountLevel = (action: string) => {
+  const flatOnly = (action: string) => {
     const [service, ...rest] = action.split(":");
     const entry = reference?.services[service]?.[rest.join(":")];
-    return entry ? entry[1].length === 0 : false;
+    return entry ? entry[1].length === 0 || entry[2] === true : false;
   };
 
   /**
@@ -804,7 +810,7 @@ function RestrictionEditor({
     setChoices(nextChoices);
     setTagKey(key);
     setTagValues(values);
-    onChange(nextChoices.map((choice) => (accountLevel(choice.action)
+    onChange(nextChoices.map((choice) => (flatOnly(choice.action)
       // A flat Deny, whatever intent the rest are under. Under tag_condition it would be worse than
       // refused: the condition tests a resource tag, an action with no resource has none, so the
       // statement would match nothing and read on the page as a restriction that is in place.
@@ -846,6 +852,9 @@ function RestrictionEditor({
             // No resource type at all. generator/restriction.py refuses an allow_only restriction on
             // one of these, so the picker greys it out for that intent.
             account_level: entry[1].length === 0,
+            // It MAKES the resource it names, so an enumeration of what exists is no scope for it.
+            // Same remedy, different sentence - see the flat block in ActionPicker.
+            creates_target: entry[2] === true,
           };
         })
         .filter((o): o is Offer => o !== null);

@@ -57,7 +57,17 @@ export interface Offer {
   resources: string[];
   /** No resource type at all. An allow_only restriction on it would deny it outright. */
   account_level: boolean;
+  /**
+   * It brings the resource it names into being, so a list of what EXISTS is no scope for it.
+   * lambda:CreateFunction with NotResource [A, B] reads as "you may create a function called A or
+   * B", and A and B are already there. Same remedy as account_level - a flat Deny - so the two
+   * share a block, and different words, because the reasons are different.
+   */
+  creates_target: boolean;
 }
+
+/** Whether a list of enumerated ARNs can scope this action at all, for either reason. */
+const flatOnly = (offer: Offer) => offer.account_level || offer.creates_target;
 
 const INTENT_NOTE: Record<Restriction["intent"], string> = {
   allow_only:
@@ -181,7 +191,7 @@ export function ActionPicker({
     if (intent === 'tag_condition') return false;
     const offer = offerFor.get(action);
     if (!offer) return null;
-    return !offer.account_level;
+    return !flatOnly(offer);
   };
 
   /**
@@ -360,7 +370,7 @@ export function ActionPicker({
    */
   const blockToggle = (group: { service: string; entries: Offer[] }) => {
     const scoped = group.entries.filter(
-      (o) => !o.account_level && !unreachableAction(o.action),
+      (o) => !flatOnly(o) && !unreachableAction(o.action),
     );
     if (scoped.length === 0) return null;
     const all = scoped.every((o) => Boolean(held(o.action)));
@@ -386,7 +396,7 @@ export function ActionPicker({
   const byLevel = (group: { entries: Offer[]; showResource: boolean }, accountOnly: boolean) =>
     ACCESS_ORDER.map((access) => {
       const ofLevel = group.entries.filter(
-        (e) => e.access === access && e.account_level === accountOnly,
+        (e) => e.access === access && flatOnly(e) === accountOnly,
       );
       if (ofLevel.length === 0) return null;
       return (
@@ -414,24 +424,39 @@ export function ActionPicker({
    * allow_only, so 전체 선택 across EC2 skipped 257 of 793 actions in silence.
    */
   const flatDenyBlock = (group: { service: string; entries: Offer[]; showResource: boolean }) => {
-    const flat = group.entries.filter((e) => e.account_level);
+    const flat = group.entries.filter(flatOnly);
     if (flat.length === 0) return null;
     const all = flat.every((o) => Boolean(held(o.action)));
     return (
       <details className="pick-flat" open={Boolean(q)}>
         <summary>
-          자원을 지목하지 않는 동작 {flat.length}개 — 통째로 거부하는 것만 가능하다
+          자원 목록으로 좁힐 수 없는 동작 {flat.length}개 — 통째로 거부하는 것만 가능하다
           <button type="button" className="block-all"
                   onClick={(e) => { e.preventDefault(); selectAll(flat, !all); }}>
             {all ? "전체 해제" : `전체 선택 ${flat.length}개`}
           </button>
         </summary>
         <p className="muted small">
-          이 동작들은 자원을 인자로 받지 않으므로 &quot;이 자원만&quot;으로 좁힐 수 없다. 고르면 지금
-          고른 나머지와 달리 <strong>평면 거부</strong>(<code>Deny</code> · <code>Resource: &quot;*&quot;</code>)로
-          작성된다 — 조건 없이 완전히 막힌다는 뜻이다. 위의 <strong>인라인 정책 보기</strong>에서 실제
-          문장을 확인할 수 있다.
+          고르면 지금 고른 나머지와 달리 <strong>평면 거부</strong>(<code>Deny</code> ·{" "}
+          <code>Resource: &quot;*&quot;</code>)로 작성된다 — 조건 없이 완전히 막힌다는 뜻이다. 위의{" "}
+          <strong>인라인 정책 보기</strong>에서 실제 문장을 확인할 수 있다.
         </p>
+        {/* 두 가지 이유가 섞여 있고, 승인자에게는 다른 문장이다. 하나는 자원이라는 것이 없고,
+            다른 하나는 자원이 아직 없다. */}
+        {flat.some((o) => o.account_level) && (
+          <p className="muted small">
+            <strong>{flat.filter((o) => o.account_level).length}개</strong>는 자원을 인자로 받지
+            않는다. 자원 절에 적을 이름 자체가 없다.
+          </p>
+        )}
+        {flat.some((o) => o.creates_target) && (
+          <p className="muted small">
+            <strong>{flat.filter((o) => o.creates_target).length}개</strong>는 자기가 지목하는 자원을{" "}
+            <strong>만드는</strong> 동작이다. 목록에 있는 자원은 이미 존재하는 것들이므로,{" "}
+            <code>NotResource</code>에 적으면 &quot;이 이름으로는 만들어도 된다&quot;가 되어 통제가
+            되지 않는다. 예: <code>lambda:CreateFunction</code>
+          </p>
+        )}
         {byLevel(group, true)}
       </details>
     );

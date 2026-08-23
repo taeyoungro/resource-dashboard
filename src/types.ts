@@ -363,8 +363,16 @@ export interface ImpactActionReference {
   /** The canonical digest of the reference the container built this from. */
   reference_version: string;
   retrieved_at: string;
-  /** service prefix -> bare action name -> [access level, resource types]. */
-  services: Record<string, Record<string, [ImpactAccessLevel, string[]]>>;
+  /**
+   * service prefix -> bare action name -> [access level, resource types, makes them?].
+   *
+   * The third element is present only when true, and only for an action that brings EVERY type it
+   * names into being - lambda:CreateFunction, not lambda:CreateAlias, which makes an alias on a
+   * function that has to already exist. An enumeration is a list of what exists, so it is no scope
+   * for one of these: generator/restriction.makes_its_own_target refuses the shape, and the picker
+   * offers them as a flat Deny instead of asking which of the existing ones to keep.
+   */
+  services: Record<string, Record<string, ImpactActionEntry>>;
   /**
    * service prefix -> the resource types that sit UNDER another one.
    *
@@ -376,6 +384,10 @@ export interface ImpactActionReference {
    */
   nested_types?: Record<string, string[]>;
 }
+
+export type ImpactActionEntry =
+  | [ImpactAccessLevel, string[]]
+  | [ImpactAccessLevel, string[], true];
 
 export type ImpactAccessLevel =
   "List" | "Read" | "Write" | "Permissions management" | "Tagging";
