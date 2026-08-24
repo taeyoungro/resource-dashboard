@@ -21,7 +21,8 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
-  INLINE_LIMIT, composeInline, inlineBytes, policyContribution, readable, readableStatements,
+  INLINE_LIMIT, composeInline, creationExemption, inlineBytes, policyContribution, readable,
+  readableStatements,
   serialise, subResource,
 } from './inlinePreview.js';
 
@@ -39,12 +40,22 @@ const nestedOf = (c) => {
   return (action) => set.has(action);
 };
 
+/**
+ * Same arrangement for the creation-exemption patterns: the Python knows them from the table, the
+ * fixture carries them, and the page gets the same answer from action_reference.created_formats.
+ */
+const createdOf = (c) => {
+  const map = c.created_formats ?? {};
+  return (action) => map[action] ?? [];
+};
+
 test('every fixture composes to the bytes the container composed', () => {
   for (const c of FIXTURES.cases) {
     const document = composeInline(c.restrictions, {
       accountId: c.account_id ?? FIXTURES.account_id,
       fenceServices: c.fence_services ?? [],
       nested: nestedOf(c),
+      createdFormats: createdOf(c),
     });
     assert.equal(serialise(document), c.serialised,
                  `${c.label}: the preview and generator/restriction.py disagree`);
@@ -396,4 +407,84 @@ test('a falsy fence service cannot select a statement that is not a fence', () =
   });
   assert.equal(real.fence.length, 1);
   assert.match(real.fence[0].Sid, /^PassRoleAllowlistFence/);
+});
+
+// ---- what the call CREATES is exempted, or the statement is a total deny in disguise ------------
+
+const ENI_SG = 'arn:aws:ec2:us-east-1:718100330247:security-group/sg-0bba3f2419bc5ac3c';
+const ENI_SUBNET = 'arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82';
+const ENI_PATTERN = 'arn:${Partition}:ec2:*:${Account}:network-interface/*';
+
+test('allow_only on a creating action exempts the created type, substituted from the picked ARNs', () => {
+  // The reported defect. IAM authorises ec2:CreateNetworkInterface against the subnet, the groups
+  // AND the interface being created; the interface's ARN exists only after the call succeeds, so
+  // it is in no list, and without the exemption the Deny matches it on every call - the statement
+  // the screen read as "only into this subnet, only with this group" denied every create.
+  const doc = composeInline(
+    [{ policy: 'p', intent: 'allow_only', actions: ['ec2:CreateNetworkInterface'],
+       resources: [ENI_SG, ENI_SUBNET] }],
+    { accountId: '718100330247', createdFormats: () => [ENI_PATTERN] },
+  );
+  assert.deepEqual(doc.Statement[0].NotResource, [
+    'arn:aws:ec2:*:718100330247:network-interface/*',
+    ENI_SG,
+    ENI_SUBNET,
+  ]);
+});
+
+test('deny_only on the same action gets no exemption', () => {
+  // Its Resource list bites ON the named existing resources and the created one is simply not
+  // listed. Adding the type pattern there would deny every create outright - a different decision,
+  // with a name: deny_action.
+  const doc = composeInline(
+    [{ policy: 'p', intent: 'deny_only', actions: ['ec2:CreateNetworkInterface'],
+       resources: [ENI_SUBNET] }],
+    { accountId: '718100330247', createdFormats: () => [ENI_PATTERN] },
+  );
+  assert.deepEqual(doc.Statement[0].Resource, [ENI_SUBNET]);
+  assert.ok(!('NotResource' in doc.Statement[0]));
+});
+
+test('an empty account slot stays empty and a needed one comes from the picked ARNs', () => {
+  // ec2 image ARNs carry NO account - arn:aws:ec2:region::image/ami-x - and substituting one in
+  // composes a pattern that matches nothing, which is the same total deny wearing the fix's name.
+  assert.equal(creationExemption('arn:${Partition}:ec2:*::image/*', [ENI_SUBNET]),
+               'arn:aws:ec2:*::image/*');
+  assert.equal(creationExemption(ENI_PATTERN, [ENI_SUBNET]),
+               'arn:aws:ec2:*:718100330247:network-interface/*');
+  // Deterministic whatever order the page sent the list in: the first SORTED ARN answers.
+  assert.equal(creationExemption(ENI_PATTERN, [ENI_SUBNET, ENI_SG]),
+               creationExemption(ENI_PATTERN, [ENI_SG, ENI_SUBNET]));
+  // And null - not an empty-account pattern - when nothing picked carries an account. The writer
+  // refuses that decision; a pattern with an empty account would silently reinstate the bug.
+  assert.equal(creationExemption(ENI_PATTERN, ['arn:aws:s3:::bucket-only']), null);
+});
+
+test('the per-policy excerpt still finds the statement that carries an exemption', () => {
+  // Attribution rebuilds each decision's clause with the same statement() the fold uses. A key
+  // built WITHOUT createdFormats would never match the composed statement - the exemption is inside
+  // the clause bytes - and the policy's own decision would drop out of its excerpt.
+  const restrictions = [
+    { policy: 'A', intent: 'allow_only', actions: ['ec2:CreateNetworkInterface'],
+      resources: [ENI_SUBNET] },
+    { policy: 'B', intent: 'deny_only', actions: ['s3:GetObject'], resources: ['arn:aws:s3:::b'] },
+  ];
+  const options = { accountId: '718100330247', createdFormats:
+    (action) => (action === 'ec2:CreateNetworkInterface' ? [ENI_PATTERN] : []) };
+  const view = policyContribution(restrictions, 'A', options);
+  assert.equal(view.statements.length, 1, "A's own creating decision fell out of its excerpt");
+  assert.deepEqual(view.statements[0].ours, ['ec2:CreateNetworkInterface']);
+  assert.ok(view.statements[0].statement.NotResource
+    .includes('arn:aws:ec2:*:718100330247:network-interface/*'));
+});
+
+test('the fixtures actually exercise the exemption, in both intents', () => {
+  // A fixture set with no creating allow_only case would pass while the JavaScript never exempted
+  // anything - the same blind spot the nested fixtures guard against.
+  assert.ok(FIXTURES.cases.some((c) => Object.keys(c.created_formats ?? {}).length > 0
+                                       && c.restrictions.some((r) => r.intent === 'allow_only')),
+            'no fixture covers a creating action under allow_only');
+  assert.ok(FIXTURES.cases.some((c) => Object.keys(c.created_formats ?? {}).length > 0
+                                       && c.restrictions.some((r) => r.intent === 'deny_only')),
+            'no fixture pins that deny_only gets no exemption');
 });

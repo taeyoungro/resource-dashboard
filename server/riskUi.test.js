@@ -562,6 +562,27 @@ test('nothing sizes a document out of one policy\'s restrictions', () => {
   assert.match(IMPACT, /<PolicyInlinePreview[\s\S]{0,400}restrictions=\{restrictions\}/);
 });
 
+test('every composition on the page carries the creation-exemption patterns', () => {
+  // An allow_only statement on a creating action exempts the whole of every type the call brings
+  // into being - without it the Deny matches the resource being created (whose ARN nobody has yet)
+  // and 'only into this subnet' denies every ec2:CreateNetworkInterface in the account. The writer
+  // composes the exemption from its table; the page has to compose the SAME BYTES from the
+  // assessment's created_formats, and a composition this file forgot to hand the map to would show
+  // a narrower NotResource than what gets written.
+  assert.match(IMPACT, /function createdFormatsOf\(reference: ImpactActionReference \| null\)/,
+               'nothing derives the per-action patterns from the reference');
+  assert.match(IMPACT, /<InlinePreview[\s\S]{0,400}createdFormats=\{createdFormatsOf\(assessment\.action_reference \?\? null\)\}/,
+               'the document-wide preview composes without the exemptions');
+  assert.match(IMPACT, /<PolicyInlinePreview[\s\S]{0,500}createdFormats=\{createdFormats\}/,
+               'the per-policy excerpt composes without the exemptions');
+  // And it reaches policyContribution's options - the attribution key must match the fold's key,
+  // exemptions included, or a creating decision drops out of its own policy's excerpt.
+  assert.match(IMPACT, /policyContribution\(restrictions, policy,[\s\S]{0,200}createdFormats/,
+               'the excerpt attribution is keyed without the exemptions');
+  assert.match(IMPACT, /const createdFormats = useMemo\(\(\) => createdFormatsOf\(reference\), \[reference\]\)/,
+               'the per-policy map is not memoised, so the excerpt recomposes every render');
+});
+
 test('the per-policy view is not recomposed on every keystroke', () => {
   // Its memo takes fenceServices as a dependency. Called inline inside restrictable.map that is a
   // fresh array identity every render, so the memo never hit: each of N policy blocks recomposed

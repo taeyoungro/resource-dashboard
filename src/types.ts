@@ -395,6 +395,16 @@ export interface ImpactActionReference {
    * absent map means no expansion, which is the behaviour those assessments were written under.
    */
   nested_types?: Record<string, string[]>;
+  /**
+   * service -> action name -> the patterns naming the whole of every type the action brings into
+   * being, with ${Partition}/${Account} left for the page to substitute from the picked ARNs. The
+   * allow_only statement on a creating action exempts those types: the created resource's ARN
+   * exists only after the call succeeds, so without the exemption the Deny matches it on every
+   * call - 'only into this subnet' composed a statement denying every ec2:CreateNetworkInterface
+   * in the account. Absent on older assessments; the preview then composes without the exemption
+   * and the runbook's re-query step is what closes that window.
+   */
+  created_formats?: Record<string, Record<string, string[]>>;
 }
 
 export type ImpactActionEntry =
