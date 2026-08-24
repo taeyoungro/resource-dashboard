@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
 import type {
-  AssetGrade, Finding, FindingCategory, FindingStatus, Grade, RiskAnalysisAnswer,
-  RiskAnalysisCitation,
+  AssetGrade, Finding, FindingCategory, FindingStatus, Grade, Impact as ImpactAssessment,
+  Restriction, RiskAnalysisAnswer, RiskAnalysisCitation,
 } from "../types";
+import { BlockPath } from "./BlockPath";
+import { alreadyRestricted } from "../../server/blockPath.js";
 
 // The findings, as an approver reads them.
 //
@@ -47,6 +49,17 @@ interface Props {
   ready: boolean;
   /** Raised whenever an answer arrives, so a decision can cite the analysis it was taken against. */
   onAnalysis: (citation: RiskAnalysisCitation | null) => void;
+  /**
+   * The assessment and the SHARED restriction set, for cutting a path from its card. The card's
+   * 차단 dialog writes into the same array the per-policy editor composes - one decision list, one
+   * inline document, one 인라인 정책 보기 - which is the entire point: a restriction born here is
+   * indistinguishable from one born in the editor by the time it reaches the wire.
+   */
+  assessment: ImpactAssessment | null;
+  restrictions: Restriction[];
+  onRestrictions: (next: Restriction[]) => void;
+  /** Decisions are closed - the plan is decided or a decision is in flight. Buttons only. */
+  restrictDisabled: boolean;
 }
 
 /**
@@ -267,7 +280,15 @@ function Containment({ finding }: { finding: Finding }) {
  * and the keyboard both work on it, and a card cannot get stuck open in a state nothing resets when
  * the plan changes.
  */
-function Card({ finding }: { finding: Finding }) {
+function Card({ finding, block }: {
+  finding: Finding;
+  /**
+   * The path-cut control, when this finding can have one: the dialog opener and the actions of
+   * this finding already sitting in the restriction set. null hides the row entirely - a finding
+   * whose policy the assessment cannot restrict, or a decision already closed.
+   */
+  block: { open: () => void; applied: string[] } | null;
+}) {
   const model = finding.source === "model";
   return (
     <details className={`finding grade-${finding.escalationGrade.toLowerCase()}`}>
@@ -327,6 +348,21 @@ function Card({ finding }: { finding: Finding }) {
         <span className="finding-label">정책</span>
         <span><code>{policyName(finding.policyName)}</code></span>
       </div>
+
+      {block && (
+        <div className="finding-row block-row">
+          <span className="finding-label">차단</span>
+          <span>
+            <button type="button" onClick={block.open}>이 경로 차단</button>
+            {block.applied.length > 0 && (
+              <span className="muted small">
+                {" "}이 경로의 동작 {block.applied.length}개가 제한에 반영되어 있다 — 위{" "}
+                <strong>인라인 정책 보기</strong>가 문서로 보여준다.
+              </span>
+            )}
+          </span>
+        </div>
+      )}
 
       {model && (
         <>
@@ -484,7 +520,9 @@ function Summary({ answer, findings, view }: {
 /** How often the page asks how the model half is going. */
 const POLL_MS = 3000;
 
-export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
+export function RiskAnalysis({
+  planId, ready, onAnalysis, assessment, restrictions, onRestrictions, restrictDisabled,
+}: Props) {
   const [answer, setAnswer] = useState<RiskAnalysisAnswer | null>(null);
   // Independent toggles, one per button, and never unset by the other - "both pressed" is a state
   // this pair can BE, not an action a click on either one takes. See the View type above.
@@ -493,6 +531,8 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
   const [busyRules, setBusyRules] = useState(false);
   const [busyAi, setBusyAi] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The finding whose 차단 dialog is open, or null. One at a time - it is modal. */
+  const [blocking, setBlocking] = useState<Finding | null>(null);
 
   // The poll in flight. A ref rather than state because nothing renders from it and because the
   // cleanup below has to be able to stop it without waiting for a re-render.
@@ -513,6 +553,7 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
     setWantAi(false);
     setBusyRules(false);
     setBusyAi(false);
+    setBlocking(null);
     return stopPolling;
   }, [planId]);
 
@@ -657,6 +698,31 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
   const assessable = visible.filter((f) => f.status !== "NOT_ASSESSABLE");
   const unassessable = visible.filter((f) => f.status === "NOT_ASSESSABLE");
 
+  /**
+   * The policy a finding's restriction would be keyed by - the digest writes policy.identifier
+   * into finding.policyName, so the match is exact, not a name heuristic.
+   */
+  const policyOf = (finding: Finding) =>
+    assessment?.policies.find(
+      (p) => p.identifier === finding.policyName && p.restrictable && !p.unreadable,
+    ) ?? null;
+
+  /**
+   * Whether this card gets a 차단 button, and what it says afterwards.
+   *
+   * No button rather than a dead one when the path cannot be cut by a restriction at all
+   * (finding.restrictable false - the card already carries the 차단 불가 badge and the reason),
+   * when the assessment does not hold the policy as restrictable, or when the decision is closed.
+   */
+  const blockProps = (finding: Finding) => {
+    if (restrictDisabled || !finding.restrictable) return null;
+    if (!policyOf(finding)) return null;
+    return {
+      open: () => setBlocking(finding),
+      applied: alreadyRestricted(finding, restrictions),
+    };
+  };
+
   return (
     <section className="impact">
       <h3>위험 및 공격 경로</h3>
@@ -733,7 +799,10 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
                 <h4>
                   {label} <span className="muted small">{items.length}건 — {why}</span>
                 </h4>
-                {items.map((f) => <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f} />)}
+                {items.map((f) => (
+                  <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
+                        block={blockProps(f)} />
+                ))}
               </div>
             );
           })}
@@ -746,7 +815,8 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
                 </span>
               </h4>
               {unassessable.map((f) => (
-                <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f} />
+                <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
+                      block={blockProps(f)} />
               ))}
             </div>
           )}
@@ -832,6 +902,18 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
             </div>
           ) : null}
         </>
+      )}
+
+      {blocking && assessment && policyOf(blocking) && (
+        <BlockPath
+          finding={blocking}
+          policy={policyOf(blocking)!}
+          protectedActions={assessment.protected_actions}
+          reference={assessment.action_reference ?? null}
+          restrictions={restrictions}
+          onChange={onRestrictions}
+          onClose={() => setBlocking(null)}
+        />
       )}
     </section>
   );

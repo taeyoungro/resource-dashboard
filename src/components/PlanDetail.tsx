@@ -111,6 +111,10 @@ export function PlanDetail({
         planId={detail.plan_id}
         ready={!!detail.assessment}
         onAnalysis={setAnalysis}
+        assessment={detail.assessment ?? null}
+        restrictions={restrictions}
+        onRestrictions={setRestrictions}
+        restrictDisabled={busy || decided}
       />
 
       <h3>바뀌는 것</h3>
