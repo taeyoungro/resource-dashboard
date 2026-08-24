@@ -62,20 +62,31 @@ export const api = {
   /**
    * Start the risk analysis for a plan, and get the half that is ready immediately.
    *
-   * POST because running it costs money, so it happens when somebody asks - never as a side effect
-   * of opening a plan. It returns as soon as the RULES have fired: those are deterministic and take
-   * milliseconds. The model half is started on the server and collected by analysisRun below.
+   * POST because running the model half costs money, so IT happens when somebody asks - never as a
+   * side effect of opening a plan, and now never as a side effect of asking for the rules alone
+   * either. It returns as soon as the RULES have fired: those are deterministic, free, and take
+   * milliseconds regardless of `engine`. The model half is started on the server only when `engine`
+   * is not `"rules"`, and collected by analysisRun below.
    *
    * It used to return only when the model had answered every batch, which on a real assessment is
    * minutes inside one request - long enough for whatever terminates TLS in front of the dashboard
    * to answer 504 while the server kept paying for an answer the browser would never see.
+   *
+   * `engine`:
+   *   "rules"  정책 기반 분석. Rule findings only - the free, deterministic half. Never bills
+   *            Bedrock. If an "ai" run already exists for this assessment it rides along in the
+   *            answer regardless (work already paid for is not withheld), but this call does not
+   *            start one.
+   *   "ai"     AI 분석. Starts (or joins) the model run, same as omitting the field. Named
+   *            explicitly rather than left as the default so a reader of a network trace can tell
+   *            which button asked, and so the default staying permissive is not load-bearing.
    */
-  analyse: async (planId: string): Promise<RiskAnalysisAnswer> =>
+  analyse: async (planId: string, engine: "rules" | "ai" = "ai"): Promise<RiskAnalysisAnswer> =>
     handle(
       await fetch(`${BASE}/plans/${encodeURIComponent(planId)}/analysis`, {
         method: "POST",
         headers: headers(),
-        body: "{}",
+        body: JSON.stringify({ engine }),
       }),
     ),
 
