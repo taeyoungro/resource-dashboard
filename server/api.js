@@ -84,9 +84,14 @@ export function authorisedToAnnounce(config, headerValue) {
 // estimates that and says so before submitting, and generator/restriction.py measures it exactly.
 const MAX_RESTRICTIONS = 200;
 
-// The three forms, and they are not interchangeable - they produce different statements and go stale
+// The four forms, and they are not interchangeable - they produce different statements and go stale
 // in different directions. See event_pipeline code/generator/restriction.py.
-const RESTRICTION_INTENTS = new Set(['allow_only', 'deny_only', 'tag_condition']);
+//
+// They are also composable: one policy may carry a decision of each, arriving as separate entries in
+// this list. deny_action is the same STATEMENT as deny_only with an empty resource list and a
+// different DECISION - an empty deny_only is a forgotten pick and is still refused as one, while
+// deny_action is the action chosen for itself and is refused for nothing.
+const RESTRICTION_INTENTS = new Set(['allow_only', 'deny_only', 'deny_action', 'tag_condition']);
 
 export const INGEST_ROUTES = new Set([
   'POST /api/notifications',
@@ -786,6 +791,29 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
           const actions = Array.isArray(restriction.actions) ? restriction.actions : [];
           if (actions.length === 0 || actions.some((a) => typeof a !== 'string' || !a.trim())) {
             throw new HttpError(400, 'a restriction needs at least one action, as strings');
+          }
+          // The one intent that takes no resource clause of any kind, so anything carried alongside
+          // it would be recorded in the marker and never reach the statement. Refused here for the
+          // reason the whole block exists: the writer refuses it too, hours later and in a log
+          // nobody is reading.
+          if (restriction.intent === 'deny_action') {
+            if (Array.isArray(restriction.resources) && restriction.resources.length > 0) {
+              throw new HttpError(
+                400,
+                '"동작 자체 거부" denies the action outright - Resource "*" - so the resources named '
+                + 'here would be recorded as part of the decision and change nothing about the '
+                + 'statement. If the resources are the point, the section is "이 자원만 허용" or '
+                + '"이 자원만 거부".',
+              );
+            }
+            if (restriction.tag_key || (Array.isArray(restriction.tag_values)
+                                        && restriction.tag_values.length > 0)) {
+              throw new HttpError(
+                400,
+                '"동작 자체 거부" is unconditional by construction; a tag here would be recorded and '
+                + 'never evaluated.',
+              );
+            }
           }
           for (const action of actions) {
             if (action.trim() === '*' || action.trim().startsWith('*')) {

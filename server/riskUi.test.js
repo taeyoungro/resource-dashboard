@@ -279,7 +279,8 @@ test('the page does not compose the policy itself', () => {
 
 test('the preview says it is a preview, and shows the fence', () => {
   const block = IMPACT.slice(IMPACT.indexOf('function InlinePreview('),
-                             IMPACT.indexOf('const INTENT_LABEL'));
+                             IMPACT.indexOf('function PolicyInlinePreview('));
+  assert.ok(block.length > 0 && block.length < IMPACT.length, 'the slice caught the wrong component');
   assert.ok(block.includes('미리보기'), 'the preview no longer says the writer is the authority');
   assert.ok(block.includes('fenceServices'),
             'the fence is not in the preview, so the deployed document would have a statement the '
@@ -289,77 +290,139 @@ test('the preview says it is a preview, and shows the fence', () => {
 
 const PICKER = readFileSync(new URL('../src/components/ActionPicker.tsx', import.meta.url), 'utf8');
 
-test('an action that names no resource is offered, not filtered away', () => {
-  // It used to be removed from the offering under allow_only. That was the wrong answer to a real
-  // constraint: 전체 선택 across EC2 then quietly skipped 257 of its 793 actions, and nothing on
-  // the page said which, or why, or that they existed. An approver who ticked everything believed
-  // they had covered everything.
-  assert.ok(!/intent === "allow_only" && offer\.account_level/.test(PICKER),
-            'account-level actions are hidden again, so 전체 선택 skips them in silence');
-  assert.ok(PICKER.includes('flatDenyBlock'), 'they have no block of their own');
-  assert.ok(PICKER.includes('자원 목록으로 좁힐 수 없는 동작'),
-            'the block does not say what these actions are');
-  assert.ok(PICKER.includes('자원을 인자로 받지'),
-            'the block no longer distinguishes the action that HAS no resource');
-  assert.ok(PICKER.includes('평면 거부'),
-            'the block does not say that ticking one denies it outright');
+test('the four sections compose - a policy is not one intent at a time', () => {
+  // It was one dropdown, so a policy carried exactly one intent and choosing a second meant giving
+  // up the first. That was never a property of the statements: the permission set holds ONE inline
+  // document and each decision composes its own statement into it, so "이 버킷만 남기고, 그리고
+  // DeleteBucket은 아예 막는다" is two statements and always was.
+  assert.ok(!/<select[\s\S]{0,200}INTENT_LABEL/.test(IMPACT),
+            'the intent is a dropdown again, so the sections are mutually exclusive');
+  assert.match(IMPACT, /const SECTIONS: Restriction\["intent"\]\[\] = \[\s*"allow_only", "deny_only", "deny_action", "tag_condition",/,
+               'the four sections are not declared as a list the editor renders one block per');
+  assert.match(IMPACT, /SECTIONS\.map\(\(intent\) => \{/,
+               'the editor no longer renders a block per section');
+  // The draft is per section, and every section composes into the same emitted list.
+  assert.match(IMPACT, /type Draft = Record<Restriction\["intent"\], Choice\[\]>/,
+               'the editor holds one intent and one action list again');
+  assert.match(IMPACT, /SECTIONS\.flatMap\(\(intent\) => next\[intent\]\.map/,
+               'compose no longer walks every section, so a section would be silently dropped');
 });
 
-test('an action that MAKES the resource it names shares that block, with its own sentence', () => {
+test('an action a resource list cannot scope has a section of its own', () => {
+  // It used to be a fold at the bottom of every picker: the right data in the wrong place, because
+  // ticking it composed a statement of a different KIND from everything else in the dialog and the
+  // fold's own paragraph had to say so. It is a decision, not a side effect - and it is the only
+  // way to say "this user may not call lambda:CreateFunction at all".
+  assert.ok(!PICKER.includes('flatDenyBlock'),
+            'the fold is back inside the picker, so the section is a second way to say one thing');
+  assert.ok(IMPACT.includes('deny_action: "동작 자체 거부"'), 'the section has no name');
+  // The scoped sections do not offer them at all. offeringFor is what removes them.
+  assert.match(IMPACT, /const offeringFor = \(intent: Restriction\["intent"\]\) => \{[\s\S]{0,200}if \(intent === "deny_action"\) return \{ offering: covered, hidden: 0 \}/,
+               '동작 자체 거부 is being filtered like the scoped sections, so it offers nothing');
+  assert.match(IMPACT, /!o\.account_level && !o\.creates_target/,
+               'the scoped offering is filtered on only one of the two reasons');
+  // Not left missing. An approver who cannot find an action has to learn where it went.
+  assert.ok(IMPACT.includes('elsewhere={hidden > 0'), 'the count of what went is not passed on');
+  assert.ok(PICKER.includes('자원 목록으로 좁힐 수 없는 동작'),
+            'the dialog does not say what is missing from its offering');
+  assert.match(CSS, /\.pick-elsewhere\b/, 'the line saying so has no style');
+});
+
+test('one action is never in two sections at once', () => {
+  // 이 자원만 허용 on s3:GetObject and 동작 자체 거부 on s3:GetObject compose a NotResource
+  // statement the flat Deny beside it makes moot - bytes spent to say nothing, and a document an
+  // approver cannot read. Refused at the pick rather than reconciled afterwards, and the row says
+  // WHICH section has it, because that is the answer to the question a disabled checkbox raises.
+  assert.match(IMPACT, /const heldElsewhere = \(intent: Restriction\["intent"\]\) => \(action: string\) => \{/,
+               'nothing answers which other section holds an action');
+  assert.ok(IMPACT.includes('cannotHold={heldElsewhere(intent)}'),
+            'the picker is not given the rule, so a second section can take the same action');
+  assert.ok(IMPACT.includes('이미 "${INTENT_LABEL[other]}"에 있다'),
+            'the refusal does not name the section that has it');
+  assert.match(PICKER, /const taken = chosenFor \? null : cannotHold\(action\)/,
+               'the row no longer asks whether another section holds the action');
+  assert.match(PICKER, /disabled=\{off\}/, 'a row another section holds is still tickable');
+  // And the typed escape hatch goes through the same gate - it is the one way a scoped section
+  // could otherwise take an action its offering never showed.
+  assert.match(PICKER, /const typedRefusal = typed\.trim\(\) \? cannotHold\(typed\.trim\(\)\) : null/,
+               'a hand-typed name bypasses the rule the checkboxes are held to');
+  assert.match(PICKER, /if \(!action \|\| typedRefusal\) return;/, 'the refusal does not stop the add');
+});
+
+test('an action that MAKES the resource it names is kept out for its own reason', () => {
   // The second way a list of ARNs is no scope, and the one nothing was checking.
   // Deny lambda:CreateFunction NotResource [testLambda, testLambda2] reads as "you may create a
   // function called testLambda or testLambda2", and both already exist.
   assert.ok(PICKER.includes('creates_target'), 'the offer does not carry the answer');
   assert.match(PICKER, /const flatOnly = \(offer: Offer\) =>[\s\S]{0,80}creates_target/,
-               'the two reasons are not sharing one test, so only one of them reaches the block');
+               'the two reasons are not sharing one test, so only one of them is kept out');
   // Distinct wording. "자원을 인자로 받지 않는다" beside lambda:CreateFunction is simply false -
   // it does name a resource, and the resource is the one it is about to make.
-  assert.ok(PICKER.includes('만드는'), 'the block does not say why these are here');
-  assert.ok(PICKER.includes('lambda:CreateFunction'), 'the sentence names no example');
+  assert.ok(PICKER.includes('자원을 인자로 받지'),
+            'the line no longer distinguishes the action that HAS no resource');
+  assert.ok(PICKER.includes('만드는'), 'the line does not say why the other half is kept out');
   // And every place that asked "can this be scoped" asks the generalised question.
-  for (const site of ['return !flatOnly(offer);', '!flatOnly(o) &&',
-                      'flatOnly(e) === accountOnly', 'group.entries.filter(flatOnly)']) {
+  for (const site of ['return !flatOnly(offer);', '!flatOnly(offer)']) {
     assert.ok(PICKER.includes(site), `a scoping decision still reads account_level alone: ${site}`);
   }
+  assert.ok(IMPACT.includes('entry[1].length === 0 || entry[2] === true'),
+            'the editor splits on only one of the two reasons');
 });
 
-test('전체 선택 on a service does not sweep in the flat denies', () => {
-  // A flat Deny is unconditional and is a different decision from narrowing. Sweeping them in
-  // under a button labelled 전체 선택 would make that decision on the administrator's behalf.
+test('전체 선택 on a service does not sweep in what this section cannot hold', () => {
+  // The flat denies are no longer in a scoped section's offering at all, so what this guards is
+  // the remaining way in: an action another section already holds, and one nothing can scope.
+  // Sweeping either in under a button labelled 전체 선택 makes a decision on the administrator's
+  // behalf while implying it merely ticked some checkboxes.
   const toggle = PICKER.slice(PICKER.indexOf('const blockToggle ='),
                               PICKER.indexOf('const byLevel ='));
-  assert.ok(toggle.includes('!flatOnly(o)'),
-            'the service 전체 선택 selects actions a resource list cannot scope');
-  // And the flat block has its own.
-  const flat = PICKER.slice(PICKER.indexOf('const flatDenyBlock ='),
-                            PICKER.indexOf('// The resource button sits OUTSIDE'));
-  assert.ok(flat.includes('selectAll(flat'), 'the flat block has no 전체 선택 of its own');
+  assert.ok(toggle.includes('!cannotHold(o.action)'),
+            '전체 선택 selects actions this section cannot hold');
+  assert.ok(toggle.includes('!unreachableAction(o.action)'),
+            '전체 선택 selects actions the dialog cannot then write');
 });
 
-test('the editor emits a flat deny for an action that names no resource', () => {
-  // Whatever intent the rest are under. Under tag_condition it would be worse than refused: the
-  // condition tests a resource tag, an action with no resource has none, so the statement matches
-  // nothing and reads on the page as a restriction that is in place.
-  const emit = IMPACT.slice(IMPACT.indexOf('const flatOnly ='),
-                            IMPACT.indexOf('// Keyed off what the policy GRANTS'));
-  assert.ok(emit.includes('flatOnly(choice.action)'),
-            'the editor no longer splits by whether a resource list can scope the action');
-  assert.match(emit, /intent: "deny_only" as const[\s\S]{0,60}resources: \[\]/,
-               'the flat branch no longer emits a flat deny');
-  // Both reasons, one branch. The second is the action that makes what it names.
-  assert.ok(emit.includes('entry[1].length === 0 || entry[2] === true'),
+test('an existing flat deny is read back into the section that owns it', () => {
+  // Before 동작 자체 거부 existed the editor emitted these as deny_only with an empty resource list
+  // - the only statement one of them ever had. Reading a stored restriction back into the section
+  // that now owns it is reading it back as what it is, not a guess. Leaving it in deny_only would
+  // put an action in a section whose picker will not offer it, with no checkbox to clear it.
+  const seed = IMPACT.slice(IMPACT.indexOf('const [draft, setDraft] = useState<Draft>'),
+                            IMPACT.indexOf('const tagSeed ='));
+  assert.match(seed, /flatOnly\(action\) \? "deny_action" : restriction\.intent/,
+               'a stored flat deny is seeded into the intent it was written under');
+  assert.ok(seed.includes('into === "deny_action" ? []'),
+            'resources ride along into a section whose statement has no resource clause');
+  // Both reasons, one test. The second is the action that makes what it names.
+  const flat = IMPACT.slice(IMPACT.indexOf('const flatOnly = (action: string)'),
+                            IMPACT.indexOf('const [draft, setDraft]'));
+  assert.ok(flat.includes('entry[1].length === 0 || entry[2] === true'),
             'the editor splits on only one of the two reasons');
   // Unknown is neither. An action the reference does not carry must not be guessed at.
-  assert.ok(emit.includes(': false'),
+  assert.ok(flat.includes(': false'),
             'an action missing from the reference is being treated as flat-only');
+});
+
+test('a section that carries no resource clause sends none', () => {
+  // deny_action composes Deny on Resource "*" and tag_condition composes a condition. A resource
+  // list on either would be recorded in the marker and never reach the statement - which is what
+  // the decision route and generator/restriction.py both refuse by name.
+  const compose = IMPACT.slice(IMPACT.indexOf('const compose = (next: Draft'),
+                               IMPACT.indexOf('const emit = (next: Draft'));
+  assert.match(compose, /isScoped\(intent\)\s*\?\s*\{ resources: choice\.resources \}/,
+               'a section that names no resources is being sent a resource list');
+  assert.match(compose, /intent === "tag_condition" \? tag : \{\}/,
+               'deny_action is being sent a tag, or tag_condition is not being sent one');
+  assert.match(IMPACT, /const isScoped = \(intent: Restriction\["intent"\]\) =>\s*intent === "allow_only" \|\| intent === "deny_only";/,
+               'which sections carry a resource list is no longer stated in one place');
 });
 
 test('the service wildcard is offered, never applied', () => {
   // The wildcard becomes the administrator's decision and travels as the action. A page that
   // quietly widened [8 names] into athena:* would be restricting actions this approval does not
   // grant, which generator/restriction.py refuses by name - and which after B-1 it can see.
-  const offer = IMPACT.slice(IMPACT.indexOf('// The one action this list could be written as'),
-                             IMPACT.indexOf('// Estimated, and said so'));
+  const offer = IMPACT.slice(IMPACT.indexOf('const foldOffer ='),
+                             IMPACT.indexOf('const emitted = compose('));
   assert.ok(offer.includes('serviceFold({'), 'the offer no longer asks the shared module');
   assert.ok(offer.includes('<button'), 'the fold is applied without the administrator choosing it');
   assert.ok(offer.includes('folded.adds'), 'what the wildcard additionally denies is not shown');
@@ -369,6 +432,79 @@ test('the service wildcard is offered, never applied', () => {
             'the offer no longer requires a single resource clause');
   assert.ok(offer.includes('intent === "tag_condition"'),
             'a tag condition is being offered a wildcard, where the members carry no tag');
+  // Per section, because the fold is a property of one statement and the sections are separate
+  // statements. Folding across them would offer one wildcard for two different resource clauses.
+  assert.match(IMPACT, /\{foldOffer\(intent, choices\)\}/,
+               'the fold offer is no longer rendered per section');
+  assert.ok(offer.includes('setSection(intent, [{'),
+            'accepting the fold replaces the whole policy rather than the section');
+});
+
+test('nothing sizes a document out of one policy\'s restrictions', () => {
+  // The permission set has ONE inline document and one 10,240 byte quota, so a figure composed from
+  // a subset of the restrictions is not a smaller version of the answer - it is a different number
+  // wearing the same label. The editor used to print exactly that: with 60 actions here and 60 on
+  // another policy it read 5,889 bytes twenty pixels above 11,770 for the same document, and under
+  // its 80% gate it printed nothing, which reads as "it fits".
+  const editor = IMPACT.slice(IMPACT.indexOf('function RestrictionEditor('));
+  assert.ok(!editor.includes('INLINE_LIMIT'),
+            'the editor sizes something again, and it can only see one policy');
+  // The RENDERED form, not the string - the comment where the estimate used to be quotes its label
+  // so the next reader can find this. A label followed by an interpolated byte count is the thing
+  // that must not come back.
+  assert.ok(!/인라인 정책 예상 크기[^\n]*\{/.test(IMPACT), 'the per-policy-only estimate is back');
+
+  // The two that remain both compose EVERY policy's restrictions.
+  const whole = IMPACT.slice(IMPACT.indexOf('function InlinePreview('),
+                             IMPACT.indexOf('function PolicyInlinePreview('));
+  assert.match(whole, /composeInline\(active/, 'the document-wide preview stopped composing');
+  assert.match(IMPACT, /<InlinePreview[\s\S]{0,200}restrictions=\{restrictions\}/);
+  assert.match(IMPACT, /<PolicyInlinePreview[\s\S]{0,400}restrictions=\{restrictions\}/);
+});
+
+test('the per-policy view is not recomposed on every keystroke', () => {
+  // Its memo takes fenceServices as a dependency. Called inline inside restrictable.map that is a
+  // fresh array identity every render, so the memo never hit: each of N policy blocks recomposed
+  // the whole document twice - and serialised every statement - on each character typed into a tag
+  // field. The value changes only when the assessment does.
+  assert.match(IMPACT, /const fenceServices = useMemo\(\s*\(\) => fenceServicesOf\(assessment\.passrole_grants\), \[assessment\.passrole_grants\],\s*\)/,
+               'fenceServices is not memoised, so the per-policy memo never caches');
+  assert.ok(!/fenceServices=\{fenceServicesOf\(/.test(IMPACT),
+            'a fresh array is still being passed down');
+  // The other two array-valued dependencies of the same memo, for the same reason.
+  assert.match(IMPACT, /const policyFenceServices = useMemo\(/);
+  assert.match(IMPACT, /const nested = useMemo\(\(\) => nestedActions\(reference\), \[reference\]\)/);
+});
+
+test('the fence is described as being in the figure it is actually in', () => {
+  // It is in `total` - the document carries it and the quota counts it - and out of `share`, where
+  // it cancels because it stands in both sides of the subtraction. Saying "not in the size above"
+  // was true of one number and false of the other, and the false one is the one compared against
+  // the limit, so an approver discounted 427 bytes that were really there.
+  const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
+                             IMPACT.indexOf('const SECTIONS'));
+  assert.ok(block.includes('늘리는 크기에는 들어 있지 않고'), 'the fence text lost the share half');
+  assert.ok(block.includes('문서 전체 크기와 한도에는 들어 있다'),
+            'the dialog says the fence is outside the number the quota is compared against');
+  assert.ok(!/위의\s*크기 계산에는 들어 있지 않다/.test(block),
+            'the old undifferentiated claim is back');
+});
+
+test('the empty state does not contradict the fence printed under it', () => {
+  // A policy with a PassRole grant puts a statement in the document with nothing ticked, and the
+  // fence renders in this same dialog - so "this policy contributes nothing" was printed directly
+  // above one of its statements. And with nothing chosen anywhere, InlinePreview renders nothing,
+  // so naming it as somewhere to look pointed at a control that is not on the page.
+  const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
+                             IMPACT.indexOf('const SECTIONS'));
+  const empty = block.slice(block.indexOf('view.statements.length === 0 ? ('),
+                            block.indexOf(') : ('));
+  assert.ok(empty.includes('view.fence.length > 0'),
+            'the empty state does not check whether the fence is about to render below it');
+  assert.ok(empty.includes('totalStatements === 0'),
+            'the empty state cannot tell "no document yet" from "all of it is other policies"');
+  assert.ok(!empty.includes('인라인 정책 보기'),
+            'the empty state points at a control that may not be rendered');
 });
 
 test('an action that still needs a resource cannot be committed', () => {
@@ -437,7 +573,76 @@ test('an action nothing in the assessment reaches is unselectable, and says why'
   assert.match(PICKER, /const dead = unreachableAction\(action\)/);
   assert.match(PICKER, /needsResource\(action\) === true && reachedBy\(action\)\.length === 0/,
                'what counts as unreachable is no longer "takes a resource and can reach none"');
-  assert.ok(PICKER.includes('disabled={dead}'), 'the checkbox is still tickable');
+  assert.match(PICKER, /const off = dead \|\| Boolean\(taken\)/,
+               'the disabled state no longer covers both reasons a row cannot be ticked');
+  assert.ok(PICKER.includes('disabled={off}'), 'the checkbox is still tickable');
   assert.ok(PICKER.includes('닿는 자원 없음'), 'the row does not say why it is disabled');
   assert.match(CSS, /\.pick-item\.dead\b/, 'a disabled row looks the same as an enabled one');
+});
+
+test('the per-policy view is read OUT of the whole document, never composed on its own', () => {
+  // The permission set has ONE inline document and a Deny in it applies whatever policy prompted
+  // it. Four per-policy documents side by side would be four things that do not exist standing in
+  // front of the one that does - and each would renumber its Sids, so an approver matching the
+  // excerpt against the deployed policy would be matching against a document nobody wrote.
+  const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
+                             IMPACT.indexOf('const SECTIONS'));
+  assert.ok(block.length > 0, 'the per-policy view is gone');
+  assert.ok(block.includes('policyContribution('),
+            'the per-policy view no longer asks the module that reads the composed document');
+  assert.ok(!block.includes('composeInline('),
+            'the per-policy view composes a document of its own, which is a document nobody writes');
+  // It is handed EVERY restriction, not this policy's. That is what makes the Sids real.
+  assert.match(IMPACT, /<PolicyInlinePreview[\s\S]{0,400}restrictions=\{restrictions\}/,
+               "the per-policy view is given one policy's restrictions, so its Sids are invented");
+  assert.ok(!/<PolicyInlinePreview[\s\S]{0,400}restrictions=\{ours\}/.test(IMPACT));
+});
+
+test('the per-policy view says the three things that make it honest', () => {
+  // Each of these is a place the obvious implementation is wrong, so each has to be on the screen
+  // rather than only in a comment.
+  const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
+                             IMPACT.indexOf('const SECTIONS'));
+  // The needle is the SENTENCE, not the identifier. `block.includes('Sid')` was matched by
+  // `key={statement.Sid}` and `className="sid"` - load-bearing render code no edit removes - so
+  // deleting the entire explanatory paragraph left this green. Proven by deletion: the one sentence
+  // telling an approver that AdminDeny1 followed by AdminDeny4 is a slice of a bigger document
+  // rather than a corrupt one could go, and all 45 tests passed.
+  assert.match(block,
+               /<code>Sid<\/code> 번호가 중간에 비어 있을 수 있다[\s\S]{0,60}비어 있는 번호는/,
+               'nothing explains why the Sid numbers have gaps');
+  assert.ok(block.includes('같은 문장'), 'a statement shared with another policy is not marked');
+  assert.ok(block.includes('다른 정책'), 'the other policy\'s actions are not distinguished');
+  assert.ok(block.includes('더해도'),
+            'the page does not say the per-policy sizes do not add up to the document');
+
+  // The one that contradicts what the reader is about to assume. Two policies can make the
+  // IDENTICAL decision - one statement both of them produce - and then unticking it here leaves
+  // the Deny standing. Silently, and with share=0 beside a statement listed as this policy's.
+  assert.ok(block.includes('coOwned'), 'co-owned statements are not separated from shared ones');
+  assert.ok(block.includes('여기서\n                  선택을 지워도 그 문장은 남는다')
+            || /선택을 지워도 그 문장은 남는다/.test(block),
+            'the page does not say that unticking a co-owned action leaves the Deny in place');
+  assert.match(CSS, /\.statement-actions \.co-owned\b/,
+               'a co-owned action looks exactly like one this policy controls');
+
+  // alsoBy counts POLICIES; others counts ACTIONS. One policy contributing four actions was
+  // rendered as "shared with 4 policies" on a permission set that had two.
+  assert.ok(block.includes('alsoBy.length}개와 같은 문장'),
+            'the policy count is not taken from the policy identities');
+  assert.ok(!/others\.length}개와 공유/.test(block),
+            'an action count is being printed with the noun 정책');
+
+  // The share is this policy's; the limit is the document's. Colouring the first by the second
+  // turned every policy's dialog red the moment any of them was over.
+  assert.ok(block.includes('wouldFix'),
+            'the dialog does not say whether removing THIS policy would bring the document back');
+  assert.ok(!/className=\{view\.total > INLINE_LIMIT \? "error"/.test(block),
+            "the document-wide limit is colouring the sentence about this policy's own size");
+  // Rendered as a bare array, not a Version/Statement object - an excerpt that is a valid
+  // standalone policy is a wrong answer somebody can screenshot.
+  assert.ok(block.includes('readableStatements('), 'the excerpt is rendered as a whole document');
+  assert.ok(!block.includes('readable('), 'the excerpt is rendered with the document renderer');
+  assert.match(CSS, /\.statement-actions \.from-elsewhere\b/,
+               "another policy's action in a shared statement looks the same as this policy's");
 });

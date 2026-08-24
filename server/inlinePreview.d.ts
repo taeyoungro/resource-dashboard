@@ -50,3 +50,54 @@ export declare function inlineBytes(document: InlineDocument): number;
 
 /** Indented, keys in the order an IAM document is written. For a person, not for the quota. */
 export declare function readable(document: InlineDocument): string;
+
+/** Statements alone, no Version - an excerpt, shaped so it cannot be read as a whole document. */
+export declare function readableStatements(statements: InlineStatement[]): string;
+
+/** One statement of the shared document, and how much of it came from the policy being viewed. */
+export interface PolicyStatement {
+  statement: InlineStatement;
+  /** The actions in it this policy put there. Never empty - a statement with none is not returned. */
+  ours: string[];
+  /** The actions in the same statement that arrived from another policy. Usually empty. */
+  others: string[];
+  /**
+   * Every OTHER policy with a decision in this statement, by identity. Count THIS for a number of
+   * policies - `others` counts actions, and one policy can contribute four of them.
+   */
+  alsoBy: string[];
+  /**
+   * The subset of `ours` that another policy ALSO decided. Removing this policy's decision leaves
+   * these statements standing, which is the one thing an excerpt must not hide.
+   */
+  shared: string[];
+}
+
+export interface PolicyContribution {
+  /** This policy's statements, with the Sids they will be WRITTEN under - gaps and all. */
+  statements: PolicyStatement[];
+  /** The fence statements this policy's own PassRole grant earns. In neither byte figure. */
+  fence: InlineStatement[];
+  /** The whole document, every policy. The quota is spent against this, not against `share`. */
+  total: number;
+  /** What the document would be without this policy's restrictions. */
+  without: number;
+  /** total - without. Marginal, so folding is accounted for; NOT the sum of the statements. */
+  share: number;
+}
+
+/**
+ * What ONE attached policy puts into the shared document, read back out of the composed whole
+ * rather than composed on its own - so every Sid shown is a Sid that will be written.
+ */
+export declare function policyContribution(
+  restrictions: Restriction[],
+  policy: string,
+  options: {
+    accountId: string;
+    fenceServices?: string[];
+    nested?: (action: string) => boolean;
+    /** The services THIS policy's PassRole grant names, for filtering the fence. */
+    policyFenceServices?: string[];
+  },
+): PolicyContribution;

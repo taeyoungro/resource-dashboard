@@ -78,6 +78,11 @@ function resourcesFor(restriction, action, nested) {
 /** One action, one statement - before the fold. Mirrors restriction._statement. */
 function statement(sid, restriction, action, nested) {
   const base = { Sid: sid, Effect: 'Deny', Action: action };
+  if (restriction.intent === 'deny_action') {
+    // No resource clause to compose. Byte-identical to the flat Deny an unscopable action gets
+    // under deny_only with no resources, so the two fold into one statement.
+    return { ...base, Resource: '*' };
+  }
   if (restriction.intent === 'tag_condition') {
     return {
       ...base,
@@ -179,16 +184,135 @@ export function inlineBytes(document) {
   return new TextEncoder().encode(serialise(document)).length;
 }
 
+const READ_ORDER = ['Sid', 'Effect', 'Action', 'NotAction', 'Resource', 'NotResource', 'Condition'];
+
+const ordered = (one) => Object.fromEntries(
+  Object.keys(one)
+    .sort((a, b) => (READ_ORDER.indexOf(a) + 1 || 99) - (READ_ORDER.indexOf(b) + 1 || 99))
+    .map((k) => [k, one[k]]),
+);
+
 /** The document as a person reads it - indented, keys in the order IAM documents are written. */
 export function readable(document) {
-  const ORDER = ['Sid', 'Effect', 'Action', 'NotAction', 'Resource', 'NotResource', 'Condition'];
-  const ordered = (one) => Object.fromEntries(
-    Object.keys(one)
-      .sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99))
-      .map((k) => [k, one[k]]),
-  );
   return JSON.stringify({
     Version: document.Version,
     Statement: document.Statement.map(ordered),
   }, null, 2);
+}
+
+/**
+ * An EXCERPT of a document - statements alone, no Version.
+ *
+ * Deliberately not document-shaped. A per-policy view rendered with readable() would be a complete,
+ * valid, well-formed IAM policy that does not exist anywhere, and an approver who screenshots it has
+ * a wrong answer with a screenshot. A bare array cannot be mistaken for the thing that gets written.
+ */
+export function readableStatements(statements) {
+  return JSON.stringify((statements ?? []).map(ordered), null, 2);
+}
+
+/**
+ * What ONE attached policy puts into the shared document.
+ *
+ * The permission set has one inline document and every Deny in it applies whatever policy prompted
+ * it - which is why composeInline runs across every policy and why a per-policy DOCUMENT would be a
+ * lie. This is not that. It composes the whole document once and then reads this policy's
+ * contribution back out of it, so every Sid shown is the Sid that will be written.
+ *
+ * Attribution is by CLAUSE, not by action name, and the difference is not academic. Two policies
+ * can restrict the SAME action on different resources - AmazonS3FullAccess on one bucket and a
+ * customer managed policy on another - and that is two statements, both carrying s3:GetObject.
+ * Matching on the name put both of them in both excerpts, so each policy's view showed a Deny on a
+ * bucket it had nothing to do with. So this rebuilds the clause each of this policy's decisions
+ * folds into, using the same statement() and clause() the fold itself uses, and matches on that.
+ *
+ * Three more things that only fall out of doing it this way round:
+ *
+ *   the Sids have GAPS          AdminDeny1 and AdminDeny4 with nothing between them, because 2 and
+ *                               3 came from another policy. The gaps are the proof that this is a
+ *                               view of something bigger. Renumbering would produce a document that
+ *                               does not exist.
+ *   statements are SHARED       the fold groups by resource clause, not by policy, so one statement
+ *                               can carry actions from two policies. Both excerpts show it, whole,
+ *                               with `others` naming what came from elsewhere. Showing a trimmed
+ *                               copy would be showing a statement nobody will write.
+ *   the cost is MARGINAL        `share` is what the document grows by BECAUSE of this policy, not
+ *                               the sum of the bytes of the statements above. A policy whose actions
+ *                               all fold into a statement another policy already pays for costs
+ *                               only its action names, and the sum would double-count every byte
+ *                               of the resource clause they share.
+ *
+ * The PassRole fence is in neither figure: it is composed from the assessment's grants and is the
+ * same with or without this policy's restrictions, so it cancels out of the subtraction. It is
+ * returned separately, filtered to the services THIS policy's grant names.
+ */
+export function policyContribution(restrictions, policy, options = {}) {
+  const all = (restrictions ?? []).filter((r) => (r.actions ?? []).length > 0);
+  const document = composeInline(all, options);
+  const without = composeInline(all.filter((r) => r.policy !== policy), options);
+
+  // WHICH POLICIES put which action into which clause. The same two functions the fold uses, so the
+  // key is the fold's own key and a decision lands where its statement lands.
+  //
+  // Per action rather than per clause, and the set of owners rather than a boolean, because two
+  // policies can make the IDENTICAL decision - AmazonS3FullAccess and a customer managed policy
+  // both denying s3:GetObject on the same bucket is one statement that both of them produce. A
+  // per-clause set of this policy's action names could not see that: the action is in the set, so
+  // the statement reads as exclusively this policy's, `share` is 0 because removing this policy
+  // leaves the statement standing, and an approver who unticks it expects the Deny to go.
+  const nested = options.nested ?? (() => false);
+  const owners = new Map();
+  for (const restriction of all) {
+    for (const action of restriction.actions ?? []) {
+      const key = clause(statement('', restriction, action, nested));
+      const perAction = owners.get(key) ?? new Map();
+      const held = perAction.get(action) ?? new Set();
+      held.add(restriction.policy);
+      perAction.set(action, held);
+      owners.set(key, perAction);
+    }
+  }
+
+  const statements = [];
+  for (const one of document.Statement) {
+    const perAction = owners.get(clause(one));
+    if (!perAction) continue;
+    const names = Array.isArray(one.Action) ? one.Action : [one.Action];
+    const ours = names.filter((n) => perAction.get(n)?.has(policy));
+    if (ours.length === 0) continue;
+    // Every OTHER policy with a decision in this statement - by identity, so a caller counting them
+    // counts policies. `others` counts ACTIONS, and the two are different numbers.
+    const alsoBy = new Set();
+    for (const name of names) {
+      for (const owner of perAction.get(name) ?? []) if (owner !== policy) alsoBy.add(owner);
+    }
+    statements.push({
+      statement: one,
+      ours,
+      others: names.filter((n) => !perAction.get(n)?.has(policy)),
+      alsoBy: [...alsoBy].sort(),
+      // The actions this policy owns JOINTLY. Removing this policy's decision does not remove
+      // these, which is the one thing an excerpt must not let an approver believe.
+      shared: ours.filter((n) => (perAction.get(n)?.size ?? 0) > 1),
+    });
+  }
+
+  // Falsy entries dropped, and the statement's own value checked for truthiness before the lookup.
+  // Optional chaining yields undefined for a statement with no Condition, and undefined is a legal
+  // Set member - so one undefined in the caller's list would select every admin Deny in the
+  // document and render it under "the pipeline adds this fence".
+  const fenced = new Set((options.policyFenceServices ?? []).filter(Boolean));
+  const fence = document.Statement.filter((one) => {
+    const service = one.Condition?.StringEquals?.['iam:PassedToService'];
+    return Boolean(service) && fenced.has(service);
+  });
+
+  const total = inlineBytes(document);
+  return {
+    statements,
+    fence,
+    total,
+    without: inlineBytes(without),
+    share: total - inlineBytes(without),
+  };
 }

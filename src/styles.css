@@ -403,17 +403,34 @@ label.pick-item .res .res-name { font-weight: 500; }
 .impact .editor { margin-top: 0.4rem; }
 .impact .editor label { display: block; margin-bottom: 0.4rem; }
 
-/* The editor's two rows, one form each: the label word, then its control beside it on the same
-   line. 의도 carries the intent box, 동작 carries the button that opens the picker dialog -
-   everything about what there is to choose from lives in the dialog, so each row is one line. */
-.impact .editor label.control-row {
+/* One row per section: the section's name, then the button that opens its picker. Everything about
+   what there is to choose from lives in the dialog, so the row stays one line. */
+.impact .editor .control-row {
   display: flex;
   align-items: center;
   gap: 0.6rem;
 }
-/* Let the intent box give way instead of overflowing the column - flex items refuse to shrink
-   below content width without this, and the longest intent label is a sentence. */
-.impact .editor label.control-row > select { min-width: 0; }
+/* Let a control give way instead of overflowing the column - flex items refuse to shrink below
+   content width without this. */
+.impact .editor .control-row > select { min-width: 0; }
+
+/* The four sections, and they compose - so each has to read as a thing of its own rather than as
+   four variants of one control. A rule above each and the name in the row is enough: an approver
+   scanning the block sees which sections have something in them without opening anything. */
+.impact .editor .restrict-section {
+  padding-top: 0.5rem;
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.impact .editor .restrict-section:first-of-type { border-top: none; margin-top: 0; }
+.impact .editor .restrict-section > p.small { margin: 0.25rem 0 0; line-height: 1.5; }
+.impact .editor .section-name { font-weight: 700; margin-right: auto; }
+/* A section with something in it is what the eye should find. */
+.impact .editor .restrict-section.on .section-name { color: var(--accent); }
+.impact .editor .section-clear { opacity: 0.75; }
+/* What the whole policy holds, above the sections - the one line that says a decision spans more
+   than the section being read. */
+.impact .editor .restrict-total { margin: 0 0 0.5rem; line-height: 1.5; }
 .impact .editor label.inline {
   display: inline-flex;
   align-items: center;
@@ -869,6 +886,19 @@ dialog.picker button.commit {
   border-radius: 6px;
 }
 
+/* The same line inside one policy's block, and it must not read as a second document. Set back
+   rather than panelled: the block it sits in is already a panel, and a box inside a box says
+   "separate thing" about an excerpt whose whole point is that it is not one. */
+.impact .policy-preview {
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0 0;
+  font-size: 0.84rem;
+}
+
 .policy-dialog {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -897,27 +927,54 @@ dialog.picker button.commit {
   tab-size: 2;
 }
 
+/* One row per statement the policy puts into the document: the Sid it will be WRITTEN under, then
+   the actions. The Sid leads because it is what ties this row to a line in the document above - an
+   approver reading both is matching on that string and nothing else. */
+.statement-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.statement-list > li {
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.statement-list > li:first-child { border-top: none; }
+.statement-list .sid { font-weight: 700; margin-right: 8px; }
+.statement-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+}
+/* An action in this policy's statement that another policy put there. Marked rather than hidden:
+   the statement is shown whole because a trimmed copy is a statement nobody will write, and an
+   approver has to be able to tell which half of it they are responsible for. */
+.statement-actions .from-elsewhere {
+  color: var(--muted);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+/* An action this policy chose AND another policy chose too. Not the same thing as the above: this
+   one IS this policy's, and unticking it here leaves the statement standing because the other
+   policy's identical decision still composes it. The most misleading row on the screen without a
+   mark, because it looks exactly like a row the approver controls. */
+.statement-actions .co-owned {
+  border-bottom: 2px solid var(--warn);
+  padding-bottom: 1px;
+}
 
-/* Actions that name no resource. Folded and set back, because they are the minority case and the
-   ordinary one should be what the eye lands on - but present, which is the whole change: they used
-   to be filtered out of the offering entirely and 전체 선택 skipped them in silence. */
-.pick-flat {
-  margin: 6px 0 2px;
+
+/* What this section does NOT offer, and where it went. At the top of the body rather than folded at
+   the bottom, because it is the answer to a question asked before the scrolling starts: an approver
+   who cannot find lambda:CreateFunction here has to learn it is in another section, not conclude it
+   is unrestrictable. It used to BE the offering - a fold holding the actions a resource list cannot
+   scope, in every section, each ticked one composing a statement of a different kind from the rest.
+   They are a section of their own now and this line is what stands in its place. */
+.pick-elsewhere {
+  margin: 0 0 8px;
   padding: 6px 8px;
   border: 1px dashed var(--border);
   border-radius: 6px;
   background: var(--bg);
+  line-height: 1.55;
 }
-.pick-flat > summary {
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--warn);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.pick-flat > summary .block-all { margin-left: auto; }
-.pick-flat > p { margin: 6px 0 4px; line-height: 1.5; }
 
 
 /* The offer to write a list of actions as one service wildcard. Set apart from the size warning

@@ -9,8 +9,9 @@ import { localDate, localTime } from "../time";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
-import { INLINE_LIMIT, composeInline, inlineBytes, readable }
-  from "../../server/inlinePreview.js";
+import {
+  INLINE_LIMIT, composeInline, inlineBytes, policyContribution, readable, readableStatements,
+} from "../../server/inlinePreview.js";
 import { serviceFold } from "../../server/serviceFold.js";
 
 /**
@@ -112,24 +113,6 @@ function primaryService(identifier: string, candidates: string[]): string | null
   );
 }
 
-/**
- * The document these choices become, and what it costs.
- *
- * Composed by server/inlinePreview.js rather than here, because that module is pinned byte-for-byte
- * against generator/restriction.py by a fixture test. Two hand-written approximations of the same
- * shape - one to estimate the size, one to show the policy - is two things to drift.
- */
-function preview(intent: Restriction["intent"], choices: Choice[], tag: string, values: string[],
-                 accountId: string, fenceServices: string[], nested: (action: string) => boolean) {
-  const restrictions: Restriction[] = choices.map((choice) => ({
-    policy: "", intent, actions: [choice.action],
-    ...(intent === "tag_condition"
-      ? { tag_key: tag, tag_values: values }
-      : { resources: choice.resources }),
-  }));
-  const document = composeInline(restrictions, { accountId, fenceServices, nested });
-  return { document, bytes: inlineBytes(document) };
-}
 
 /**
  * Whether an action operates BELOW the resource an index can hold - so the ARN picked for it is a
@@ -252,11 +235,259 @@ function InlinePreview({ restrictions, accountId, fenceServices, nested }: {
   );
 }
 
+/**
+ * What ONE attached policy puts into the shared document, behind a button of its own.
+ *
+ * The preview above answers "what am I about to write". This answers the question an approver asks
+ * next, once four policies are open and eleven actions are ticked across them: "which of those
+ * statements is THIS policy's, and how much of the quota is it spending?" Reading that off the
+ * combined document meant matching action names by eye across a hundred lines.
+ *
+ * What it must not become is a per-policy DOCUMENT. The permission set has one inline policy and a
+ * Deny in it applies whatever policy prompted it, so four documents shown side by side would be four
+ * things that do not exist standing in front of the one that does. So server/inlinePreview.js
+ * composes the whole document and reads this policy's part back OUT of it, and three things follow
+ * that the page has to show rather than smooth over:
+ *
+ *   the Sid numbers have gaps        2 and 3 belong to another policy. Renumbering to 1, 2 would be
+ *                                    a document nobody will write
+ *   a statement can be shared        the fold groups by resource clause, not by policy, so one
+ *                                    statement can carry two policies' actions. It is shown whole,
+ *                                    with the other policy's actions marked
+ *   the byte figure is marginal      what the document GROWS by because of this policy, not the sum
+ *                                    of the statements - those share bytes with statements this
+ *                                    policy did not pay for
+ *
+ * Rendered as a bare JSON array rather than a Version/Statement object, for the same reason: an
+ * excerpt that is a valid standalone policy is a wrong answer somebody can screenshot.
+ */
+function PolicyInlinePreview({
+  policy, name, restrictions, accountId, fenceServices, policyFenceServices, nested,
+}: {
+  policy: string;
+  /** The policy as a person names it. The identifier is an ARN for an AWS managed policy. */
+  name: string;
+  /** EVERY restriction, not this policy's. The whole document is what this is read out of. */
+  restrictions: Restriction[];
+  accountId: string;
+  fenceServices: string[];
+  /** The services this policy's own PassRole grant names. Its fence statements, if it earns any. */
+  policyFenceServices: string[];
+  nested: (action: string) => boolean;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const view = useMemo(
+    () => policyContribution(restrictions, policy,
+                             { accountId, fenceServices, policyFenceServices, nested }),
+    [restrictions, policy, accountId, fenceServices, policyFenceServices, nested],
+  );
+
+  // Statements this policy does not have to itself, for either reason: another policy put a
+  // DIFFERENT action in the same statement, or another policy made the SAME decision.
+  const withOthers = view.statements.filter((s) => s.alsoBy.length > 0);
+  // The ones where unticking here would not remove the Deny. Separate, because it is the only
+  // thing on this screen that contradicts what the reader is about to assume.
+  const coOwned = view.statements.filter((s) => s.shared.length > 0);
+  const actions = view.statements.reduce((n, s) => n + s.ours.length, 0);
+  const overLimit = view.total > INLINE_LIMIT;
+  /** How many statements the WHOLE document has, so the empty state can tell its two cases apart. */
+  const totalStatements = restrictions.filter((r) => (r.actions ?? []).length > 0).length
+    + fenceServices.length;
+  // Whether removing this policy entirely would bring the document back under. `without` is the
+  // document without it, so this is answerable rather than a guess - and the two answers are
+  // different jobs for the approver reading them.
+  const wouldFix = overLimit && view.without <= INLINE_LIMIT;
+
+  return (
+    <div className="inline-preview policy-preview">
+      {/* The policy in the accessible name, not only in the surrounding <details>. Four policy
+          blocks rendered four buttons whose entire name was the same five words, so a screen reader
+          navigating by button list - or a voice control user saying the label - got four
+          indistinguishable targets. The visible text stays short; aria-label carries the rest. */}
+      <button type="button" aria-label={`${name}이 문서에 넣는 문장 보기`}
+              onClick={() => dialog.current?.showModal()}>
+        이 정책의 문장 보기
+      </button>
+      <span className="muted small">
+        {view.statements.length === 0
+          ? "이 정책이 문서에 넣는 문장이 없다"
+          : `문장 ${view.statements.length}개 · 동작 ${actions}개 · `
+            + (view.share === 0
+              // Not "adds nothing". Every statement below exists, and another policy is already
+              // paying for all of them - which is a different sentence and the true one.
+              ? "다른 정책이 같은 것을 이미 거부하고 있다"
+              : `문서를 ${view.share.toLocaleString()}바이트 늘린다`)}
+        {view.fence.length > 0 && ` · 울타리 ${view.fence.length}개`}
+      </span>
+
+      <dialog ref={dialog} className="policy-dialog"
+              onClick={(e) => { if (e.target === dialog.current) dialog.current?.close(); }}>
+        <div className="policy-dialog-body">
+          <h4>
+            이 정책이 넣는 문장 <span className="muted">— <code>{name}</code></span>
+          </h4>
+          <p className="muted small">
+            권한 세트의 인라인 문서는 <strong>하나</strong>이고, 이것은 그 문서에서 이 정책이 넣는
+            부분만 떼어 본 것이다 — 따로 만들어지는 문서가 아니다. 그래서{" "}
+            <code>Sid</code> 번호가 중간에 비어 있을 수 있다. 비어 있는 번호는 다른 정책의 문장이다.
+          </p>
+
+          {view.statements.length === 0 ? (
+            /* Careful about two things it used to get wrong. A policy with a PassRole grant DOES put
+               something in the document even with nothing ticked - the fence renders below this
+               paragraph - so this cannot say the document holds nothing of this policy's. And when
+               nothing is chosen anywhere, InlinePreview renders nothing at all, so pointing at it
+               by name points at a control that is not on the page. */
+            <p className="muted">
+              이 정책에서 고른 동작이 없다
+              {view.fence.length > 0
+                ? " — 아래 울타리 문장은 제한이 아니라 이 정책의 iam:PassRole 부여 때문에 붙는 것이다."
+                : totalStatements === 0
+                  ? ". 지금은 문서에 문장이 하나도 없다."
+                  : ", 그래서 지금 문서에 있는 문장은 전부 다른 정책에서 온 것이다."}
+            </p>
+          ) : (
+            <>
+              {/* The size figure is this policy's; the limit is the document's. Colouring the
+                  first by the second turned every policy's dialog red the moment ANY of them was
+                  over, with the number beside it - 80 bytes out of a 535-byte overrun - reading as
+                  the thing to cut. So the limit line is its own line, and it says which of the two
+                  jobs the reader has. */}
+              <p className="muted small">
+                이 정책이 늘리는 크기 <strong>{view.share.toLocaleString()}바이트</strong>
+                {view.share === 0
+                  && " — 다른 정책이 같은 것을 이미 거부하고 있어, 이 정책을 빼도 문서는 그대로다"}
+              </p>
+              {/* Marginal, and it has to say so. Folding pushes the sum of the per-policy figures
+                  DOWN - two policies sharing one resource clause pay for it once, and two making
+                  the same decision give 0 and 0 for a statement that costs real bytes - so the
+                  figures do not add up to the document and adding them understates it. */}
+              <p className="muted small">
+                늘리는 크기는 <strong>이 정책을 뺐을 때와의 차이</strong>다. 문장이 다른 정책과 접히면
+                자원 절은 한 번만 계산되므로, 정책별 크기를 더해도 문서 크기가 되지 않는다 — 대개
+                모자란다.
+              </p>
+              <p className={overLimit ? "error" : "muted small"}>
+                문서 전체 {view.total.toLocaleString()}바이트 / 한도{" "}
+                {INLINE_LIMIT.toLocaleString()}바이트
+                {overLimit && (wouldFix
+                  ? " — 한도를 넘는다. 이 정책의 제한을 전부 빼면 "
+                    + `${view.without.toLocaleString()}바이트로 한도 안에 들어온다.`
+                  : " — 한도를 넘는다. 이 정책을 통째로 빼도 "
+                    + `${view.without.toLocaleString()}바이트로 여전히 넘으므로, 다른 정책에서도 `
+                    + "줄여야 한다. 태그 조건은 몇 개를 덮든 문장 하나다.")}
+              </p>
+
+              {coOwned.length > 0 && (
+                <p className="warn-inline">
+                  {coOwned.length}개 문장은 <strong>다른 정책도 똑같이 결정한 것</strong>이다. 여기서
+                  선택을 지워도 그 문장은 남는다 — 같은 결정을 한 정책에서도 지워야 없어진다.
+                </p>
+              )}
+
+              {withOthers.length > coOwned.length && (
+                <p className="warn-inline">
+                  {withOthers.length}개 문장은 다른 정책과 <strong>같은 문장</strong>이다. 자원 절이
+                  같은 동작은 한 문장으로 접히기 때문이고, 아래에는 그 문장이 통째로 나온다 — 다른
+                  정책에서 온 동작까지 함께다.
+                </p>
+              )}
+
+              <ul className="statement-list">
+                {view.statements.map(({ statement, ours, others, alsoBy, shared }) => (
+                  <li key={statement.Sid}>
+                    <code className="sid">{statement.Sid}</code>
+                    <span className="muted small">
+                      {ours.length}개
+                      {/* alsoBy counts POLICIES. others counts ACTIONS, and one policy can
+                          contribute four of them - printing that with the noun 정책 told an
+                          approver with two attached policies that a statement was shared with
+                          four. */}
+                      {alsoBy.length > 0 && ` · 다른 정책 ${alsoBy.length}개와 같은 문장`}
+                      {shared.length > 0 && ` · ${shared.length}개는 다른 정책도 같이 결정`}
+                    </span>
+                    <div className="statement-actions">
+                      {ours.map((a) => (
+                        <code key={a} className={shared.includes(a) ? "co-owned" : undefined}>{a}</code>
+                      ))}
+                      {others.map((a) => <code key={a} className="from-elsewhere">{a}</code>)}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+
+              <pre className="policy-json">{readableStatements(
+                view.statements.map((s) => s.statement),
+              )}</pre>
+            </>
+          )}
+
+          {view.fence.length > 0 && (
+            <>
+              {/* Which figure it is in, precisely. It is in `total` - the document has it and the
+                  quota counts it - and out of `share`, because it is composed from the assessment's
+                  grants rather than from the restrictions, so it stands in both sides of the
+                  subtraction and cancels. Saying "not in the size above" was true of one number and
+                  false of the other, and the false one is the one compared against the limit. */}
+              <p className="muted small">
+                이 정책이 <code>iam:PassRole</code>을 주기 때문에 파이프라인이 붙이는 울타리다.
+                제한을 고르든 말든 같은 문장이 붙으므로 <strong>늘리는 크기에는 들어 있지 않고</strong>,
+                문서에는 실제로 붙으므로 <strong>문서 전체 크기와 한도에는 들어 있다.</strong>
+              </p>
+              <pre className="policy-json">{readableStatements(view.fence)}</pre>
+            </>
+          )}
+
+          <div className="row">
+            <button type="button" onClick={() => dialog.current?.close()}>닫기</button>
+          </div>
+        </div>
+      </dialog>
+    </div>
+  );
+}
+
+/**
+ * The four sections, in the order they are read.
+ *
+ * They used to be four values of one dropdown, so a policy could carry exactly one of them and
+ * choosing a second meant giving up the first. That was never a property of the statements: the
+ * permission set holds ONE inline document and each decision composes its own statement into it, so
+ * "keep only these buckets, and also deny DeleteBucket outright" is two statements and always was.
+ * The dropdown was the only thing making it one choice.
+ *
+ * 동작 자체 거부 is the section that could not exist under the dropdown at all. Its statement -
+ * Deny on Resource "*" - was reachable only as a side effect: an action a list of ARNs cannot scope
+ * got one written for it whatever the dropdown said, in a fold at the bottom of the picker with a
+ * paragraph explaining that this one is different. It is not a side effect, it is a decision, and
+ * lambda:CreateFunction is what an administrator most often wants to make it about.
+ *
+ * Ordering: the two that narrow, then the one that removes, then the one that follows a tag.
+ */
+const SECTIONS: Restriction["intent"][] = [
+  "allow_only", "deny_only", "deny_action", "tag_condition",
+];
+
 const INTENT_LABEL: Record<Restriction["intent"], string> = {
-  allow_only: "이 자원만 허용 — 이후 생기는 자원은 거부된다",
-  deny_only: "이 자원만 거부 — 이후 생기는 자원은 허용된다",
-  tag_condition: "태그로 거부 — 나중에 태그가 붙는 자원까지 덮는다",
+  allow_only: "이 자원만 허용",
+  deny_only: "이 자원만 거부",
+  deny_action: "동작 자체 거부",
+  tag_condition: "태그로 거부",
 };
+
+const INTENT_NOTE: Record<Restriction["intent"], string> = {
+  allow_only: "고른 자원만 남기고 나머지를 거부한다. 이후에 생기는 자원도 거부된다.",
+  deny_only: "고른 자원만 거부한다. 이후에 생기는 자원은 이 제한에 걸리지 않는다.",
+  deny_action: "자원과 무관하게 동작 자체를 거부한다. 자원 목록으로 좁힐 수 없는 동작도 여기서 고른다.",
+  tag_condition: "태그가 붙은 자원을 거부한다. 나중에 태그가 붙는 자원까지 덮는다.",
+};
+
+/** Whether this section's statements carry a resource list. Mirrors ActionPicker.isScoped. */
+const isScoped = (intent: Restriction["intent"]) =>
+  intent === "allow_only" || intent === "deny_only";
+
+/** One draft per section. Every section is present, most of them usually empty. */
+type Draft = Record<Restriction["intent"], Choice[]>;
 
 export function Impact({
   assessment, source, restrictions, onChange, disabled,
@@ -264,6 +495,14 @@ export function Impact({
   const restrictable = assessment.policies.filter((p) => p.restrictable && !p.unreadable);
   const baseline = assessment.policies.filter((p) => p.is_baseline);
   const unreadable = assessment.policies.filter((p) => p.unreadable);
+
+  // Memoised because it is an ARRAY, and it is a dependency of the per-policy view's own memo. Called
+  // inline inside restrictable.map it was a new identity on every render, so every policy block
+  // recomposed the whole document twice per keystroke in a tag field - 2N document compositions and
+  // a serialise of every statement, for a value that changes only when the assessment does.
+  const fenceServices = useMemo(
+    () => fenceServicesOf(assessment.passrole_grants), [assessment.passrole_grants],
+  );
 
   const sensitiveTotal = useMemo(
     () =>
@@ -306,7 +545,7 @@ export function Impact({
         <InlinePreview
           restrictions={restrictions}
           accountId={assessment.account_id}
-          fenceServices={fenceServicesOf(assessment.passrole_grants)}
+          fenceServices={fenceServices}
           nested={nestedActions(assessment.action_reference ?? null)}
         />
       )}
@@ -325,7 +564,7 @@ export function Impact({
           omitted={assessment.coverage.action_lists_omitted ?? []}
           passroleGrant={(assessment.passrole_grants ?? [])
             .find((g) => g.identifier === policy.identifier) ?? null}
-          fenceServices={fenceServicesOf(assessment.passrole_grants)}
+          fenceServices={fenceServices}
         />
       ))}
 
@@ -433,6 +672,16 @@ function PolicyBlock({
   const relatedServices = [...new Set(related.map((g) => g.service))].sort();
   const relatedSensitive = related.some((g) => g.sensitive_hits > 0);
 
+  // The same question the writer asks the action table, for the per-policy view below. The editor
+  // asks it too and holds its own memo - two callers, one derivation, and neither can be the other's
+  // because the excerpt is composed from EVERY policy's restrictions and the editor only holds this
+  // policy's draft.
+  const nested = useMemo(() => nestedActions(reference), [reference]);
+  // Stable across renders, so the excerpt's memo is not rebuilt by a fresh empty array every time.
+  const policyFenceServices = useMemo(
+    () => passroleGrant?.services ?? [], [passroleGrant],
+  );
+
   const set = (next: Restriction[]) => {
     const others = restrictions.filter((r) => r.policy !== policy.identifier);
     onChange([...others, ...next]);
@@ -518,9 +767,22 @@ function PolicyBlock({
           reference={reference}
           referenceError={referenceError}
           omitted={omitted}
-          fenceServices={fenceServices}
-          accountId={accountId}
         />
+
+        {/* BELOW the editor, because it is the editor's result. The document-wide preview sits above
+            the policy list for the opposite reason - it summarises all of them and nothing on the
+            page is its cause. Here the cause is the four sections directly above, and a result
+            printed before its cause reads as a heading. */}
+        <PolicyInlinePreview
+          policy={policy.identifier}
+          name={policyName(policy.identifier)}
+          restrictions={restrictions}
+          accountId={accountId}
+          fenceServices={fenceServices}
+          policyFenceServices={policyFenceServices}
+          nested={nested}
+        />
+
         {/* At the BOTTOM of the restriction area, on the operator's direction: it says what the
             picker above will not offer, so it reads as a footnote to the choosing, not a headline
             above it. The declaration path stays unrestrictable either way. */}
@@ -724,8 +986,6 @@ function RestrictionEditor({
   reference,
   referenceError,
   omitted,
-  fenceServices,
-  accountId,
 }: {
   policy: string;
   /** The service this policy is named for, or null. Its actions go first; the rest fold away. */
@@ -741,36 +1001,15 @@ function RestrictionEditor({
   reference: ImpactActionReference | null;
   referenceError: string | null;
   omitted: string[];
-  /** Services the PassRole fence names. Its statements share the document and the quota. */
-  fenceServices: string[];
-  accountId: string;
 }) {
-  const [picking, setPicking] = useState(false);
-
-  // The same question the writer asks the action table, answered from the reference the assessment
-  // carried. The size estimate below is wrong without it: a bucket brings its objects into the
-  // statement, and those bytes count against the same quota.
-  const nested = useMemo(() => nestedActions(reference), [reference]);
-
-  // The draft, seeded once. Every change emits the whole set upward, so the parent's array stays the
-  // single source of truth for what gets submitted while this holds the parts a restriction needs
-  // before it is one - an intent with no actions yet, or a tag key half typed.
-  const [intent, setIntent] = useState<Restriction["intent"]>(
-    () => existing[0]?.intent ?? "allow_only",
-  );
-  const [choices, setChoices] = useState<Choice[]>(
-    () => existing.flatMap((r) => r.actions.map((action) => ({
-      action, resources: r.resources ?? [],
-    }))),
-  );
-  const [tagKey, setTagKey] = useState(() => existing[0]?.tag_key ?? "");
-  const [tagValues, setTagValues] = useState(() => (existing[0]?.tag_values ?? []).join(","));
+  /** Which section's picker is open, or null. One at a time - they are all modal dialogs. */
+  const [picking, setPicking] = useState<Restriction["intent"] | null>(null);
 
   /**
-   * Which chosen actions a list of ARNs cannot scope, for either of the two reasons.
+   * Which actions a list of ARNs cannot scope, for either of the two reasons.
    *
-   * The same test the picker's flat block is built from, read here because the editor is where a
-   * restriction is composed and this decides which KIND of statement an action can be in:
+   * The test that decides which SECTION an action can be in, which is why it is here rather than in
+   * the picker: the editor is the thing that has all four.
    *
    *   names no resource type      ec2:DescribeVpcs. Its resource is "*", which is in no list
    *   makes the one it names      lambda:CreateFunction. The list enumerates what EXISTS, and this
@@ -786,46 +1025,84 @@ function RestrictionEditor({
     return entry ? entry[1].length === 0 || entry[2] === true : false;
   };
 
+  // The draft, seeded once. Every change emits the whole set upward, so the parent's array stays the
+  // single source of truth for what gets submitted while this holds the parts a restriction needs
+  // before it is one - a section with no actions yet, or a tag key half typed.
+  //
+  // Seeded PER SECTION, and an action a list of ARNs cannot scope lands in 동작 자체 거부 whatever
+  // intent it arrived under. That is not a guess: the only statement one of those ever had was the
+  // flat Deny, and before this section existed the editor emitted it as deny_only with an empty
+  // list. Reading it back into the section that now owns it is reading it back as what it is.
+  const [draft, setDraft] = useState<Draft>(() => {
+    // Fresh arrays, not EMPTY_DRAFT's - it is module-level and shared by every policy block.
+    const seeded: Draft = { allow_only: [], deny_only: [], deny_action: [], tag_condition: [] };
+    for (const restriction of existing) {
+      for (const action of restriction.actions) {
+        const into = flatOnly(action) ? "deny_action" : restriction.intent;
+        if (seeded[into].some((c) => c.action === action)) continue;
+        seeded[into].push({
+          action,
+          resources: into === "deny_action" ? [] : (restriction.resources ?? []),
+        });
+      }
+    }
+    return seeded;
+  });
+  const tagSeed = existing.find((r) => r.intent === "tag_condition");
+  const [tagKey, setTagKey] = useState(() => tagSeed?.tag_key ?? "");
+  const [tagValues, setTagValues] = useState(() => (tagSeed?.tag_values ?? []).join(","));
+
   /**
-   * One restriction per action, split by whether the action reaches a resource.
+   * The sections, as the restrictions they will be sent as. One restriction per ACTION.
    *
-   * An action that names no resource cannot be narrowed - it can only be denied outright. A
-   * NotResource list denies it whatever is in the list, because its resource is "*" and "*" is in
-   * no list, and a Resource list of ARNs never matches it at all. So the only statement that means
-   * anything for one of these is a flat Deny, which is intent deny_only with no resources, and
-   * generator/restriction.py refuses every other shape.
-   *
-   * That is a DIFFERENT decision from the one being made about the resource-bearing actions, and
-   * the page says so beside the picker rather than making it silently. What is not acceptable is
-   * the old behaviour: under allow_only these actions were not offered at all, so 전체 선택 across
-   * EC2 quietly skipped 257 of 793 actions and nothing said which or why.
+   * Four sections compose into one document, and nothing here reconciles them - a Deny is a Deny
+   * whatever prompted it, and the four statements coexist in the inline policy exactly as they read
+   * here. What DOES need holding is that one action never appears in two sections: 이 자원만 허용
+   * on s3:GetObject and 동작 자체 거부 on s3:GetObject compose a NotResource statement the flat Deny
+   * beside it makes moot, which is bytes spent to say nothing and a document an approver cannot
+   * read. The pickers refuse it rather than this reconciling it after the fact.
    */
-  const emit = (
-    nextIntent: Restriction["intent"],
-    nextChoices: Choice[],
-    key = tagKey,
-    values = tagValues,
-  ) => {
-    setIntent(nextIntent);
-    setChoices(nextChoices);
+  const compose = (next: Draft, key: string, values: string): Restriction[] => {
+    const tag = {
+      tag_key: key.trim(),
+      tag_values: values.split(",").map((v) => v.trim()).filter(Boolean),
+    };
+    return SECTIONS.flatMap((intent) => next[intent].map((choice): Restriction => ({
+      policy,
+      intent,
+      actions: [choice.action],
+      ...(isScoped(intent)
+        ? { resources: choice.resources }
+        : intent === "tag_condition" ? tag : {}),
+    })));
+  };
+
+  const emit = (next: Draft, key = tagKey, values = tagValues) => {
+    setDraft(next);
     setTagKey(key);
     setTagValues(values);
-    onChange(nextChoices.map((choice) => (flatOnly(choice.action)
-      // A flat Deny, whatever intent the rest are under. Under tag_condition it would be worse than
-      // refused: the condition tests a resource tag, an action with no resource has none, so the
-      // statement would match nothing and read on the page as a restriction that is in place.
-      ? { policy, intent: "deny_only" as const, actions: [choice.action], resources: [] }
-      : {
-        policy,
-        intent: nextIntent,
-        actions: [choice.action],
-        ...(nextIntent === "tag_condition"
-          ? {
-            tag_key: key.trim(),
-            tag_values: values.split(",").map((v) => v.trim()).filter(Boolean),
-          }
-          : { resources: choice.resources }),
-    })));
+    onChange(compose(next, key, values));
+  };
+
+  /** What one section holds, replaced. The others are carried through untouched. */
+  const setSection = (intent: Restriction["intent"], choices: Choice[]) =>
+    emit({ ...draft, [intent]: choices });
+
+  /** Which OTHER section holds this action, or null. The rule the pickers enforce. */
+  const heldElsewhere = (intent: Restriction["intent"]) => (action: string) => {
+    const other = SECTIONS.find(
+      (other) => other !== intent && draft[other].some((c) => c.action === action),
+    );
+    if (other) return `이미 "${INTENT_LABEL[other]}"에 있다`;
+    // A hand-typed name the reference knows a list of ARNs cannot scope. The checkbox rows for
+    // these are not in a scoped section's offering at all, so this is the one way in.
+    if (isScoped(intent) && flatOnly(action)) {
+      return `${action}은 자원 목록으로 좁힐 수 없다 — "동작 자체 거부"에서 고른다`;
+    }
+    if (intent === "tag_condition" && flatOnly(action)) {
+      return `${action}은 태그를 읽을 자원이 없다 — "동작 자체 거부"에서 고른다`;
+    }
+    return null;
   };
 
   // Keyed off what the policy GRANTS, never off the enumerated groups.
@@ -850,10 +1127,10 @@ function RestrictionEditor({
             access: entry[0],
             resources: entry[1],
             // No resource type at all. generator/restriction.py refuses an allow_only restriction on
-            // one of these, so the picker greys it out for that intent.
+            // one of these, so a scoped section does not offer it.
             account_level: entry[1].length === 0,
             // It MAKES the resource it names, so an enumeration of what exists is no scope for it.
-            // Same remedy, different sentence - see the flat block in ActionPicker.
+            // Same remedy, different sentence - see 동작 자체 거부.
             creates_target: entry[2] === true,
           };
         })
@@ -872,135 +1149,207 @@ function RestrictionEditor({
     return { covered: listed, uncovered: missing };
   }, [granted, reference, primary]);
 
+  /**
+   * What one section may offer, and how much it kept out.
+   *
+   * 동작 자체 거부 offers everything: its statement is Deny on Resource "*", which every action can
+   * be the subject of. The other three offer only what a list of ARNs can scope - a scoped section
+   * because that list IS the statement, tag_condition because aws:ResourceTag reads the tags of a
+   * resource and these actions have none to read. The count comes back so the dialog can say how
+   * many went and where instead of leaving them missing.
+   */
+  const offeringFor = (intent: Restriction["intent"]) => {
+    if (intent === "deny_action") return { offering: covered, hidden: 0 };
+    let hidden = 0;
+    const offering = covered
+      .map(({ service, offers }) => {
+        const keep = offers.filter((o) => !o.account_level && !o.creates_target);
+        hidden += offers.length - keep.length;
+        return { service, offers: keep };
+      })
+      .filter((g) => g.offers.length > 0);
+    return { offering, hidden };
+  };
+
+  /**
+   * The one action a section's list could be written as, when it can.
+   *
+   * Per section, because the fold is a property of one statement and the sections are separate
+   * statements. serviceFold answers a different question for each intent - see its comments - and
+   * declines outright for tag_condition.
+   */
+  const foldOffer = (intent: Restriction["intent"], choices: Choice[]) => {
+    // Offered rather than applied: the wildcard becomes the administrator's decision and travels as
+    // the action, because a page that quietly widened [8 names] into athena:* would be restricting
+    // actions this approval does not grant - which is the one thing generator/restriction.py
+    // refuses by name, and which after B-1 it can now actually see.
+    if (intent === "tag_condition" || choices.length === 0) return null;
+    const one = new Set(choices.map((c) => JSON.stringify([...c.resources].sort())));
+    // One resource clause, because the statement it would become is one statement. A mixed set is
+    // several statements and folding them together is not this offer.
+    if (one.size !== 1) return null;
+    const folded = serviceFold({
+      actions: choices.map((c) => c.action),
+      resources: choices[0].resources,
+      intent,
+      groups: affected,
+      granted,
+    });
+    if (!folded) return null;
+    return (
+      <p className="fold-offer">
+        <button type="button" disabled={disabled}
+                onClick={() => setSection(intent, [{
+                  action: folded.wildcard, resources: choices[0].resources,
+                }])}>
+          <code>{folded.wildcard}</code> 하나로 접기
+        </button>
+        {" "}
+        <span className="muted small">
+          {intent === "deny_only"
+            ? `이 자원에 닿는 ${folded.covers}개를 전부 골랐다. 나머지 ${folded.adds.length}개는
+               이 자원 유형에 닿지 않으므로 문장에 걸리지 않는다 —`
+            : `이 정책이 주는 ${folded.covers}개를 전부 골랐다 —`}
+          {" "}같은 것을 거부하면서 문장이 하나가 된다.
+          {folded.adds.length > 0 && intent !== "deny_only"
+            && ` 다만 ${folded.adds.join(", ")}까지 함께 거부된다.`}
+        </span>
+      </p>
+    );
+  };
+
+  const totalChosen = SECTIONS.reduce((n, intent) => n + draft[intent].length, 0);
 
   return (
     <div className="editor">
-      {/* Two rows, one form: the label word, then the control beside it. The 동작 row used to be a
-          bordered fieldset carrying an enumeration of what there is to choose from and a sentence
-          for the empty state; both repeated what the dialog says where the choosing happens
-          (per-service groups, and which names must be typed by hand), so the page keeps one line
-          per row. What is CHOSEN still renders below, because it is part of the decision and has
-          to be readable without opening anything. */}
-      <label className="control-row">
-        의도
-        <select
-          disabled={disabled}
-          value={intent}
-          onChange={(e) => {
-            // The three forms take different inputs. A tag condition names no resources, so the
-            // per-action lists are dropped rather than sent and refused - and the actions are kept,
-            // because those are still what the condition applies to.
-            const next = e.target.value as Restriction["intent"];
-            emit(next, next === "tag_condition"
-              ? choices.map((c) => ({ ...c, resources: [] }))
-              : choices);
-          }}
-        >
-          {(Object.keys(INTENT_LABEL) as Restriction["intent"][]).map((intent) => (
-            <option key={intent} value={intent}>
-              {INTENT_LABEL[intent]}
-            </option>
-          ))}
-        </select>
-      </label>
+      {/* Four sections, and they compose. It was one dropdown - pick an intent, pick actions - and
+          picking a second intent meant giving up the first, which was never a property of the
+          statements: the permission set holds one inline document and each decision composes its
+          own statement into it. "이 버킷만 남기고, 그리고 DeleteBucket은 아예 막는다" is two
+          statements and the dropdown was the only thing making it one choice.
 
-      {/* A button, not a list. The offering is in a dialog with its own search and scroll: this page
-          is where a plan is read and approved, and one service with several hundred actions would
-          push the plan off the screen. */}
-      <label className="control-row">
-        동작
-        <button type="button" disabled={disabled} onClick={() => setPicking(true)}>
-          동작과 자원 고르기
-          {choices.length > 0 && ` (${choices.length}개)`}
-        </button>
-      </label>
-
-      {choices.length > 0 && (
-        <ul className="chosen-list">
-          {choices.map((choice) => (
-            <li key={choice.action}>
-              <code>{choice.action}</code>
-              <span className="muted">
-                {intent === "tag_condition"
-                  ? "태그 조건"
-                  : (choice.resources.length > 0
-                    ? `자원 ${choice.resources.length}개`
-                    : "자원 미지정")}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {(() => {
-        // The one action this list could be written as, when it can. Offered rather than applied:
-        // the wildcard becomes the administrator's decision and travels as the action, because a
-        // page that quietly widened [8 names] into athena:* would be restricting actions this
-        // approval does not grant - which is the one thing generator/restriction.py refuses by
-        // name, and which after B-1 it can now actually see.
-        if (intent === "tag_condition" || choices.length === 0) return null;
-        const one = new Set(choices.map((c) => JSON.stringify([...c.resources].sort())));
-        // One resource clause, because the statement it would become is one statement. A mixed set
-        // is several statements and folding them together is not this offer.
-        if (one.size !== 1) return null;
-        const folded = serviceFold({
-          actions: choices.map((c) => c.action),
-          resources: choices[0].resources,
-          intent,
-          groups: affected,
-          granted,
-        });
-        if (!folded) return null;
-        return (
-          <p className="fold-offer">
-            <button type="button" onClick={() => emit(intent, [{
-              action: folded.wildcard, resources: choices[0].resources,
-            }])}>
-              <code>{folded.wildcard}</code> 하나로 접기
-            </button>
-            {" "}
-            <span className="muted small">
-              {intent === "deny_only"
-                ? `이 자원에 닿는 ${folded.covers}개를 전부 골랐다. 나머지 ${folded.adds.length}개는
-                   이 자원 유형에 닿지 않으므로 문장에 걸리지 않는다 —`
-                : `이 정책이 주는 ${folded.covers}개를 전부 골랐다 —`}
-              {" "}같은 것을 거부하면서 문장이 하나가 된다.
-              {folded.adds.length > 0 && intent === "allow_only"
-                && ` 다만 ${folded.adds.join(", ")}까지 함께 거부된다.`}
-            </span>
-          </p>
-        );
-      })()}
-
-      {(() => {
-        // Estimated, and said so. The exact number depends on statements this write preserves, which
-        // only the container can see - but a restriction that is going to be refused for size should
-        // not get as far as an approval marker to find that out.
-        const { bytes } = preview(intent, choices, tagKey,
-                                  tagValues.split(",").map((v) => v.trim()).filter(Boolean),
-                                  accountId, fenceServices, nested);
-        if (choices.length === 0 || bytes <= INLINE_LIMIT * 0.8) return null;
-        return (
-          <p className={bytes > INLINE_LIMIT ? "error" : "warn-inline"}>
-            인라인 정책 예상 크기 약 {bytes.toLocaleString()}바이트
-            {bytes > INLINE_LIMIT
-              ? ` — 권한 세트 한도 ${INLINE_LIMIT.toLocaleString()}바이트를 넘는다. 이대로면 인라인
-                 작성기가 거부한다. 동작을 줄이거나 태그 조건을 쓰면 된다 — 태그 조건은 몇 개를 덮든
-                 문장 하나다.`
-              : ` (한도 ${INLINE_LIMIT.toLocaleString()}바이트)`}
-          </p>
-        );
-      })()}
-
-      {/* Not refused here. For an action that reaches nothing - a List action, or one whose resource
-          type is absent from the account - having no resources is the only correct state, and it is
-          the container that knows which of those is a legitimate flat deny. */}
-      {intent !== "tag_condition" && choices.some((c) => c.resources.length === 0) && (
-        <p className="warn-inline">
-          자원을 지정하지 않은 동작이 있다. 자원을 지목하지 않는 계정 단위 동작이면 그대로 두면 되고
-          (동작 자체가 거부된다), 그렇지 않으면 서버가 이유를 말하며 거부한다.
+          Each section is a button and what it holds. The offering is in a dialog with its own search
+          and scroll, because this page is where a plan is read and approved and one service with
+          several hundred actions would push the plan off the screen. */}
+      {totalChosen > 0 && (
+        <p className="muted small restrict-total">
+          이 정책에서 고른 동작 {totalChosen}개 —{" "}
+          {SECTIONS.filter((intent) => draft[intent].length > 0)
+            .map((intent) => `${INTENT_LABEL[intent]} ${draft[intent].length}개`)
+            .join(", ")}
         </p>
       )}
+
+      {SECTIONS.map((intent) => {
+        const choices = draft[intent];
+        const { offering, hidden } = offeringFor(intent);
+        return (
+          <section key={intent}
+                   className={choices.length > 0 ? "restrict-section on" : "restrict-section"}>
+            <div className="control-row">
+              <span className="section-name">{INTENT_LABEL[intent]}</span>
+              <button type="button" disabled={disabled} onClick={() => setPicking(intent)}>
+                {isScoped(intent) ? "동작과 자원 고르기" : "동작 고르기"}
+                {choices.length > 0 && ` (${choices.length}개)`}
+              </button>
+              {choices.length > 0 && (
+                <button type="button" className="section-clear" disabled={disabled}
+                        onClick={() => setSection(intent, [])}>
+                  비우기
+                </button>
+              )}
+            </div>
+            <p className="muted small">{INTENT_NOTE[intent]}</p>
+
+            {choices.length > 0 && (
+              <ul className="chosen-list">
+                {choices.map((choice) => (
+                  <li key={choice.action}>
+                    <code>{choice.action}</code>
+                    <span className="muted">
+                      {intent === "tag_condition" && "태그 조건"}
+                      {intent === "deny_action" && "자원 없이 거부"}
+                      {isScoped(intent) && (choice.resources.length > 0
+                        ? `자원 ${choice.resources.length}개`
+                        : "자원 미지정")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {foldOffer(intent, choices)}
+
+            {/* Not refused here. For an action the reference does not carry - one typed by hand -
+                nothing on this page can say whether it names a resource, and the container has a
+                floor list of its own. The ones this page KNOWS cannot be scoped are not in this
+                section's offering at all; they are in 동작 자체 거부. */}
+            {isScoped(intent) && choices.some((c) => c.resources.length === 0) && (
+              <p className="warn-inline">
+                자원을 지정하지 않은 동작이 있다. 직접 적은 이름이면 서버가 판단하고, 자원으로 좁힐
+                수 없는 동작이면 이유를 말하며 거부한다 — 그 경우 <strong>동작 자체 거부</strong>로
+                옮기면 된다.
+              </p>
+            )}
+
+            {intent === "tag_condition" && choices.length > 0 && (
+              <fieldset>
+                <legend>태그</legend>
+                <input
+                  type="text"
+                  placeholder="env"
+                  disabled={disabled}
+                  value={tagKey}
+                  onChange={(e) => emit(draft, e.target.value, tagValues)}
+                />
+                <input
+                  type="text"
+                  placeholder="prod (쉼표로 여러 개)"
+                  disabled={disabled}
+                  value={tagValues}
+                  onChange={(e) => emit(draft, tagKey, e.target.value)}
+                />
+              </fieldset>
+            )}
+
+            {picking === intent && (
+              <ActionPicker
+                policy={policy}
+                intent={intent}
+                chosen={choices}
+                /* An action the policy names literally and the reference does not carry. flatOnly is
+                   false for anything unknown, so this filter removes only the ones this page can
+                   positively say a list of ARNs cannot scope. */
+                named={intent === "deny_action" ? offerable : offerable.filter((a) => !flatOnly(a))}
+                covered={offering}
+                uncovered={uncovered}
+                referenceError={referenceError}
+                protectedActions={protectedActions}
+                affected={affected}
+                primary={primary}
+                cannotHold={heldElsewhere(intent)}
+                elsewhere={hidden > 0
+                  ? { count: hidden, section: INTENT_LABEL.deny_action }
+                  : null}
+                onCommit={(next) => {
+                  setSection(intent, next);
+                  setPicking(null);
+                }}
+                onCancel={() => setPicking(null)}
+              />
+            )}
+          </section>
+        );
+      })}
+
+      {/* There is no size estimate here any more, and removing it was the fix rather than a
+          simplification. It composed a document from THIS POLICY's sections alone and labelled the
+          result "인라인 정책 예상 크기" against the 10,240 quota - a quota the whole permission set
+          shares. With 60 actions on this policy and 60 on another it read 5,889 bytes twenty pixels
+          above a figure of 11,770 for the same document, and below the 80% gate it printed nothing
+          at all, which reads as "it fits". The number that answers the question is in the per-policy
+          view directly below and in the document-wide preview at the top of the panel, and both of
+          them compose every policy. */}
 
       {referenceError && (
         <p className="warn-inline">
@@ -1014,46 +1363,6 @@ function RestrictionEditor({
           {omitted.join(", ")}의 동작 목록은 크기 제한을 넘어 평가에 실리지 않았다. 이름을 직접
           적으면 된다.
         </p>
-      )}
-
-      {picking && (
-        <ActionPicker
-          policy={policy}
-          intent={intent}
-          chosen={choices}
-          named={offerable}
-          covered={covered}
-          uncovered={uncovered}
-          referenceError={referenceError}
-          protectedActions={protectedActions}
-          affected={affected}
-          primary={primary}
-          onCommit={(next) => {
-            emit(intent, next);
-            setPicking(false);
-          }}
-          onCancel={() => setPicking(false)}
-        />
-      )}
-
-      {intent === "tag_condition" && (
-        <fieldset>
-          <legend>태그</legend>
-          <input
-            type="text"
-            placeholder="env"
-            disabled={disabled}
-            value={tagKey}
-            onChange={(e) => emit(intent, choices, e.target.value, tagValues)}
-          />
-          <input
-            type="text"
-            placeholder="prod (쉼표로 여러 개)"
-            disabled={disabled}
-            value={tagValues}
-            onChange={(e) => emit(intent, choices, tagKey, e.target.value)}
-          />
-        </fieldset>
       )}
 
       {/* There is no resource fieldset. Resources belong to an action, so they are chosen from the

@@ -21,7 +21,8 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
-  INLINE_LIMIT, composeInline, inlineBytes, readable, serialise, subResource,
+  INLINE_LIMIT, composeInline, inlineBytes, policyContribution, readable, readableStatements,
+  serialise, subResource,
 } from './inlinePreview.js';
 
 const FIXTURES = JSON.parse(
@@ -156,4 +157,243 @@ test('what a person reads is indented and in the order a policy is written', () 
   assert.ok(first < text.indexOf('"Effect"'));
   assert.ok(text.indexOf('"Effect"') < text.indexOf('"Action"'));
   assert.ok(text.indexOf('"Action"') < text.indexOf('"NotResource"'));
+});
+
+// ---- one policy's part of the shared document ---------------------------------------------------
+
+const BUCKET = 'arn:aws:s3:::opt-solution-markers';
+const OTHER = 'arn:aws:s3:::opt-solution-plans';
+
+test("a policy's excerpt carries the Sids the document will be WRITTEN under", () => {
+  // The whole reason this reads a composed document rather than composing one of its own. Two
+  // policies, four statements; the second policy's are AdminDeny2 and AdminDeny4, and renumbering
+  // them to 1 and 2 would produce a document nobody will write - which an approver would then
+  // screenshot and match against a deployed policy that says something else.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+    { policy: 'B', intent: 'deny_only', actions: ['s3:PutObject'], resources: [OTHER] },
+    { policy: 'A', intent: 'deny_action', actions: ['s3:CreateBucket'] },
+    { policy: 'B', intent: 'allow_only', actions: ['s3:DeleteObject'], resources: [OTHER] },
+  ];
+  const whole = composeInline(restrictions, { accountId: '1' });
+  const b = policyContribution(restrictions, 'B', { accountId: '1' });
+
+  const sids = b.statements.map((s) => s.statement.Sid);
+  assert.equal(sids.length, 2);
+  for (const sid of sids) {
+    assert.ok(whole.Statement.some((one) => one.Sid === sid),
+              `${sid} is not a Sid of the document that gets written`);
+  }
+  // Every statement it names is the one from the whole document, not a rebuilt copy.
+  for (const { statement } of b.statements) {
+    assert.equal(serialise(statement),
+                 serialise(whole.Statement.find((one) => one.Sid === statement.Sid)));
+  }
+  // And nothing of A's is in it.
+  assert.ok(!b.statements.some((s) => s.ours.includes('s3:GetObject')));
+});
+
+test('the same action on different resources does not put one policy in the other', () => {
+  // Attribution is by CLAUSE, not by action name, and this is why. AmazonS3FullAccess restricting
+  // s3:GetObject on one bucket and a customer managed policy restricting s3:GetObject on another is
+  // two statements, both carrying that action name - and matching on the name put both statements
+  // in both excerpts, so each policy's view showed a Deny on a bucket it had nothing to do with.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+    { policy: 'B', intent: 'deny_only', actions: ['s3:GetObject'], resources: [OTHER] },
+  ];
+  const whole = composeInline(restrictions, { accountId: '1' });
+  assert.equal(whole.Statement.length, 2, 'they folded, so this tests nothing');
+
+  for (const [policy, bucket] of [['A', BUCKET], ['B', OTHER]]) {
+    const view = policyContribution(restrictions, policy, { accountId: '1' });
+    assert.equal(view.statements.length, 1, `${policy} was given the other policy's statement`);
+    assert.deepEqual(view.statements[0].statement.Resource, [bucket], policy);
+    assert.deepEqual(view.statements[0].others, [], policy);
+  }
+});
+
+test('the clause used for attribution is the one the writer folds on', () => {
+  // Not a re-derivation. The excerpt calls the same statement() and clause() the fold calls, so a
+  // change to how a resource clause is composed cannot move the fold and leave attribution behind -
+  // an allow_only whose bucket brings its objects in is one clause, and the excerpt has to key on
+  // the expanded one, not the picked one.
+  const nested = (action) => action === 's3:GetObject';
+  const restrictions = [
+    { policy: 'A', intent: 'allow_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+  ];
+  const view = policyContribution(restrictions, 'A', { accountId: '1', nested });
+  assert.equal(view.statements.length, 1, 'sub-resource expansion broke the attribution');
+  assert.deepEqual(view.statements[0].statement.NotResource, [BUCKET, `${BUCKET}/*`]);
+});
+
+test('a statement two policies share is shown whole to both, and marked', () => {
+  // The fold groups by resource clause, not by policy. Two policies denying different actions on
+  // the same bucket produce ONE statement, and a per-policy view that trimmed the other policy's
+  // action out of it would be showing a statement nobody will write.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+    { policy: 'B', intent: 'deny_only', actions: ['s3:PutObject'], resources: [BUCKET] },
+  ];
+  const whole = composeInline(restrictions, { accountId: '1' });
+  assert.equal(whole.Statement.length, 1, 'the two did not fold, so this tests nothing');
+
+  for (const [policy, ours, theirs] of [['A', 's3:GetObject', 's3:PutObject'],
+                                        ['B', 's3:PutObject', 's3:GetObject']]) {
+    const view = policyContribution(restrictions, policy, { accountId: '1' });
+    assert.equal(view.statements.length, 1, policy);
+    assert.deepEqual(view.statements[0].ours, [ours], policy);
+    assert.deepEqual(view.statements[0].others, [theirs], policy);
+    assert.deepEqual(view.statements[0].statement.Action, [theirs, ours].sort(), policy);
+  }
+});
+
+test('the cost is what the document GROWS by, not the sum of the statements', () => {
+  // Two policies sharing one resource clause pay for it once. Adding up per-policy statement sizes
+  // would count the ARN list twice and tell an approver the document is bigger than it is.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+    { policy: 'B', intent: 'deny_only', actions: ['s3:PutObject'], resources: [BUCKET] },
+  ];
+  const view = policyContribution(restrictions, 'B', { accountId: '1' });
+  assert.equal(view.total, inlineBytes(composeInline(restrictions, { accountId: '1' })));
+  assert.equal(view.without,
+               inlineBytes(composeInline(restrictions.slice(0, 1), { accountId: '1' })));
+  assert.equal(view.share, view.total - view.without);
+  // The action name and two bytes of JSON, not a second copy of the bucket ARN.
+  assert.ok(view.share < BUCKET.length,
+            `${view.share} bytes for one folded action - the resource clause is being counted twice`);
+  // Whereas the statement it rides in is far bigger than what the policy added.
+  assert.ok(inlineBytes({ Version: '2012-10-17', Statement: [view.statements[0].statement] })
+            > view.share);
+});
+
+test('the fence is in neither byte figure and comes back on its own', () => {
+  // It is composed from the assessment's grants, not from the restrictions, so it is the same with
+  // or without this policy and cancels out of the subtraction. Returned separately because the
+  // approver still has to see the statements their policy's PassRole grant earns.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+  ];
+  const options = {
+    accountId: '718100330247',
+    fenceServices: ['ec2.amazonaws.com', 'lambda.amazonaws.com'],
+    policyFenceServices: ['lambda.amazonaws.com'],
+  };
+  const view = policyContribution(restrictions, 'A', options);
+  const fenceOnly = inlineBytes(composeInline([], options));
+  // The fence is hundreds of bytes and none of them are in `share` - which is the claim. What IS in
+  // it, exactly once, is the comma joining this statement to the ones already there: a marginal cost
+  // is what the document grows by, and the separator is part of that growth. The subtraction gets
+  // that right for free, and it is worth pinning because the obvious "sum the statements" answer
+  // gets it wrong in the other direction.
+  assert.ok(view.share < fenceOnly / 2, `${view.share} vs a fence of ${fenceOnly} - the fence is in the share`);
+  const bare = policyContribution(restrictions, 'A', { accountId: '718100330247' });
+  assert.equal(view.share, bare.share + 1,
+               'the only difference the fence makes is the comma before this statement');
+
+  assert.equal(view.fence.length, 1, 'the fence is not filtered to this policy');
+  assert.equal(view.fence[0].Condition.StringEquals['iam:PassedToService'], 'lambda.amazonaws.com');
+  // And it is not counted as one of the policy's own statements - its action is iam:PassRole, which
+  // this policy did not choose.
+  assert.ok(!view.statements.some((s) => s.statement.Sid.startsWith('PassRole')));
+});
+
+test('a policy that chose nothing contributes nothing, and says so with a zero', () => {
+  // Not an error and not an empty document - the honest answer is that every statement in the
+  // preview above came from somewhere else.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+  ];
+  const view = policyContribution(restrictions, 'B', { accountId: '1' });
+  assert.deepEqual(view.statements, []);
+  assert.equal(view.share, 0);
+  assert.equal(view.total, view.without);
+});
+
+test('an excerpt is not shaped like a document', () => {
+  // A per-policy view rendered as {Version, Statement} would be a complete, valid, standalone IAM
+  // policy that does not exist anywhere. The permission set has ONE inline document; four of these
+  // side by side would be four things that do not exist in front of the one that does.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+  ];
+  const view = policyContribution(restrictions, 'A', { accountId: '1' });
+  const text = readableStatements(view.statements.map((s) => s.statement));
+  assert.ok(text.trimStart().startsWith('['), 'the excerpt is an object, so it reads as a document');
+  assert.ok(!text.includes('"Version"'), 'the excerpt carries a Version, so it is a document');
+  // Same key order as the document, so the two can be read side by side.
+  assert.ok(text.indexOf('"Sid"') < text.indexOf('"Effect"'));
+  assert.ok(text.indexOf('"Effect"') < text.indexOf('"Action"'));
+});
+
+test('two policies that decide the SAME thing are both told the other is there', () => {
+  // The failure this replaced: attribution by clause put the statement in both excerpts, both with
+  // others=[] because the action IS each policy's, and share=0 for both because removing either
+  // leaves the statement standing. So each approver was shown a statement listed as their policy's,
+  // told it added nothing, and given nothing that reconciled the two - and unticking it would not
+  // have removed the Deny.
+  const restrictions = [
+    { policy: 'AmazonS3FullAccess', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+    { policy: 'DataTeamAccess', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+  ];
+  const whole = composeInline(restrictions, { accountId: '1' });
+  assert.equal(whole.Statement.length, 1, 'they did not fold, so this tests nothing');
+
+  for (const [policy, other] of [['AmazonS3FullAccess', 'DataTeamAccess'],
+                                 ['DataTeamAccess', 'AmazonS3FullAccess']]) {
+    const view = policyContribution(restrictions, policy, { accountId: '1' });
+    const [one] = view.statements;
+    assert.deepEqual(one.ours, ['s3:GetObject'], policy);
+    assert.deepEqual(one.shared, ['s3:GetObject'],
+                     `${policy} is not told the action is also another policy's`);
+    assert.deepEqual(one.alsoBy, [other], `${policy} is not told WHICH policy`);
+    // And the marginal cost really is zero, which is why the co-ownership has to be said: on its
+    // own the zero reads as "this policy adds nothing", and every byte of the statement is here
+    // because of these two.
+    assert.equal(view.share, 0, policy);
+  }
+  assert.ok(inlineBytes(whole) > inlineBytes(composeInline([], { accountId: '1' })),
+            'the statement costs nothing, so there is nothing to reconcile');
+});
+
+test('the policy count is policies and the action count is actions', () => {
+  // One policy contributing four actions to a shared statement was rendered as "shared with 4
+  // policies" on a permission set with two attached policies.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
+    { policy: 'B', intent: 'deny_only', resources: [BUCKET],
+      actions: ['s3:PutObject', 's3:DeleteObject', 's3:ListBucket', 's3:RestoreObject'] },
+  ];
+  const view = policyContribution(restrictions, 'A', { accountId: '1' });
+  const [one] = view.statements;
+  assert.equal(one.others.length, 4, 'the four foreign actions are not all reported');
+  assert.deepEqual(one.alsoBy, ['B'], 'the policy count is being taken from the action count');
+  assert.deepEqual(one.shared, [], 'nothing here is co-owned');
+});
+
+test('a falsy fence service cannot select a statement that is not a fence', () => {
+  // Optional chaining yields undefined for a statement with no Condition, and undefined is a legal
+  // Set member - so one undefined in the caller's list selected every admin Deny in the document
+  // and rendered it under "the pipeline adds this fence", excluded from the byte figure and shown
+  // twice.
+  const restrictions = [
+    { policy: 'A', intent: 'deny_action', actions: ['s3:CreateBucket'] },
+    { policy: 'A', intent: 'tag_condition', actions: ['s3:GetObject'],
+      tag_key: 'env', tag_values: ['prod'] },
+  ];
+  const view = policyContribution(restrictions, 'A', {
+    accountId: '1',
+    fenceServices: ['lambda.amazonaws.com'],
+    policyFenceServices: [undefined, '', null],
+  });
+  assert.deepEqual(view.fence, [], 'a falsy entry selected statements that are not fences');
+  // The real thing still works beside it.
+  const real = policyContribution(restrictions, 'A', {
+    accountId: '1',
+    fenceServices: ['lambda.amazonaws.com'],
+    policyFenceServices: [undefined, 'lambda.amazonaws.com'],
+  });
+  assert.equal(real.fence.length, 1);
+  assert.match(real.fence[0].Sid, /^PassRoleAllowlistFence/);
 });
