@@ -446,16 +446,32 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
     },
 
     /**
-     * The risk analysis: the rules always, the model when it is switched on.
+     * The risk analysis: the rules always, the model when it is asked for.
      *
-     * POST rather than GET, and that is not a REST quibble. Running this costs money and takes
-     * seconds, so it happens when somebody asks for it - never as a side effect of opening a plan.
+     * POST rather than GET, and that is not a REST quibble. Running the model half costs money and
+     * takes seconds to minutes, so it happens when somebody asks for it - never as a side effect of
+     * opening a plan, and now not as a side effect of asking for the OTHER half either.
      *
-     * The rule findings come back either way. They are deterministic, they cost nothing, and a
-     * deployment that never enables Bedrock still gets the twelve rules fired against the
-     * assessment - which is the half an approver can rely on without trusting a model at all.
+     * The rule findings come back on every call, engine or no engine. They are deterministic, they
+     * cost nothing, and a deployment that never enables Bedrock still gets the twelve rules fired
+     * against the assessment - which is the half an approver can rely on without trusting a model
+     * at all. `body.engine` decides only whether the paid half is started:
+     *
+     *   'rules'   compute and return the rule findings; do not start the model. If a model run
+     *             already exists for this assessment - started by an earlier 'ai' call - it rides
+     *             along on the answer anyway, because it costs nothing extra to hand back work
+     *             already paid for. It is just never triggered by this value.
+     *   anything else (including omitted)   today's behaviour: start or join the model run too.
+     *             The default stays permissive on purpose - this field is set by our own two
+     *             buttons, never by free text a person typed, so there is no untrusted input to
+     *             guard against and a typo can only ever cost more, never silently less.
+     *
+     * The two dashboard buttons - 정책 기반 분석 and AI 분석 - are this distinction made visible.
+     * Pressing 정책 기반 분석 alone must not bill Bedrock; that is the entire reason this exists
+     * rather than the buttons both posting the same body and differing only in which half of the
+     * same answer they choose to render.
      */
-    'POST /api/plans/:id/analysis': async ({ params }) => {
+    'POST /api/plans/:id/analysis': async ({ params, body }) => {
       const id = planId(params.id);
       const plan = await readPlan(s3, config, id);
       if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
@@ -519,6 +535,18 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // implying the model agreed with them.
         answer.analysis_error = 'OPT_RISK_ANALYSIS is not on, so no model was asked';
         return answer;
+      }
+
+      if (body?.engine === 'rules') {
+        // 정책 기반 분석 asked, not AI 분석. The rules above already answer it; what must NOT
+        // happen is starting the paid half as a side effect of a request for the free one.
+        //
+        // A model run can still exist - the AI button may have been pressed first, on this same
+        // assessment - and if so it rides along here. That is not this call starting anything: it
+        // is handing back work that was already bought, the same as the DONE short-circuit above
+        // does for a repeated ask. Nothing here calls runs.start.
+        const inFlight = runs.get(id, key);
+        return inFlight ? withRun(answer, inFlight) : answer;
       }
 
       // Everything above is deterministic and takes milliseconds. Everything below is one model

@@ -618,8 +618,14 @@ const ANALYSABLE = {
   },
 };
 
-/** A model that answers every candidate it is given, citing the actions it was given. */
-function modelStub(over = {}) {
+/**
+ * A model that answers every candidate it is given, citing the actions it was given.
+ *
+ * `delayMs` holds the call open before it resolves - for the one test that has to observe a run
+ * still in the RUNNING state without racing the stub's own near-instant resolution. Zero elsewhere,
+ * which is a real `await` and not a no-op, so those tests keep exercising the actual async path.
+ */
+function modelStub(over = {}, { delayMs = 0 } = {}) {
   const calls = [];
   return {
     calls,
@@ -627,6 +633,7 @@ function modelStub(over = {}) {
       messages: {
         async create(body) {
           calls.push(body);
+          if (delayMs > 0) await new Promise((resolve) => { setTimeout(resolve, delayMs); });
           // Parsed out of the block rather than scraped with a regular expression. A first
           // attempt scraped every lambda:* token and picked up 'lambda:function', the resource
           // TYPE - which the validator correctly called a fabricated action and discarded the whole
@@ -706,6 +713,76 @@ test('the rules come back without waiting for the model', async () => {
   assert.equal(started.analysis, null, 'the POST waited for the model');
   assert.equal(started.run.state, 'running');
   assert.ok(typeof started.run.started_at === 'string');
+});
+
+test('정책 기반 분석: engine "rules" returns the rules and starts no model run', async () => {
+  // The entire reason the field exists. Two buttons, and pressing the free one must not bill the
+  // paid one as a side effect - that is the difference between this and a client that posts the
+  // same body from both buttons and only chooses what to render.
+  const model = modelStub();
+  const { route } = harness({
+    assessment: ANALYSABLE, riskAnalysis: true, makeModelClient: model.make,
+  });
+  const answer = await route['POST /api/plans/:id/analysis'](
+    { params: { id: PLAN_ID }, body: { engine: 'rules' } },
+  );
+  assert.ok(answer.rule_findings.length > 0);
+  assert.equal(answer.analysis, null, 'a model run started');
+  assert.equal(answer.run, null, 'a run entry was created for this plan');
+  assert.equal(model.calls.length, 0, 'the model was called');
+});
+
+test('AI 분석 first, then 정책 기반 분석: the second call rides the model run rather than starting one', async () => {
+  // Order must not matter. If the AI button already bought an answer for this assessment, asking
+  // for the rules half again should hand back what already exists rather than pretend it is not
+  // there - but it must not be the rules-only call that triggers a SECOND model run.
+  const model = modelStub();
+  const { route } = harness({
+    assessment: ANALYSABLE, riskAnalysis: true, makeModelClient: model.make,
+  });
+  const ai = await analysed(route);
+  assert.equal(ai.run.state, 'done');
+  assert.equal(model.calls.length, 1);
+
+  const rules = await route['POST /api/plans/:id/analysis'](
+    { params: { id: PLAN_ID }, body: { engine: 'rules' } },
+  );
+  assert.equal(model.calls.length, 1, 'a second model call was made');
+  // The already-finished model answer rides along - it is not withheld from a rules-only ask,
+  // because handing back work already paid for costs nothing further.
+  assert.equal(rules.analysis.findings_sha256, ai.analysis.findings_sha256);
+  assert.equal(rules.run.state, 'done');
+});
+
+test('정책 기반 분석 while AI 분석 is still running surfaces the in-flight run without starting another', async () => {
+  // delayMs holds the model call open, so the second POST lands while the run is provably still
+  // RUNNING rather than racing the stub's own near-instant resolution.
+  const model = modelStub({}, { delayMs: 30 });
+  const { route } = harness({
+    assessment: ANALYSABLE, riskAnalysis: true, makeModelClient: model.make,
+  });
+  const started = await route['POST /api/plans/:id/analysis']({ params: { id: PLAN_ID }, body: {} });
+  assert.equal(started.run.state, 'running');
+
+  const rules = await route['POST /api/plans/:id/analysis'](
+    { params: { id: PLAN_ID }, body: { engine: 'rules' } },
+  );
+  assert.equal(rules.run.state, 'running', 'the in-flight run was not surfaced');
+  assert.equal(rules.analysis, null, 'a rules-only ask should not itself have an answer yet');
+  assert.equal(model.calls.length, 1, 'the rules-only ask started a second model call');
+});
+
+test('an unrecognised engine value defaults to starting the model, never to silently skipping it', async () => {
+  // This field is set by our own two buttons, never by a person typing into a form - so the failure
+  // mode that matters is a typo costing more, not a typo silently costing less than the user meant.
+  const model = modelStub();
+  const { route } = harness({
+    assessment: ANALYSABLE, riskAnalysis: true, makeModelClient: model.make,
+  });
+  const answer = await route['POST /api/plans/:id/analysis'](
+    { params: { id: PLAN_ID }, body: { engine: 'ai' } },
+  );
+  assert.equal(answer.run.state, 'running');
 });
 
 test('the run is polled until it has an answer, and the answer carries the rules too', async () => {

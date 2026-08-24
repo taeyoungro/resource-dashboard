@@ -117,8 +117,10 @@ test('rejected candidates and dropped verdicts are on the page, not only in the 
 });
 
 test('the analysis is not run by opening a plan', () => {
-  // It costs money and takes seconds. The panel exposes a button and no effect that fires on mount.
-  assert.ok(PANEL.includes('api.analyse(planId)'));
+  // It costs money and takes seconds. The panel exposes two buttons - 정책 기반 분석 and AI 분석 -
+  // and no effect that fires on mount for either.
+  assert.ok(PANEL.includes('api.analyse(planId, "ai")'));
+  assert.ok(PANEL.includes('api.analyse(planId, "rules")'));
   assert.ok(!/useEffect\([^)]*api\.analyse/s.test(PANEL),
             'the analysis is being run from an effect, so opening a plan bills for one');
 });
@@ -178,6 +180,104 @@ test('a running analysis says so rather than looking like an empty result', () =
   // other half is coming, that screen is indistinguishable from "the model found nothing".
   assert.ok(PANEL.includes('규칙 판정을 먼저 표시합니다'));
   assert.ok(PANEL.includes('progress.batches'), 'the page no longer shows how far along the run is');
+});
+
+// ---- 정책 기반 분석 / AI 분석: two buttons, and pressing both looks like the one button used to ---
+
+test('two independent buttons, not a relabelled single one', () => {
+  assert.ok(PANEL.includes('정책 기반 분석'), 'the rules button is gone');
+  assert.ok(PANEL.includes('AI 분석'), 'the AI button is gone');
+  assert.match(PANEL, /onClick=\{\(\) => run\("rules"\)\}[\s\S]{0,40}disabled=\{busyRules\}/,
+               'the rules button no longer has a request and a busy state of its own');
+  assert.match(PANEL, /onClick=\{\(\) => run\("ai"\)\}[\s\S]{0,40}disabled=\{busyAi\}/,
+               'the AI button no longer has a request and a busy state of its own');
+});
+
+test('the two buttons are toggles that compose, not a two-way choice', () => {
+  // wantRules and wantAi are each set by their own button and never cleared by the other -
+  // pressing one does not undo the other having been pressed.
+  assert.match(PANEL, /const \[wantRules, setWantRules\] = useState\(false\)/);
+  assert.match(PANEL, /const \[wantAi, setWantAi\] = useState\(false\)/);
+  assert.ok(!/setWantRules\(false\)/.test(PANEL.slice(PANEL.indexOf('const run = async'))),
+            'something past run() turns 정책 기반 분석 off again');
+  assert.ok(!/setWantAi\(false\)/.test(PANEL.slice(PANEL.indexOf('const run = async'))),
+            'something past run() turns AI 분석 off again');
+  assert.match(PANEL,
+               /const view: View \| null = wantRules && wantAi \? "both" : wantRules \? "rules" : wantAi \? "ai" : null;/,
+               'both buttons pressed no longer composes into "both"');
+});
+
+test('정책 기반 분석 never starts or stops the model poll', () => {
+  // The entire reason two buttons exist rather than one relabelled: pressing the free one must not
+  // touch the paid one's lifecycle, whether that means starting it or - the easier mistake to make -
+  // silently killing an AI 분석 poll that was already running.
+  const run = PANEL.slice(PANEL.indexOf('const run = async'), PANEL.indexOf('if (!ready)'));
+  const rulesBranch = run.slice(run.indexOf('setWantRules(true);'));
+  assert.ok(!rulesBranch.includes('stopPolling()'), '정책 기반 분석 stops the AI poll');
+  assert.ok(!rulesBranch.includes('poll()'), '정책 기반 분석 starts its own poll');
+  assert.ok(!rulesBranch.includes('onAnalysis('),
+            '정책 기반 분석 touches the citation - only a model answer has anything new to cite');
+  // It reads the request body's engine field so the server knows not to bill the model.
+  assert.ok(PANEL.includes('api.analyse(planId, "rules")'));
+});
+
+test('a rules-only response cannot regress an AI run that is already in flight', () => {
+  // If it simply replaced `answer`, a rules click landing while the model is being polled would
+  // overwrite analysis/run with the rules-only response's null versions and the page would show
+  // "not running" under a run that is very much still running.
+  const run = PANEL.slice(PANEL.indexOf('const run = async'), PANEL.indexOf('if (!ready)'));
+  const rulesBranch = run.slice(run.indexOf('setWantRules(true);'));
+  assert.match(rulesBranch,
+               /analysis: prev\.analysis, analysis_error: prev\.analysis_error, run: prev\.run/,
+               'the rules response no longer preserves the AI half already on screen');
+});
+
+test('everything about the model is hidden in the rules-only view', () => {
+  // Each of these read something false or pointed at something invisible when 정책 기반 분석 alone
+  // was on screen, before they were gated: the "still running" notice, "규칙 판정만 표시합니다"
+  // when the model was never asked, the discarded-run banner, the rejected-candidates list, and the
+  // model's own rows inside 판정 범위.
+  for (const gated of [
+    'answer?.run?.state === "running"',
+    'answer.analysis_error',
+    'model?.discarded',
+    'model && model.rejected.length > 0',
+    'model && model.failures.length > 0',
+    'model && model.dropped.length > 0',
+  ]) {
+    assert.ok(PANEL.includes(`view !== "rules" && ${gated}`),
+              `${gated} is no longer scoped away from the rules-only view`);
+  }
+});
+
+test('the overlap sentence only appears when both halves are actually shown', () => {
+  // "그중 N건은 규칙이 이미 찾은 경로" exists to reconcile two VISIBLE lists so their counts do not
+  // look like a contradiction. In the AI-only view there are no rule cards on screen for it to
+  // reconcile against, so it would be pointing at something the reader cannot see.
+  assert.match(PANEL, /view === "both" && \(answer\.candidates_covered_by_rules \?\? 0\) > 0/,
+               'the overlap line is shown outside the combined view');
+});
+
+test('the findings a view shows are filtered by finding.source, and "both" filters nothing', () => {
+  assert.match(PANEL, /view === "ai" \? combined\.filter\(\(f\) => f\.source === "model"\)/);
+  assert.match(PANEL, /view === "rules" \? combined\.filter\(\(f\) => f\.source !== "model"\)/);
+  assert.match(PANEL, /:\s*combined;/, '"both" no longer falls through to the unfiltered list');
+});
+
+test('the meta line is built from parts filtered by view, not one conditional string', () => {
+  // Unrolled specifically so a view can drop a LEADING fragment without leaving a stray " · " at
+  // the front of the line - a single template string with the separator baked into each fragment
+  // cannot do that once the fragment that used to come first is hidden.
+  const meta = PANEL.slice(PANEL.indexOf('function metaParts('), PANEL.indexOf('function Summary('));
+  for (const [label, needle] of [
+    ['rule count', 'if (view !== "ai") parts.push(`규칙 ${answer.rule_findings.length}건`)'],
+    ['model verdict count', 'view !== "rules" && model'],
+    ['digest size', '질의 크기 ${(answer.digest_bytes / 1024).toFixed(1)} KB'],
+    ['model timing', 'view !== "rules" && model?.timing'],
+    ['rules sha', 'if (view !== "ai") parts.push(<>규칙 <code>{answer.rules_sha256.slice(0, 12)}</code></>)'],
+  ]) {
+    assert.ok(meta.includes(needle), `${label} fragment is missing or no longer view-scoped`);
+  }
 });
 
 test('a card is folded shut, and the fold shows what decides whether to open it', () => {

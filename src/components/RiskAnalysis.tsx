@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { api } from "../api";
 import type {
   AssetGrade, Finding, FindingCategory, FindingStatus, Grade, RiskAnalysisAnswer,
@@ -26,6 +27,19 @@ import type {
 // And one it refuses to break: no sentence here describes what a resource is FOR. The narrative is
 // the rule's own text or the model's, both of which were held to the same rule, and nothing in this
 // file composes prose from a resource name.
+//
+// Two buttons now, 정책 기반 분석 and AI 분석, where there used to be one - see the `run` function
+// and `View` below. They are independent toggles rather than a two-way choice: pressing one does
+// not undo the other, and pressing BOTH renders exactly what the single button used to render. That
+// last part is not a coincidence kept up by convention - every place below that composes text or
+// filters findings by `view` was checked against the ORIGINAL unconditional rendering to produce
+// the same bytes when `view === "both"`.
+//
+// The split exists because the two halves have different costs. Rule findings are deterministic and
+// free; the model half calls Bedrock, costs money, and takes seconds to minutes. 정책 기반 분석 must
+// never start it as a side effect of asking for the free half - see server/api.js's `engine` field
+// and the comment on `run` below for how that is kept true even when both buttons are pressed in
+// either order, or one is pressed while the other's request is still in flight.
 
 interface Props {
   planId: string;
@@ -34,6 +48,16 @@ interface Props {
   /** Raised whenever an answer arrives, so a decision can cite the analysis it was taken against. */
   onAnalysis: (citation: RiskAnalysisCitation | null) => void;
 }
+
+/**
+ * Which half or halves of the analysis are on screen right now.
+ *
+ * Not a radio - it is DERIVED from two independent booleans, `wantRules` and `wantAi`, each set by
+ * its own button and never unset by the other. "both" is deliberately not a third kind of request:
+ * it is what happens when both booleans are true, and it renders the same JSX the single old button
+ * did. See the comment above the exported component.
+ */
+type View = "rules" | "ai" | "both";
 
 const GRADE_ORDER: Record<Grade, number> = {
   CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4,
@@ -376,7 +400,48 @@ function Card({ finding }: { finding: Finding }) {
   );
 }
 
-function Summary({ answer, findings }: { answer: RiskAnalysisAnswer; findings: Finding[] }) {
+/**
+ * The meta line's pieces, filtered to what `view` shows - as an array joined by " · " rather than
+ * one long conditional string, because which pieces appear now depends on which button was pressed
+ * and a template string with the separator baked into each fragment cannot drop a LEADING fragment
+ * without leaving a stray " · " at the front of the line.
+ *
+ * For `view === "both"` every fragment that appeared before this split still appears, in the same
+ * order, with the same wording - this function is what was inlined in the JSX before, unrolled and
+ * with view-scoping added, not a rewrite of what it says.
+ */
+function metaParts(answer: RiskAnalysisAnswer, model: RiskAnalysisAnswer["analysis"], view: View): ReactNode[] {
+  const parts: ReactNode[] = [];
+  if (view !== "ai") parts.push(`규칙 ${answer.rule_findings.length}건`);
+  if (view !== "rules" && model) {
+    parts.push(`모델 판정 ${model.findings.length}건 (후보 ${model.candidates}건 중)`);
+  }
+  // 두 절반이 같은 자료를 읽으므로 겹친다. 겹친 수를 적지 않으면 위 숫자들의 합이 서로 다른 경로의
+  // 수로 읽힌다 - 오직 두 절반이 함께 보일 때만 나오는 이유다. "AI 분석" 단독 화면에는 규칙 카드가
+  // 아예 없으므로, 보이지 않는 카드를 가리키는 문장이 된다.
+  if (view === "both" && (answer.candidates_covered_by_rules ?? 0) > 0) {
+    parts.push(`그중 ${answer.candidates_covered_by_rules}건은 규칙이 이미 찾은 경로`);
+  }
+  parts.push(`질의 크기 ${(answer.digest_bytes / 1024).toFixed(1)} KB`);
+  // 걸린 시간과 그것을 그렇게 만든 모양. 묶음들이 겹쳐 돌므로 가장 느린 묶음과 전체의 차이가 동시
+  // 실행으로 실제로 번 시간이다.
+  if (view !== "rules" && model?.timing) {
+    parts.push(
+      `${(model.timing.totalMs / 1000).toFixed(1)}초 (${model.timing.batchMs.length}묶음 · `
+      + `동시 ${model.timing.concurrency} · 가장 느린 묶음 `
+      + `${(Math.max(0, ...model.timing.batchMs) / 1000).toFixed(1)}초)`,
+    );
+  }
+  if (view !== "ai") parts.push(<>규칙 <code>{answer.rules_sha256.slice(0, 12)}</code></>);
+  if (view !== "rules" && model) {
+    parts.push(<>모델 <code>{model.model_id}</code> · 프롬프트 <code>{model.prompt_version}</code></>);
+  }
+  return parts;
+}
+
+function Summary({ answer, findings, view }: {
+  answer: RiskAnalysisAnswer; findings: Finding[]; view: View;
+}) {
   const count = (grade: Grade) => findings.filter((f) => f.escalationGrade === grade).length;
   const confirmed = findings.filter((f) => f.status === "CONFIRMED").length;
   const blocked = findings.filter((f) => !f.restrictable).length;
@@ -406,23 +471,11 @@ function Summary({ answer, findings }: { answer: RiskAnalysisAnswer; findings: F
         </div>
       </div>
       <div className="meta small muted">
-        규칙 {answer.rule_findings.length}건
-        {model ? ` · 모델 판정 ${model.findings.length}건 (후보 ${model.candidates}건 중)` : ""}
-        {/* 두 절반이 같은 자료를 읽으므로 겹친다. 겹친 수를 적지 않으면 위 숫자들의 합이 서로 다른
-            경로의 수로 읽힌다. */}
-        {model && (answer.candidates_covered_by_rules ?? 0) > 0
-          ? ` · 그중 ${answer.candidates_covered_by_rules}건은 규칙이 이미 찾은 경로`
-          : ""}
-        {" · "}질의 크기 {(answer.digest_bytes / 1024).toFixed(1)} KB
-        {/* 걸린 시간과 그것을 그렇게 만든 모양. 묶음들이 겹쳐 돌므로 가장 느린 묶음과 전체의
-            차이가 동시 실행으로 실제로 번 시간이다. */}
-        {model?.timing
-          ? ` · ${(model.timing.totalMs / 1000).toFixed(1)}초 (${model.timing.batchMs.length}묶음 ·`
-            + ` 동시 ${model.timing.concurrency} · 가장 느린 묶음`
-            + ` ${(Math.max(0, ...model.timing.batchMs) / 1000).toFixed(1)}초)`
-          : ""}
-        {" · "}규칙 <code>{answer.rules_sha256.slice(0, 12)}</code>
-        {model ? <> · 모델 <code>{model.model_id}</code> · 프롬프트 <code>{model.prompt_version}</code></> : null}
+        {/* Keyed by position on purpose. The array is rebuilt whole on every render from `answer`
+            and `view` - there is no identity to key a fragment by other than where it sits. */}
+        {metaParts(answer, model, view).map((part, i) => (
+          <span key={i}>{i > 0 ? " · " : null}{part}</span>
+        ))}
       </div>
     </div>
   );
@@ -433,7 +486,12 @@ const POLL_MS = 3000;
 
 export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
   const [answer, setAnswer] = useState<RiskAnalysisAnswer | null>(null);
-  const [busy, setBusy] = useState(false);
+  // Independent toggles, one per button, and never unset by the other - "both pressed" is a state
+  // this pair can BE, not an action a click on either one takes. See the View type above.
+  const [wantRules, setWantRules] = useState(false);
+  const [wantAi, setWantAi] = useState(false);
+  const [busyRules, setBusyRules] = useState(false);
+  const [busyAi, setBusyAi] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // The poll in flight. A ref rather than state because nothing renders from it and because the
@@ -451,7 +509,10 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
   useEffect(() => {
     setAnswer(null);
     setError(null);
-    setBusy(false);
+    setWantRules(false);
+    setWantAi(false);
+    setBusyRules(false);
+    setBusyAi(false);
     return stopPolling;
   }, [planId]);
 
@@ -494,7 +555,7 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
           poll();
           return;
         }
-        setBusy(false);
+        setBusyAi(false);
         if (next.run?.state === "failed") {
           setError(next.run.error ?? "분석 실행이 끝나지 못했습니다.");
           setAnswer((prev) => (prev ? { ...prev, run: next.run } : prev));
@@ -503,36 +564,73 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
         settle(next);
       } catch (e) {
         if (polling.current.stopped) return;
-        setBusy(false);
+        setBusyAi(false);
         setError((e as Error).message);
       }
     }, POLL_MS);
   };
 
-  const run = async () => {
-    stopPolling();
-    polling.current.stopped = false;
-    setBusy(true);
+  /**
+   * One request function for both buttons - the two engines diverge inside it rather than being
+   * two copies of the same fetch/poll plumbing, and the divergence is where "정책 기반 분석 must
+   * never bill the model" actually lives.
+   *
+   * "ai" is the old single button, verbatim: stop any poll, ask, show the rules the POST returns
+   * immediately, and poll for the model half if it is still running. It is the ONLY branch that
+   * ever starts or stops the poll, and the only one that ever calls onAnalysis - a citation is a
+   * claim about what the MODEL found, and a rules-only ask has nothing new to claim.
+   *
+   * "rules" never touches the poll and never starts the model - that is the entire reason two
+   * buttons exist rather than one relabelled into two. It folds the fresh rule findings into
+   * whatever the AI side already holds (analysis, analysis_error, run) instead of overwriting them,
+   * so a rules click landing while AI 분석 is actively being polled cannot regress that state back
+   * to "nothing running" under a response that was never asked about the model at all. If AI 분석
+   * already finished or is in flight for this same assessment, its answer or its running state
+   * rides along on the rules response too (see server/api.js) - not because this call started
+   * anything, but because handing back work already paid for costs nothing further.
+   */
+  const run = async (engine: "rules" | "ai") => {
     setError(null);
-    try {
-      const next = await api.analyse(planId);
-      if (polling.current.stopped) return;
-      // The rules are finished before this returns, so they go up now rather than after the model.
-      // On a real assessment that is the difference between reading twelve findings immediately and
-      // staring at a spinner for the minutes the model takes.
-      setAnswer(next);
-      onAnalysis(null);
-      if (next.run?.state === "running") {
-        poll();
-        return;
+
+    if (engine === "ai") {
+      stopPolling();
+      polling.current.stopped = false;
+      setWantAi(true);
+      setBusyAi(true);
+      try {
+        const next = await api.analyse(planId, "ai");
+        if (polling.current.stopped) return;
+        // The rules are finished before this returns, so they go up now rather than after the
+        // model. On a real assessment that is the difference between reading twelve findings
+        // immediately and staring at a spinner for the minutes the model takes.
+        setAnswer(next);
+        onAnalysis(null);
+        if (next.run?.state === "running") {
+          poll();
+          return;
+        }
+        setBusyAi(false);
+        settle(next);
+      } catch (e) {
+        setBusyAi(false);
+        setError((e as Error).message);
+        setAnswer(null);
+        onAnalysis(null);
       }
-      setBusy(false);
-      settle(next);
+      return;
+    }
+
+    setWantRules(true);
+    setBusyRules(true);
+    try {
+      const next = await api.analyse(planId, "rules");
+      setAnswer((prev) => (prev
+        ? { ...next, analysis: prev.analysis, analysis_error: prev.analysis_error, run: prev.run }
+        : next));
+      setBusyRules(false);
     } catch (e) {
-      setBusy(false);
+      setBusyRules(false);
       setError((e as Error).message);
-      setAnswer(null);
-      onAnalysis(null);
     }
   };
 
@@ -544,29 +642,45 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
     );
   }
 
+  // Which half or halves are on screen. "both" is deliberately not distinguished below from what
+  // the single old button rendered - see the module comment above the exported component.
+  const view: View | null = wantRules && wantAi ? "both" : wantRules ? "rules" : wantAi ? "ai" : null;
+
   const model = answer?.analysis ?? null;
-  const all = answer ? [...answer.rule_findings, ...(model?.findings ?? [])].sort(compare) : [];
-  const assessable = all.filter((f) => f.status !== "NOT_ASSESSABLE");
-  const unassessable = all.filter((f) => f.status === "NOT_ASSESSABLE");
+  const combined = answer ? [...answer.rule_findings, ...(model?.findings ?? [])].sort(compare) : [];
+  // Filtered to what THIS view shows. For "both" this is every finding, unchanged from before the
+  // split - `f.source` is unset on a rule finding and `"model"` on a model one (see types.ts), so
+  // neither filter needs the raw `answer.rule_findings`/`model.findings` arrays directly.
+  const visible = view === "ai" ? combined.filter((f) => f.source === "model")
+    : view === "rules" ? combined.filter((f) => f.source !== "model")
+      : combined;
+  const assessable = visible.filter((f) => f.status !== "NOT_ASSESSABLE");
+  const unassessable = visible.filter((f) => f.status === "NOT_ASSESSABLE");
 
   return (
     <section className="impact">
       <h3>위험 및 공격 경로</h3>
       <div className="row">
-        <button onClick={run} disabled={busy}>
-          {busy ? "분석 중…" : answer ? "다시 분석" : "위험 분석 실행"}
+        <button onClick={() => run("rules")} disabled={busyRules}>
+          {busyRules ? "분석 중…" : wantRules ? "정책 기반 분석 다시 실행" : "정책 기반 분석"}
+        </button>
+        <button onClick={() => run("ai")} disabled={busyAi}>
+          {busyAi ? "분석 중…" : wantAi ? "AI 분석 다시 실행" : "AI 분석"}
         </button>
         <span className="muted small">
-          규칙 판정은 결정론이고 언제나 같은 답을 냅니다. 모델은 코드가 제안한 후보 경로만 판정하며,
-          경로를 새로 만들지 않습니다.
+          정책 기반 분석은 결정론이고 비용 없이 언제나 같은 답을 냅니다. AI 분석은 정책 기반 분석이
+          제안한 후보 경로만 판정하며, 경로를 새로 만들지 않고 호출마다 비용이 듭니다. 둘 다 실행하면
+          한 화면에 합쳐서 보여줍니다.
         </span>
       </div>
 
       {error && <div className="error">{error}</div>}
 
-      {/* 규칙 판정은 이미 아래에 떠 있다. 이 줄은 모델 절반이 아직 오는 중이라는 사실만 말한다 —
-          없으면 화면이 "모델이 아무것도 찾지 못했다"와 구분되지 않는다. */}
-      {answer?.run?.state === "running" && (
+      {/* AI 분석을 실제로 물어본 화면에서만 의미가 있는 줄이다 - 정책 기반 분석 단독 화면은 애초에
+          모델에 대해 아무것도 말하지 않는다. 규칙 판정은 이미 아래에 떠 있다; 이 줄은 모델 절반이
+          아직 오는 중이라는 사실만 말한다 — 없으면 화면이 "모델이 아무것도 찾지 못했다"와 구분되지
+          않는다. */}
+      {view !== "rules" && answer?.run?.state === "running" && (
         <div className="notice">
           <strong>규칙 판정을 먼저 표시합니다.</strong>{" "}
           모델은 후보를 묶음으로 판정하며 서버에서 계속 돌고 있습니다
@@ -578,15 +692,15 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
         </div>
       )}
 
-      {answer && (
+      {answer && view && (
         <>
-          {answer.analysis_error && (
+          {view !== "rules" && answer.analysis_error && (
             <div className="notice">
               <strong>규칙 판정만 표시합니다.</strong> {answer.analysis_error}
             </div>
           )}
 
-          {model?.discarded && (
+          {view !== "rules" && model?.discarded && (
             <div className="error">
               <strong>모델 답변 전체를 버렸습니다.</strong> {model.discarded.why}
               <ul className="finding-list">
@@ -599,12 +713,15 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
             </div>
           )}
 
-          <Summary answer={answer} findings={all} />
+          <Summary answer={answer} findings={visible} view={view} />
 
-          {all.length === 0 && (
+          {visible.length === 0 && (
             <div className="empty">
-              발화한 규칙이 없고 모델이 인정한 경로도 없습니다. 아래 <strong>판정 범위</strong>를
-              함께 읽으십시오 — 열거가 불완전하면 이 결과도 불완전합니다.
+              {view === "both" && "발화한 규칙이 없고 모델이 인정한 경로도 없습니다."}
+              {view === "rules" && "발화한 규칙이 없습니다."}
+              {view === "ai" && "모델이 인정한 경로가 없습니다."}
+              {" "}아래 <strong>판정 범위</strong>를 함께 읽으십시오 — 열거가 불완전하면 이 결과도
+              불완전합니다.
             </div>
           )}
 
@@ -634,7 +751,7 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
             </div>
           )}
 
-          {model && model.rejected.length > 0 && (
+          {view !== "rules" && model && model.rejected.length > 0 && (
             <details className="finding-section">
               <summary>
                 모델이 경로가 아니라고 판단한 후보 {model.rejected.length}건
@@ -653,11 +770,15 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
             </details>
           )}
 
-          {/* 판정 범위. 결과가 아니라 결과를 어디까지 믿을 수 있는지에 대한 것이므로 접지 않는다. */}
-          {(model?.dropped.length || model?.failures.length || answer.dropped.length) ? (
+          {/* 판정 범위. 결과가 아니라 결과를 어디까지 믿을 수 있는지에 대한 것이므로 접지 않는다.
+              model.failures/model.dropped는 AI 절반에 대한 것이므로 정책 기반 분석 단독 화면에서는
+              빠진다 - answer.dropped(질의 구성 과정에서 줄인 것)는 어느 절반이든 같은 입력을 보므로
+              view와 무관하게 남는다. */}
+          {((view !== "rules" && (model?.dropped.length || model?.failures.length))
+            || answer.dropped.length) ? (
             <div className="finding-section">
               <h4>판정 범위</h4>
-              {model && model.failures.length > 0 && (
+              {view !== "rules" && model && model.failures.length > 0 && (
                 <div className="row-warn">
                   <strong>후보 {model.failures.flatMap((f) => f.candidates).length}건은 답을 받지 못했습니다.</strong>
                   <ul className="finding-list">
@@ -667,7 +788,7 @@ export function RiskAnalysis({ planId, ready, onAnalysis }: Props) {
                   </ul>
                 </div>
               )}
-              {model && model.dropped.length > 0 && (
+              {view !== "rules" && model && model.dropped.length > 0 && (
                 <div className="row-warn">
                   <strong>모델 답변 {model.dropped.length}건을 검증에서 버렸습니다.</strong>
                   <ul className="finding-list">
