@@ -389,6 +389,10 @@ test('the preview says it is a preview, and shows the fence', () => {
 });
 
 const PICKER = readFileSync(new URL('../src/components/ActionPicker.tsx', import.meta.url), 'utf8');
+// The four intents' one home - Impact's editor, its ActionPicker and the block-path dialog all
+// import from it, so a restriction reads the same whichever door it came through.
+const INTENTS = readFileSync(new URL('../src/components/intents.ts', import.meta.url), 'utf8');
+const BLOCK = readFileSync(new URL('../src/components/BlockPath.tsx', import.meta.url), 'utf8');
 
 test('the four sections compose - a policy is not one intent at a time', () => {
   // It was one dropdown, so a policy carried exactly one intent and choosing a second meant giving
@@ -397,8 +401,13 @@ test('the four sections compose - a policy is not one intent at a time', () => {
   // DeleteBucket은 아예 막는다" is two statements and always was.
   assert.ok(!/<select[\s\S]{0,200}INTENT_LABEL/.test(IMPACT),
             'the intent is a dropdown again, so the sections are mutually exclusive');
-  assert.match(IMPACT, /const SECTIONS: Restriction\["intent"\]\[\] = \[\s*"allow_only", "deny_only", "deny_action", "tag_condition",/,
+  assert.match(INTENTS, /export const SECTIONS: Restriction\["intent"\]\[\] = \[\s*"allow_only", "deny_only", "deny_action", "tag_condition",/,
                'the four sections are not declared as a list the editor renders one block per');
+  // One home for the vocabulary. The editor and the block-path dialog composing from two copies is
+  // how the same decision ends up reading as two different things depending on the door.
+  assert.ok(IMPACT.includes('from "./intents"'), 'the editor stopped importing the shared intents');
+  assert.ok(BLOCK.includes('from "./intents"'),
+            'the block dialog carries its own intent vocabulary');
   assert.match(IMPACT, /SECTIONS\.map\(\(intent\) => \{/,
                'the editor no longer renders a block per section');
   // The draft is per section, and every section composes into the same emitted list.
@@ -415,7 +424,7 @@ test('an action a resource list cannot scope has a section of its own', () => {
   // way to say "this user may not call lambda:CreateFunction at all".
   assert.ok(!PICKER.includes('flatDenyBlock'),
             'the fold is back inside the picker, so the section is a second way to say one thing');
-  assert.ok(IMPACT.includes('deny_action: "동작 자체 거부"'), 'the section has no name');
+  assert.ok(INTENTS.includes('deny_action: "동작 자체 거부"'), 'the section has no name');
   // The scoped sections do not offer them at all. offeringFor is what removes them.
   assert.match(IMPACT, /const offeringFor = \(intent: Restriction\["intent"\]\) => \{[\s\S]{0,200}if \(intent === "deny_action"\) return \{ offering: covered, hidden: 0 \}/,
                '동작 자체 거부 is being filtered like the scoped sections, so it offers nothing');
@@ -487,7 +496,7 @@ test('an existing flat deny is read back into the section that owns it', () => {
   // - the only statement one of them ever had. Reading a stored restriction back into the section
   // that now owns it is reading it back as what it is, not a guess. Leaving it in deny_only would
   // put an action in a section whose picker will not offer it, with no checkbox to clear it.
-  const seed = IMPACT.slice(IMPACT.indexOf('const [draft, setDraft] = useState<Draft>'),
+  const seed = IMPACT.slice(IMPACT.indexOf('const seedFrom = (source: Restriction[])'),
                             IMPACT.indexOf('const tagSeed ='));
   assert.match(seed, /flatOnly\(action\) \? "deny_action" : restriction\.intent/,
                'a stored flat deny is seeded into the intent it was written under');
@@ -495,7 +504,7 @@ test('an existing flat deny is read back into the section that owns it', () => {
             'resources ride along into a section whose statement has no resource clause');
   // Both reasons, one test. The second is the action that makes what it names.
   const flat = IMPACT.slice(IMPACT.indexOf('const flatOnly = (action: string)'),
-                            IMPACT.indexOf('const [draft, setDraft]'));
+                            IMPACT.indexOf('const seedFrom ='));
   assert.ok(flat.includes('entry[1].length === 0 || entry[2] === true'),
             'the editor splits on only one of the two reasons');
   // Unknown is neither. An action the reference does not carry must not be guessed at.
@@ -513,7 +522,7 @@ test('a section that carries no resource clause sends none', () => {
                'a section that names no resources is being sent a resource list');
   assert.match(compose, /intent === "tag_condition" \? tag : \{\}/,
                'deny_action is being sent a tag, or tag_condition is not being sent one');
-  assert.match(IMPACT, /const isScoped = \(intent: Restriction\["intent"\]\) =>\s*intent === "allow_only" \|\| intent === "deny_only";/,
+  assert.match(INTENTS, /export const isScoped = \(intent: Restriction\["intent"\]\) =>\s*intent === "allow_only" \|\| intent === "deny_only";/,
                'which sections carry a resource list is no longer stated in one place');
 });
 
@@ -603,7 +612,7 @@ test('the fence is described as being in the figure it is actually in', () => {
   // was true of one number and false of the other, and the false one is the one compared against
   // the limit, so an approver discounted 427 bytes that were really there.
   const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
-                             IMPACT.indexOf('const SECTIONS'));
+                             IMPACT.indexOf('type Draft ='));
   assert.ok(block.includes('늘리는 크기에는 들어 있지 않고'), 'the fence text lost the share half');
   assert.ok(block.includes('문서 전체 크기와 한도에는 들어 있다'),
             'the dialog says the fence is outside the number the quota is compared against');
@@ -617,7 +626,7 @@ test('the empty state does not contradict the fence printed under it', () => {
   // above one of its statements. And with nothing chosen anywhere, InlinePreview renders nothing,
   // so naming it as somewhere to look pointed at a control that is not on the page.
   const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
-                             IMPACT.indexOf('const SECTIONS'));
+                             IMPACT.indexOf('type Draft ='));
   const empty = block.slice(block.indexOf('view.statements.length === 0 ? ('),
                             block.indexOf(') : ('));
   assert.ok(empty.includes('view.fence.length > 0'),
@@ -707,7 +716,7 @@ test('the per-policy view is read OUT of the whole document, never composed on i
   // front of the one that does - and each would renumber its Sids, so an approver matching the
   // excerpt against the deployed policy would be matching against a document nobody wrote.
   const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
-                             IMPACT.indexOf('const SECTIONS'));
+                             IMPACT.indexOf('type Draft ='));
   assert.ok(block.length > 0, 'the per-policy view is gone');
   assert.ok(block.includes('policyContribution('),
             'the per-policy view no longer asks the module that reads the composed document');
@@ -723,7 +732,7 @@ test('the per-policy view says the three things that make it honest', () => {
   // Each of these is a place the obvious implementation is wrong, so each has to be on the screen
   // rather than only in a comment.
   const block = IMPACT.slice(IMPACT.indexOf('function PolicyInlinePreview('),
-                             IMPACT.indexOf('const SECTIONS'));
+                             IMPACT.indexOf('type Draft ='));
   // The needle is the SENTENCE, not the identifier. `block.includes('Sid')` was matched by
   // `key={statement.Sid}` and `className="sid"` - load-bearing render code no edit removes - so
   // deleting the entire explanatory paragraph left this green. Proven by deletion: the one sentence
@@ -766,4 +775,79 @@ test('the per-policy view says the three things that make it honest', () => {
   assert.ok(!block.includes('readable('), 'the excerpt is rendered with the document renderer');
   assert.match(CSS, /\.statement-actions \.from-elsewhere\b/,
                "another policy's action in a shared statement looks the same as this policy's");
+});
+
+// ---- from a finding card straight to the restriction that cuts it -------------------------------
+
+test('a finding card offers 차단, and only where a restriction can actually land', () => {
+  // No button rather than a dead one: a path the policy cannot cut (restrictable false - the card
+  // already wears the 차단 불가 badge), a policy the assessment does not hold as restrictable, or a
+  // decision already closed.
+  const gateStart = PANEL.indexOf('const blockProps =');
+  const gate = PANEL.slice(gateStart, PANEL.indexOf('};', gateStart));
+  assert.ok(gate.includes('restrictDisabled'), 'the button renders after the decision closed');
+  assert.ok(gate.includes('!finding.restrictable'), 'an uncuttable path still gets a button');
+  assert.ok(gate.includes('policyOf(finding)'), 'the button renders with no policy to key on');
+  // The policy match is the IDENTIFIER the digest wrote into policyName - exact, not a heuristic.
+  assert.match(PANEL, /p\.identifier === finding\.policyName && p\.restrictable && !p\.unreadable/,
+               'the finding-to-policy match is no longer exact');
+  assert.ok(PANEL.includes('이 경로 차단'), 'the card has no block button');
+  // And the confirmation after: the card says the actions are in the document, pointing at the one
+  // place that shows it - so the reader does not diff a policy block by eye.
+  assert.ok(PANEL.includes('alreadyRestricted(finding, restrictions)'),
+            'the card cannot say whether its path is already restricted');
+  assert.ok(PANEL.includes('제한에 반영되어 있다'), 'applying gives no confirmation on the card');
+});
+
+test('the block dialog writes into the SHARED restriction set, never a copy', () => {
+  // The entire point: a restriction born on a card is indistinguishable from one born in the
+  // editor by the time it reaches the wire, and 인라인 정책 보기 shows one document either way.
+  assert.ok(BLOCK.includes('mergeBlock(restrictions, finding.policyName, additions())'),
+            'the dialog no longer merges through the shared blockPath module');
+  assert.ok(BLOCK.includes('blockOffer(finding, protectedActions)'),
+            'the offer is no longer derived by the tested module');
+  assert.ok(!/useState[^\n]*[Rr]estriction\[\]/.test(BLOCK),
+            'the dialog holds its own restriction array, which will drift from the shared one');
+  // Wired from PlanDetail with the same state Impact edits, and the same disabled gate.
+  assert.match(DETAIL, /<RiskAnalysis[\s\S]{0,300}restrictions=\{restrictions\}/,
+               'RiskAnalysis is not given the shared restriction set');
+  assert.match(DETAIL, /onRestrictions=\{setRestrictions\}/,
+               'the dialog cannot write back into the shared set');
+  assert.match(DETAIL, /restrictDisabled=\{busy \|\| decided\}/,
+               'the block button outlives the decision');
+});
+
+test('the dialog carries the editor rules over instead of reinventing them', () => {
+  // Flat-only actions compose 동작 자체 거부 whatever intent is chosen, and the row says so before
+  // 적용 - the same routing the editor's seeding applies.
+  assert.match(BLOCK, /if \(flatOnly\(action\)\) \{[\s\S]{0,400}intent: "deny_action"/,
+               'a flat-only action is written under a scoped intent');
+  assert.ok(BLOCK.includes('동작 자체 거부로 작성'), 'the row does not say the routing');
+  // Protected actions offered struck-out and unselectable - never silently dropped.
+  assert.ok(BLOCK.includes('deny-forbidden'), 'a protected action is not struck out');
+  assert.match(BLOCK, /disabled=\{forbidden\}/, 'a protected action is tickable');
+  // Resources are picked from the assessment's enumeration, never adopted from the card's target
+  // list - targets can be a SAMPLE, and under 이 자원만 허용 an adopted sample denies everything
+  // outside an incomplete list.
+  // Code access, not prose: the comment explaining WHY the sample is not adopted names it.
+  assert.ok(!BLOCK.includes('finding.targets') && !/\.sample\b/.test(BLOCK),
+            'the dialog reads the card targets - the sample trap');
+  assert.ok(BLOCK.includes('<ResourcePicker'), 'resources are not picked from the enumeration');
+  // Replacing a prior decision is said on the row, not discovered in the editor later.
+  assert.ok(BLOCK.includes('기존 결정을 이 결정으로 바꾼다'),
+            'an overwrite of an earlier decision is silent');
+});
+
+test('the per-policy editor re-seeds when the shared array changes under it', () => {
+  // The card dialog merges restrictions for a policy whose editor is already mounted with a draft
+  // seeded at mount. Without the resync, that editor's next emit - any checkbox - would compose
+  // from the stale draft and silently overwrite the card's decision.
+  assert.match(IMPACT, /const lastEmitted = useRef<string>\(JSON\.stringify\(existing\)\)/,
+               'nothing distinguishes an external change from the echo of an emit');
+  assert.match(IMPACT, /if \(incoming === lastEmitted\.current\) return;/,
+               'the editor reseeds on its own echo, clobbering half-typed state every emit');
+  assert.match(IMPACT, /lastEmitted\.current = JSON\.stringify\(composed\);\s*\n\s*onChange\(composed\)/,
+               'emit records its bytes after onChange, so the echo races the record');
+  assert.match(IMPACT, /setDraft\(seedFrom\(existing\)\)/,
+               'an external change does not replace the draft');
 });

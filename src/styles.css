@@ -1017,3 +1017,44 @@ dialog.picker button.commit {
    margins in a flex row split the free space and put a gap between the two messages; one is enough
    to push the buttons right, so the second gives its up. */
 .unwritable ~ .dropped-actions { margin-right: 0; }
+
+/* ---- cutting a path from its finding card ------------------------------------------------------ */
+
+/* The same dialog skeleton as the pickers - it IS one, className "picker" - narrowed: the offer is
+   a handful of actions from one card, not a service's hundreds. */
+dialog.picker.block-path { width: min(44rem, 94vw); }
+
+/* The intent row. The editor's control-row styles are scoped to .editor on purpose, so the dialog
+   carries its own copy of the two rules it needs: one line, label then control. */
+.block-path .control-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.84rem;
+}
+.block-path .control-row > select {
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.4rem;
+  font-family: inherit;
+  font-size: 0.8rem;
+}
+.block-path fieldset {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.6rem;
+}
+.block-path legend { font-size: 0.78rem; color: var(--muted); padding: 0 0.3rem; }
+.block-path fieldset input { margin-right: 0.4rem; }
+
+/* The card's own row: the button that opens the dialog, and the confirmation that this path's
+   actions are in the document now - so the reader does not have to scroll up and diff a policy by
+   eye to learn whether pressing it worked. */
+.finding-row.block-row button {
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+}

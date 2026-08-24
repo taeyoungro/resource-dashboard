@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPassRoleGrant, ImpactPolicy,
   ImpactResource, Restriction,
@@ -13,6 +13,7 @@ import {
   INLINE_LIMIT, composeInline, inlineBytes, policyContribution, readable, readableStatements,
 } from "../../server/inlinePreview.js";
 import { serviceFold } from "../../server/serviceFold.js";
+import { INTENT_LABEL, INTENT_NOTE, SECTIONS, isScoped } from "./intents";
 
 /**
  * What the permission set will reach, and the place a restriction is chosen.
@@ -467,44 +468,9 @@ function PolicyInlinePreview({
   );
 }
 
-/**
- * The four sections, in the order they are read.
- *
- * They used to be four values of one dropdown, so a policy could carry exactly one of them and
- * choosing a second meant giving up the first. That was never a property of the statements: the
- * permission set holds ONE inline document and each decision composes its own statement into it, so
- * "keep only these buckets, and also deny DeleteBucket outright" is two statements and always was.
- * The dropdown was the only thing making it one choice.
- *
- * 동작 자체 거부 is the section that could not exist under the dropdown at all. Its statement -
- * Deny on Resource "*" - was reachable only as a side effect: an action a list of ARNs cannot scope
- * got one written for it whatever the dropdown said, in a fold at the bottom of the picker with a
- * paragraph explaining that this one is different. It is not a side effect, it is a decision, and
- * lambda:CreateFunction is what an administrator most often wants to make it about.
- *
- * Ordering: the two that narrow, then the one that removes, then the one that follows a tag.
- */
-const SECTIONS: Restriction["intent"][] = [
-  "allow_only", "deny_only", "deny_action", "tag_condition",
-];
-
-const INTENT_LABEL: Record<Restriction["intent"], string> = {
-  allow_only: "이 자원만 허용",
-  deny_only: "이 자원만 거부",
-  deny_action: "동작 자체 거부",
-  tag_condition: "태그로 거부",
-};
-
-const INTENT_NOTE: Record<Restriction["intent"], string> = {
-  allow_only: "고른 자원만 남기고 나머지를 거부한다. 이후에 생기는 자원도 거부된다.",
-  deny_only: "고른 자원만 거부한다. 이후에 생기는 자원은 이 제한에 걸리지 않는다.",
-  deny_action: "자원과 무관하게 동작 자체를 거부한다. 자원 목록으로 좁힐 수 없는 동작도 여기서 고른다.",
-  tag_condition: "태그가 붙은 자원을 거부한다. 나중에 태그가 붙는 자원까지 덮는다.",
-};
-
-/** Whether this section's statements carry a resource list. Mirrors ActionPicker.isScoped. */
-const isScoped = (intent: Restriction["intent"]) =>
-  intent === "allow_only" || intent === "deny_only";
+// The four intents' names, notes and ordering live in intents.ts - shared with the
+// block-path dialog a risk finding opens, so a restriction reads the same whichever
+// door it came through.
 
 /** One draft per section. Every section is present, most of them usually empty. */
 type Draft = Record<Restriction["intent"], Choice[]>;
@@ -1048,18 +1014,19 @@ function RestrictionEditor({
     return entry ? entry[1].length === 0 || entry[2] === true : false;
   };
 
-  // The draft, seeded once. Every change emits the whole set upward, so the parent's array stays the
-  // single source of truth for what gets submitted while this holds the parts a restriction needs
-  // before it is one - a section with no actions yet, or a tag key half typed.
+  // The draft, seeded from the shared array. Every change emits the whole set upward, so the
+  // parent's array stays the single source of truth for what gets submitted while this holds the
+  // parts a restriction needs before it is one - a section with no actions yet, or a tag key half
+  // typed.
   //
   // Seeded PER SECTION, and an action a list of ARNs cannot scope lands in 동작 자체 거부 whatever
   // intent it arrived under. That is not a guess: the only statement one of those ever had was the
   // flat Deny, and before this section existed the editor emitted it as deny_only with an empty
   // list. Reading it back into the section that now owns it is reading it back as what it is.
-  const [draft, setDraft] = useState<Draft>(() => {
-    // Fresh arrays, not EMPTY_DRAFT's - it is module-level and shared by every policy block.
+  const seedFrom = (source: Restriction[]): Draft => {
+    // Fresh arrays every call - a shared module-level constant here would alias every policy block.
     const seeded: Draft = { allow_only: [], deny_only: [], deny_action: [], tag_condition: [] };
-    for (const restriction of existing) {
+    for (const restriction of source) {
       for (const action of restriction.actions) {
         const into = flatOnly(action) ? "deny_action" : restriction.intent;
         if (seeded[into].some((c) => c.action === action)) continue;
@@ -1070,10 +1037,35 @@ function RestrictionEditor({
       }
     }
     return seeded;
-  });
+  };
+  const [draft, setDraft] = useState<Draft>(() => seedFrom(existing));
   const tagSeed = existing.find((r) => r.intent === "tag_condition");
   const [tagKey, setTagKey] = useState(() => tagSeed?.tag_key ?? "");
   const [tagValues, setTagValues] = useState(() => (tagSeed?.tag_values ?? []).join(","));
+
+  // RE-SEEDED when the shared array changes under this editor - which it now can: the risk panel's
+  // 차단 dialog merges restrictions for this same policy from a finding card. The draft was seeded
+  // once on mount, so without this the editor would keep composing from a stale copy and its next
+  // emit - any checkbox, any keystroke - would silently overwrite the card's decision.
+  //
+  // The ref is what tells "the array changed under us" from "the array echoing what we just
+  // emitted": emit records the bytes it sent up, the echo arrives byte-identical and is ignored,
+  // and anything else is an external change that replaces the draft wholesale. Wholesale is
+  // correct: the array is the single source of truth, and a draft that survived an external change
+  // would be exactly the stale copy this exists to remove.
+  const lastEmitted = useRef<string>(JSON.stringify(existing));
+  useEffect(() => {
+    const incoming = JSON.stringify(existing);
+    if (incoming === lastEmitted.current) return;
+    lastEmitted.current = incoming;
+    setDraft(seedFrom(existing));
+    const tag = existing.find((r) => r.intent === "tag_condition");
+    setTagKey(tag?.tag_key ?? "");
+    setTagValues((tag?.tag_values ?? []).join(","));
+    // seedFrom and the tag reads are derived from `existing` alone; flatOnly is stable per
+    // reference. The serialised comparison is the real dependency gate.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existing]);
 
   /**
    * The sections, as the restrictions they will be sent as. One restriction per ACTION.
@@ -1104,7 +1096,11 @@ function RestrictionEditor({
     setDraft(next);
     setTagKey(key);
     setTagValues(values);
-    onChange(compose(next, key, values));
+    const composed = compose(next, key, values);
+    // Recorded BEFORE onChange: the parent's update lands back here as `existing`, and these bytes
+    // are how the resync effect above recognises its own echo instead of reseeding over the draft.
+    lastEmitted.current = JSON.stringify(composed);
+    onChange(composed);
   };
 
   /** What one section holds, replaced. The others are carried through untouched. */
