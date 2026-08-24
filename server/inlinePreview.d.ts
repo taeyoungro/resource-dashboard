@@ -43,8 +43,25 @@ export declare function composeInline(
      * assessment's action_reference; omitted means no expansion.
      */
     nested?: (action: string) => boolean;
+    /**
+     * The patterns naming the whole of every type an action brings into being, from the
+     * assessment's action_reference.created_formats. An allow_only statement on a creating action
+     * exempts those types - the created resource's ARN exists only after the call succeeds, so
+     * without the exemption the Deny matches it on every call and the statement is a total deny
+     * reading as a scope. Omitted means no exemption, which is what assessments written before the
+     * reference carried the map compose as.
+     */
+    createdFormats?: (action: string) => string[];
   },
 ): InlineDocument;
+
+/**
+ * One creation-exemption pattern made concrete from the picked ARNs - ${Partition} from the first
+ * sorted ARN, ${Account} from the first that carries one. Null when the pattern needs an account
+ * and none of the picked ARNs has one: the writer refuses that decision, and a pattern substituted
+ * with an empty account would match nothing, silently reinstating the total deny.
+ */
+export declare function creationExemption(pattern: string, picked: string[]): string | null;
 
 export declare function inlineBytes(document: InlineDocument): number;
 
@@ -97,6 +114,8 @@ export declare function policyContribution(
     accountId: string;
     fenceServices?: string[];
     nested?: (action: string) => boolean;
+    /** Same as composeInline's - the attribution key must match the fold's key, exemptions included. */
+    createdFormats?: (action: string) => string[];
     /** The services THIS policy's PassRole grant names, for filtering the fence. */
     policyFenceServices?: string[];
   },

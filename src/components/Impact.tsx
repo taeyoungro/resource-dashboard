@@ -134,6 +134,23 @@ function nestedActions(reference: ImpactActionReference | null): (action: string
   };
 }
 
+/**
+ * The creation-exemption patterns per action, from the reference - the second thing the preview
+ * cannot derive on its own. An allow_only statement on a creating action exempts the whole of every
+ * type the call brings into being (the created ARN exists only after the call succeeds, so it is in
+ * no list, and without the exemption the Deny matches it on every call). The writer composes the
+ * same exemption from the same table; carrying the patterns here is what keeps the preview
+ * byte-identical to what gets written. Absent map means no exemption - the state assessments
+ * written before the reference carried it compose as.
+ */
+function createdFormatsOf(reference: ImpactActionReference | null): (action: string) => string[] {
+  const created = reference?.created_formats ?? {};
+  return (action: string) => {
+    const cut = action.indexOf(":");
+    return created[action.slice(0, cut)]?.[action.slice(cut + 1)] ?? [];
+  };
+}
+
 /** Which services the PassRole fence will name. Its statements are in the same document. */
 function fenceServicesOf(grants: Assessment["passrole_grants"]): string[] {
   return [...new Set((grants ?? []).flatMap((g) => g.services))].filter(Boolean).sort();
@@ -182,18 +199,19 @@ const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {
  * server/inlinePreview.js composes it, and a fixture test pins that module byte-for-byte against
  * generator/restriction.py. A preview that differs from what gets written would be worse than none.
  */
-function InlinePreview({ restrictions, accountId, fenceServices, nested }: {
+function InlinePreview({ restrictions, accountId, fenceServices, nested, createdFormats }: {
   restrictions: Restriction[];
   accountId: string;
   fenceServices: string[];
   nested: (action: string) => boolean;
+  createdFormats: (action: string) => string[];
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const active = restrictions.filter((r) => r.actions.length > 0);
   const { document: composed, bytes } = useMemo(() => {
-    const doc = composeInline(active, { accountId, fenceServices, nested });
+    const doc = composeInline(active, { accountId, fenceServices, nested, createdFormats });
     return { document: doc, bytes: inlineBytes(doc) };
-  }, [active, accountId, fenceServices, nested]);
+  }, [active, accountId, fenceServices, nested, createdFormats]);
 
   if (active.length === 0 && fenceServices.length === 0) return null;
   const over = bytes > INLINE_LIMIT;
@@ -262,7 +280,7 @@ function InlinePreview({ restrictions, accountId, fenceServices, nested }: {
  * excerpt that is a valid standalone policy is a wrong answer somebody can screenshot.
  */
 function PolicyInlinePreview({
-  policy, name, restrictions, accountId, fenceServices, policyFenceServices, nested,
+  policy, name, restrictions, accountId, fenceServices, policyFenceServices, nested, createdFormats,
 }: {
   policy: string;
   /** The policy as a person names it. The identifier is an ARN for an AWS managed policy. */
@@ -274,12 +292,14 @@ function PolicyInlinePreview({
   /** The services this policy's own PassRole grant names. Its fence statements, if it earns any. */
   policyFenceServices: string[];
   nested: (action: string) => boolean;
+  createdFormats: (action: string) => string[];
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const view = useMemo(
     () => policyContribution(restrictions, policy,
-                             { accountId, fenceServices, policyFenceServices, nested }),
-    [restrictions, policy, accountId, fenceServices, policyFenceServices, nested],
+                             { accountId, fenceServices, policyFenceServices, nested,
+                               createdFormats }),
+    [restrictions, policy, accountId, fenceServices, policyFenceServices, nested, createdFormats],
   );
 
   // Statements this policy does not have to itself, for either reason: another policy put a
@@ -547,6 +567,7 @@ export function Impact({
           accountId={assessment.account_id}
           fenceServices={fenceServices}
           nested={nestedActions(assessment.action_reference ?? null)}
+          createdFormats={createdFormatsOf(assessment.action_reference ?? null)}
         />
       )}
 
@@ -677,6 +698,7 @@ function PolicyBlock({
   // because the excerpt is composed from EVERY policy's restrictions and the editor only holds this
   // policy's draft.
   const nested = useMemo(() => nestedActions(reference), [reference]);
+  const createdFormats = useMemo(() => createdFormatsOf(reference), [reference]);
   // Stable across renders, so the excerpt's memo is not rebuilt by a fresh empty array every time.
   const policyFenceServices = useMemo(
     () => passroleGrant?.services ?? [], [passroleGrant],
@@ -781,6 +803,7 @@ function PolicyBlock({
           fenceServices={fenceServices}
           policyFenceServices={policyFenceServices}
           nested={nested}
+          createdFormats={createdFormats}
         />
 
         {/* At the BOTTOM of the restriction area, on the operator's direction: it says what the

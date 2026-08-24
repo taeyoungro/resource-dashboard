@@ -75,8 +75,40 @@ function resourcesFor(restriction, action, nested) {
   return [...new Set([...picked, ...picked.map(subResource)])].sort();
 }
 
-/** One action, one statement - before the fold. Mirrors restriction._statement. */
-function statement(sid, restriction, action, nested) {
+/**
+ * One creation-exemption pattern, made concrete. Mirrors restriction.substitute_exemption.
+ *
+ * ${Partition} takes the first sorted picked ARN's partition, ${Account} the first non-empty
+ * account among them - and null when no picked ARN carries one, because an empty account composes
+ * a pattern that matches nothing and silently reinstates the total deny the exemption exists to
+ * prevent. The writer REFUSES that decision (restriction._validate); the preview drops the pattern,
+ * which only ever differs from the writer on a decision the writer will not accept.
+ */
+export function creationExemption(pattern, picked) {
+  const arns = [...(picked ?? [])].map(String).sort();
+  let out = pattern.split('${Partition}').join(arns.length ? arns[0].split(':')[1] ?? '' : 'aws');
+  if (out.includes('${Account}')) {
+    const account = arns.map((a) => a.split(':')[4]).find(Boolean);
+    if (!account) return null;
+    out = out.split('${Account}').join(account);
+  }
+  return out;
+}
+
+/**
+ * One action, one statement - before the fold. Mirrors restriction._statement.
+ *
+ * `createdFor` answers what generator/actions.Table.creation_exemptions answers on the writing
+ * side: the patterns naming the whole of every type this action brings into being. IAM authorises
+ * a multi-resource call against EVERY resource in the request, including the one being created -
+ * so an allow_only NotResource scoped to the picked subnet and security group still matches the
+ * network interface the call creates, whose ARN nobody has yet, and denies every call while
+ * reading as a scope. The exemption is what lets the Deny bite only through the resources the
+ * administrator actually chose. The reference carries the patterns as created_formats; an
+ * assessment written before it did means no exemption here, and the writer refuses or writes
+ * wider than this preview shows - the runbook's re-query step is what closes that window.
+ */
+function statement(sid, restriction, action, nested, createdFor = () => []) {
   const base = { Sid: sid, Effect: 'Deny', Action: action };
   if (restriction.intent === 'deny_action') {
     // No resource clause to compose. Byte-identical to the flat Deny an unscopable action gets
@@ -97,8 +129,14 @@ function statement(sid, restriction, action, nested) {
   const resources = resourcesFor(restriction, action, nested);
   if (restriction.intent === 'allow_only') {
     // The complement: what is KEPT is listed, so anything not listed - including whatever is
-    // created after this is written - is denied.
-    return { ...base, NotResource: resources };
+    // created after this is written - is denied. Plus the exemption for whatever THIS CALL
+    // creates. deny_only below deliberately gets none: its Resource list bites ON the named
+    // existing resources, and adding the type pattern there would deny every create outright -
+    // a different decision, with a name (deny_action).
+    const exempt = (createdFor(action) ?? [])
+      .map((pattern) => creationExemption(pattern, restriction.resources ?? []))
+      .filter(Boolean);
+    return { ...base, NotResource: [...new Set([...resources, ...exempt])].sort() };
   }
   // No resources means the flat deny the container permits for account-level actions only.
   return { ...base, Resource: resources.length ? resources : '*' };
@@ -166,11 +204,13 @@ export function fenceStatements(services, accountId) {
  * spend a single 10,240 character quota.
  */
 export function composeInline(restrictions,
-                              { accountId, fenceServices = [], nested = () => false } = {}) {
+                              { accountId, fenceServices = [], nested = () => false,
+                                createdFormats = () => [] } = {}) {
   const built = [];
   for (const restriction of restrictions ?? []) {
     for (const action of restriction.actions ?? []) {
-      built.push(statement(`${ADMIN_DENY_SID}${built.length + 1}`, restriction, action, nested));
+      built.push(statement(`${ADMIN_DENY_SID}${built.length + 1}`, restriction, action, nested,
+                           createdFormats));
     }
   }
   return {
@@ -260,11 +300,16 @@ export function policyContribution(restrictions, policy, options = {}) {
   // per-clause set of this policy's action names could not see that: the action is in the set, so
   // the statement reads as exclusively this policy's, `share` is 0 because removing this policy
   // leaves the statement standing, and an approver who unticks it expects the Deny to go.
+  // Both derivations the composed clause depends on, or the attribution key misses the fold's key.
+  // createdFormats is not decorative here: an allow_only statement on a creating action carries the
+  // creation exemption in its NotResource, so a key built without it would never match that
+  // statement and the policy's own decision would drop out of its excerpt.
   const nested = options.nested ?? (() => false);
+  const createdFormats = options.createdFormats ?? (() => []);
   const owners = new Map();
   for (const restriction of all) {
     for (const action of restriction.actions ?? []) {
-      const key = clause(statement('', restriction, action, nested));
+      const key = clause(statement('', restriction, action, nested, createdFormats));
       const perAction = owners.get(key) ?? new Map();
       const held = perAction.get(action) ?? new Set();
       held.add(restriction.policy);
