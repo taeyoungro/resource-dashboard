@@ -126,6 +126,20 @@ function statement(sid, restriction, action, nested, createdFor = () => []) {
       },
     };
   }
+  if (restriction.intent === 'key_condition') {
+    // The operator default is applied HERE, not upstream, mirroring restriction.from_dict: a
+    // decision stored without condition_operator is a StringNotEquals decision, and both languages
+    // must read it as one or the preview and the writer compose different bytes from the same row.
+    return {
+      ...base,
+      Resource: '*',
+      Condition: {
+        [restriction.condition_operator ?? 'StringNotEquals']: {
+          [restriction.condition_key ?? '']: [...(restriction.condition_values ?? [])].sort(),
+        },
+      },
+    };
+  }
   const resources = resourcesFor(restriction, action, nested);
   if (restriction.intent === 'allow_only') {
     // The complement: what is KEPT is listed, so anything not listed - including whatever is

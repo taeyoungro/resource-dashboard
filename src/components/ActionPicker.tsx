@@ -101,6 +101,9 @@ const INTENT_NOTE: Record<Restriction["intent"], string> = {
     "자원과 무관하게 동작 자체를 거부한다. 자원을 고르지 않으며, 고를 것도 없다 — 이 동작은 무엇에 "
     + "대해서도 호출할 수 없게 된다.",
   tag_condition: "태그가 붙은 자원을 거부한다. 나중에 태그가 붙는 자원까지 덮는다.",
+  key_condition:
+    "동작이 선언한 요청 조건 키로 거부한다. 여기서는 동작만 고른다 — 연산자·키·값 입력 칸은 구역 "
+    + "본문에 있다.",
 };
 
 /** One chosen action and the resources it is scoped to. */
@@ -141,9 +144,10 @@ interface Props {
   /**
    * What was kept out of the offering and where it went. Said rather than left missing: an approver
    * who cannot find lambda:CreateFunction here has to learn it is in another section, not conclude
-   * it is unrestrictable.
+   * it is unrestrictable. `lead` and `tail` replace the default sentence's two halves when the
+   * keeping-out reason is not the flat-deny one - the condition section has a reason of its own.
    */
-  elsewhere?: { count: number; section: string } | null;
+  elsewhere?: { count: number; section: string; lead?: string; tail?: string } | null;
   onCommit: (choices: Choice[]) => void;
   onCancel: () => void;
 }
@@ -544,9 +548,10 @@ export function ActionPicker({
             whole of what they need to know. */}
         {elsewhere && elsewhere.count > 0 && (
           <p className="muted small pick-elsewhere">
-            자원 목록으로 좁힐 수 없는 동작 {elsewhere.count}개는 여기에 없다 —{" "}
-            <strong>{elsewhere.section}</strong>에서 고른다. 자원을 인자로 받지 않거나, 자기가
-            지목하는 자원을 만드는 동작이라 이미 존재하는 자원의 목록으로는 좁혀지지 않는다.
+            {elsewhere.lead ?? "자원 목록으로 좁힐 수 없는 동작"} {elsewhere.count}개는 여기에
+            없다 — <strong>{elsewhere.section}</strong>에서 고른다.{" "}
+            {elsewhere.tail ?? "자원을 인자로 받지 않거나, 자기가 지목하는 자원을 만드는 동작이라 "
+              + "이미 존재하는 자원의 목록으로는 좁혀지지 않는다."}
           </p>
         )}
 

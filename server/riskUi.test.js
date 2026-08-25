@@ -394,15 +394,15 @@ const PICKER = readFileSync(new URL('../src/components/ActionPicker.tsx', import
 const INTENTS = readFileSync(new URL('../src/components/intents.ts', import.meta.url), 'utf8');
 const BLOCK = readFileSync(new URL('../src/components/BlockPath.tsx', import.meta.url), 'utf8');
 
-test('the four sections compose - a policy is not one intent at a time', () => {
+test('the five sections compose - a policy is not one intent at a time', () => {
   // It was one dropdown, so a policy carried exactly one intent and choosing a second meant giving
   // up the first. That was never a property of the statements: the permission set holds ONE inline
   // document and each decision composes its own statement into it, so "이 버킷만 남기고, 그리고
   // DeleteBucket은 아예 막는다" is two statements and always was.
   assert.ok(!/<select[\s\S]{0,200}INTENT_LABEL/.test(IMPACT),
             'the intent is a dropdown again, so the sections are mutually exclusive');
-  assert.match(INTENTS, /export const SECTIONS: Restriction\["intent"\]\[\] = \[\s*"allow_only", "deny_only", "deny_action", "tag_condition",/,
-               'the four sections are not declared as a list the editor renders one block per');
+  assert.match(INTENTS, /export const SECTIONS: Restriction\["intent"\]\[\] = \[\s*"allow_only", "deny_only", "deny_action", "tag_condition", "key_condition",/,
+               'the five sections are not declared as a list the editor renders one block per');
   // One home for the vocabulary. The editor and the block-path dialog composing from two copies is
   // how the same decision ends up reading as two different things depending on the door.
   assert.ok(IMPACT.includes('from "./intents"'), 'the editor stopped importing the shared intents');
@@ -850,4 +850,57 @@ test('the per-policy editor re-seeds when the shared array changes under it', ()
                'emit records its bytes after onChange, so the echo races the record');
   assert.match(IMPACT, /setDraft\(seedFrom\(existing\)\)/,
                'an external change does not replace the draft');
+  // The condition inputs are part of what an external merge can change, so the reseed covers them -
+  // a BlockPath key_condition decision landing under a mounted editor must not keep the old key.
+  const resync = IMPACT.slice(IMPACT.indexOf('if (incoming === lastEmitted.current) return;'),
+                              IMPACT.indexOf('}, [existing])'));
+  for (const put of ['setTagKey(', 'setTagValues(', 'setConditionKey(', 'setConditionOperator(',
+                     'setConditionValues(']) {
+    assert.ok(resync.includes(put), `the resync does not reseed ${put})`);
+  }
+});
+
+test('조건으로 거부 - the key is declared, the default is closed, the routing is its own', () => {
+  // The fifth section. Its statement is Deny Resource "*" gated by a request condition key the
+  // ACTION DECLARES - on an undeclared key the condition never evaluates (StringEquals then denies
+  // nothing, StringNotEquals denies every call), so declaration is checked at every door.
+  assert.ok(INTENTS.includes('key_condition: "조건으로 거부"'), 'the section has no name');
+  assert.match(INTENTS, /key_condition:\s*\n?\s*"동작이 선언한 요청 조건 키로 거부한다\. 기본형은 닫힌 쪽이다/,
+               'the note no longer says the default is the closed form');
+  // The default operator is the closed one, in both composers, and it is a DEFAULT - the wire may
+  // omit it and the writer parses the omission as StringNotEquals.
+  assert.match(IMPACT, /useState<"StringNotEquals" \| "StringEquals">\(\s*\(\) => keySeed\?\.condition_operator \?\? "StringNotEquals"/,
+               "the editor's operator does not seed to the closed default");
+  assert.match(BLOCK, /useState<"StringNotEquals" \| "StringEquals">\(\s*"StringNotEquals"/,
+               "the dialog's operator does not start at the closed default");
+  // The editor offers only actions with a declared key, and the picker is told the reason the rest
+  // are missing is its own - not the flat-deny sentence.
+  assert.match(IMPACT, /if \(intent === "key_condition"\) \{[\s\S]{0,600}declaredKeys\(o\.action\)\.length > 0/,
+               'the condition section offers actions whose condition can never evaluate');
+  assert.ok(IMPACT.includes('선언한 요청 조건 키가 없는 동작'),
+            'the picker gets the flat-deny sentence for a condition-section absence');
+  assert.match(PICKER, /elsewhere\.lead \?\? "자원 목록으로 좁힐 수 없는 동작"/,
+               'the default absence sentence changed or lost its override');
+  // The key input offers only keys EVERY chosen action declares - the statement carries one key
+  // for all of them - and typing past the list is answered with which actions do not declare it.
+  assert.match(IMPACT, /acc\.filter\(\(k\) => keys\.includes\(k\)\)/,
+               'the datalist is a union, offering keys some chosen action does not declare');
+  assert.match(IMPACT, /키를 선언하지\s+않는다/,
+               'an undeclared typed key is not answered with which actions lack it');
+  // Flat-only rerouting must NOT apply: the condition gates the request, so an account-level
+  // action carries it fine. Seeding and the dialog both keep the section.
+  assert.match(IMPACT, /restriction\.intent === "key_condition"\s*\n?\s*\? "key_condition"/,
+               'a stored key_condition row is rerouted at seed and the condition drops on the floor');
+  const additions = BLOCK.slice(BLOCK.indexOf('const additions = ('),
+                                BLOCK.indexOf('const writable ='));
+  assert.ok(additions.indexOf('intent === "key_condition"') < additions.indexOf('if (flatOnly(action)) {'),
+            'the dialog reroutes a flat action to deny_action before the condition branch can keep it');
+  // What the dialog drops for lacking the key is named, exactly as unreachable actions are.
+  assert.ok(BLOCK.includes('키를 선언하지 않아 빠진다'),
+            'a chosen action the key does not cover is dropped silently');
+  // No wildcard fold: the writer judges the key per covered member, and a service wildcard would
+  // smuggle in members the offer never checked.
+  const offer = IMPACT.slice(IMPACT.indexOf('const foldOffer ='), IMPACT.indexOf('const totalChosen ='));
+  assert.ok(offer.includes('intent === "key_condition"'),
+            'a condition section is offered a wildcard whose members may not declare the key');
 });

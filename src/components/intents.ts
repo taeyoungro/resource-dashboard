@@ -24,7 +24,7 @@ import type { Restriction } from "../types";
  * Ordering: the two that narrow, then the one that removes, then the one that follows a tag.
  */
 export const SECTIONS: Restriction["intent"][] = [
-  "allow_only", "deny_only", "deny_action", "tag_condition",
+  "allow_only", "deny_only", "deny_action", "tag_condition", "key_condition",
 ];
 
 export const INTENT_LABEL: Record<Restriction["intent"], string> = {
@@ -32,6 +32,7 @@ export const INTENT_LABEL: Record<Restriction["intent"], string> = {
   deny_only: "이 자원만 거부",
   deny_action: "동작 자체 거부",
   tag_condition: "태그로 거부",
+  key_condition: "조건으로 거부",
 };
 
 export const INTENT_NOTE: Record<Restriction["intent"], string> = {
@@ -39,6 +40,9 @@ export const INTENT_NOTE: Record<Restriction["intent"], string> = {
   deny_only: "고른 자원만 거부한다. 이후에 생기는 자원은 이 제한에 걸리지 않는다.",
   deny_action: "자원과 무관하게 동작 자체를 거부한다. 자원 목록으로 좁힐 수 없는 동작도 여기서 고른다.",
   tag_condition: "태그가 붙은 자원을 거부한다. 나중에 태그가 붙는 자원까지 덮는다.",
+  key_condition:
+    "동작이 선언한 요청 조건 키로 거부한다. 기본형은 닫힌 쪽이다 — \"이 값이 아니면 거부\"는 키가 "
+    + "없거나 AWS가 값을 새로 추가해도 거부된다.",
 };
 
 /** Whether this section's statements carry a resource list. Mirrors ActionPicker.isScoped. */

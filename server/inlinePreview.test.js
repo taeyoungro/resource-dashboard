@@ -488,3 +488,36 @@ test('the fixtures actually exercise the exemption, in both intents', () => {
                                        && c.restrictions.some((r) => r.intent === 'deny_only')),
             'no fixture pins that deny_only gets no exemption');
 });
+
+// ---- key_condition: deny by a declared request condition key ------------------------------------
+
+test('an absent condition operator composes as the default the writer parses', () => {
+  // restriction.from_dict fills StringNotEquals in AT PARSE, so a stored decision without the field
+  // IS a StringNotEquals decision - there is no third state. The preview applies the same default
+  // in statement(), or the same stored row composes different bytes in the two languages.
+  const stored = { policy: 'p', intent: 'key_condition',
+                   actions: ['lambda:CreateFunctionUrlConfig'],
+                   condition_key: 'lambda:FunctionUrlAuthType', condition_values: ['AWS_IAM'] };
+  const doc = composeInline([stored], { accountId: '1' });
+  assert.equal(doc.Statement[0].Resource, '*');
+  assert.deepEqual(doc.Statement[0].Condition,
+                   { StringNotEquals: { 'lambda:FunctionUrlAuthType': ['AWS_IAM'] } });
+  assert.equal(serialise(doc),
+               serialise(composeInline([{ ...stored, condition_operator: 'StringNotEquals' }],
+                                       { accountId: '1' })),
+               'the absent operator and the explicit default compose different bytes');
+});
+
+test('the fixtures actually exercise the condition intent, default and chosen', () => {
+  // Deleting the key_condition branch from statement() must fail the parity test, which it can only
+  // do while the fixture set still carries the cases - and the default-absent one is the load-
+  // bearing one, because it is the only place the two languages' parse defaults meet.
+  const rows = FIXTURES.cases.flatMap((c) => c.restrictions ?? [])
+    .filter((r) => r.intent === 'key_condition');
+  assert.ok(rows.some((r) => !r.condition_operator),
+            'no fixture pins the parse default (operator absent on the wire)');
+  assert.ok(rows.some((r) => r.condition_operator === 'StringEquals'),
+            'no fixture covers the explicitly chosen open operator');
+  assert.ok(rows.some((r) => (r.condition_values ?? []).length > 1),
+            'no fixture makes the value sort observable');
+});

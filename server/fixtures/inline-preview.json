@@ -503,6 +503,69 @@
    },
    "bytes": 397,
    "serialised": "{\"Statement\":[{\"Action\":\"ec2:CreateNetworkInterface\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:*:718100330247:network-interface/*\",\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"ec2:DeleteSubnet\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "조건 거부의 기본형은 닫힌 연산자다 (StringNotEquals)",
+   "restrictions": [
+    {
+     "policy": "AWSLambda_FullAccess",
+     "intent": "key_condition",
+     "actions": [
+      "lambda:CreateFunctionUrlConfig"
+     ],
+     "condition_key": "lambda:FunctionUrlAuthType",
+     "condition_values": [
+      "AWS_IAM"
+     ]
+    }
+   ],
+   "nested_actions": [],
+   "created_formats": {},
+   "bytes": 207,
+   "serialised": "{\"Statement\":[{\"Action\":\"lambda:CreateFunctionUrlConfig\",\"Condition\":{\"StringNotEquals\":{\"lambda:FunctionUrlAuthType\":[\"AWS_IAM\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "열린 연산자도 고를 수 있고, 고른 대로 쓴다 (StringEquals)",
+   "restrictions": [
+    {
+     "policy": "AWSLambda_FullAccess",
+     "intent": "key_condition",
+     "actions": [
+      "lambda:CreateFunctionUrlConfig"
+     ],
+     "condition_key": "lambda:FunctionUrlAuthType",
+     "condition_operator": "StringEquals",
+     "condition_values": [
+      "NONE"
+     ]
+    }
+   ],
+   "nested_actions": [],
+   "created_formats": {},
+   "bytes": 201,
+   "serialised": "{\"Statement\":[{\"Action\":\"lambda:CreateFunctionUrlConfig\",\"Condition\":{\"StringEquals\":{\"lambda:FunctionUrlAuthType\":[\"NONE\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
+  },
+  {
+   "label": "같은 조건의 두 동작은 한 문장으로 접히고 값은 정렬된다",
+   "restrictions": [
+    {
+     "policy": "AWSLambda_FullAccess",
+     "intent": "key_condition",
+     "actions": [
+      "lambda:UpdateFunctionUrlConfig",
+      "lambda:CreateFunctionUrlConfig"
+     ],
+     "condition_key": "lambda:FunctionUrlAuthType",
+     "condition_values": [
+      "NONE",
+      "AWS_IAM"
+     ]
+    }
+   ],
+   "nested_actions": [],
+   "created_formats": {},
+   "bytes": 249,
+   "serialised": "{\"Statement\":[{\"Action\":[\"lambda:CreateFunctionUrlConfig\",\"lambda:UpdateFunctionUrlConfig\"],\"Condition\":{\"StringNotEquals\":{\"lambda:FunctionUrlAuthType\":[\"AWS_IAM\",\"NONE\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}"
   }
  ]
 }

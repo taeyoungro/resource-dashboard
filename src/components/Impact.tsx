@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
   Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPassRoleGrant, ImpactPolicy,
   ImpactResource, Restriction,
@@ -149,6 +149,22 @@ function createdFormatsOf(reference: ImpactActionReference | null): (action: str
   return (action: string) => {
     const cut = action.indexOf(":");
     return created[action.slice(0, cut)]?.[action.slice(cut + 1)] ?? [];
+  };
+}
+
+/**
+ * The request condition keys an action declares, from the same reference. What the 조건으로 거부
+ * section offers and checks against: on an action that does not declare the key, the condition
+ * never evaluates - StringEquals then denies nothing, StringNotEquals denies every call - and
+ * either way the statement reads as the chosen control, which is why the writer refuses it. An
+ * assessment written before the reference carried the vocabulary answers [] for everything, and
+ * the section then offers nothing: unknown is not empty.
+ */
+function conditionKeysOf(reference: ImpactActionReference | null): (action: string) => string[] {
+  const declared = reference?.condition_keys ?? {};
+  return (action: string) => {
+    const cut = action.indexOf(":");
+    return declared[action.slice(0, cut)]?.[action.slice(cut + 1)] ?? [];
   };
 }
 
@@ -474,6 +490,19 @@ function PolicyInlinePreview({
 
 /** One draft per section. Every section is present, most of them usually empty. */
 type Draft = Record<Restriction["intent"], Choice[]>;
+
+/**
+ * The inputs that ride beside the per-section action lists - a tag half typed, a condition value
+ * still being written. Held as the strings on screen and composed into restrictions on every emit,
+ * so the shared array stays the single source of truth for what gets submitted.
+ */
+type ConditionFields = {
+  tagKey: string;
+  tagValues: string;
+  conditionKey: string;
+  conditionOperator: "StringNotEquals" | "StringEquals";
+  conditionValues: string;
+};
 
 export function Impact({
   assessment, source, restrictions, onChange, disabled,
@@ -1014,6 +1043,11 @@ function RestrictionEditor({
     return entry ? entry[1].length === 0 || entry[2] === true : false;
   };
 
+  /** The request condition keys an action declares - what 조건으로 거부 offers and checks. */
+  const declaredKeys = conditionKeysOf(reference);
+  /** One datalist for the condition-key input, whichever section renders it. */
+  const conditionKeyListId = useId();
+
   // The draft, seeded from the shared array. Every change emits the whole set upward, so the
   // parent's array stays the single source of truth for what gets submitted while this holds the
   // parts a restriction needs before it is one - a section with no actions yet, or a tag key half
@@ -1025,10 +1059,17 @@ function RestrictionEditor({
   // list. Reading it back into the section that now owns it is reading it back as what it is.
   const seedFrom = (source: Restriction[]): Draft => {
     // Fresh arrays every call - a shared module-level constant here would alias every policy block.
-    const seeded: Draft = { allow_only: [], deny_only: [], deny_action: [], tag_condition: [] };
+    const seeded: Draft = {
+      allow_only: [], deny_only: [], deny_action: [], tag_condition: [], key_condition: [],
+    };
     for (const restriction of source) {
       for (const action of restriction.actions) {
-        const into = flatOnly(action) ? "deny_action" : restriction.intent;
+        // key_condition keeps its section even for an action a list of ARNs cannot scope: the
+        // condition gates the REQUEST, not a resource, so an account-level action carries it fine
+        // (ec2:DescribeVpcs declares ec2:Region) - rerouting would silently drop the condition.
+        const into = restriction.intent === "key_condition"
+          ? "key_condition"
+          : flatOnly(action) ? "deny_action" : restriction.intent;
         if (seeded[into].some((c) => c.action === action)) continue;
         seeded[into].push({
           action,
@@ -1042,6 +1083,17 @@ function RestrictionEditor({
   const tagSeed = existing.find((r) => r.intent === "tag_condition");
   const [tagKey, setTagKey] = useState(() => tagSeed?.tag_key ?? "");
   const [tagValues, setTagValues] = useState(() => (tagSeed?.tag_values ?? []).join(","));
+  // The condition inputs, seeded the same way. An operator absent on the wire seeds as the closed
+  // default - restriction.from_dict fills StringNotEquals in at parse, so this shows the operator
+  // the writer will read, not a blank.
+  const keySeed = existing.find((r) => r.intent === "key_condition");
+  const [conditionKey, setConditionKey] = useState(() => keySeed?.condition_key ?? "");
+  const [conditionOperator, setConditionOperator] = useState<"StringNotEquals" | "StringEquals">(
+    () => keySeed?.condition_operator ?? "StringNotEquals",
+  );
+  const [conditionValues, setConditionValues] = useState(
+    () => (keySeed?.condition_values ?? []).join(","),
+  );
 
   // RE-SEEDED when the shared array changes under this editor - which it now can: the risk panel's
   // 차단 dialog merges restrictions for this same policy from a finding card. The draft was seeded
@@ -1062,6 +1114,10 @@ function RestrictionEditor({
     const tag = existing.find((r) => r.intent === "tag_condition");
     setTagKey(tag?.tag_key ?? "");
     setTagValues((tag?.tag_values ?? []).join(","));
+    const keyed = existing.find((r) => r.intent === "key_condition");
+    setConditionKey(keyed?.condition_key ?? "");
+    setConditionOperator(keyed?.condition_operator ?? "StringNotEquals");
+    setConditionValues((keyed?.condition_values ?? []).join(","));
     // seedFrom and the tag reads are derived from `existing` alone; flatOnly is stable per
     // reference. The serialised comparison is the real dependency gate.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1077,10 +1133,17 @@ function RestrictionEditor({
    * beside it makes moot, which is bytes spent to say nothing and a document an approver cannot
    * read. The pickers refuse it rather than this reconciling it after the fact.
    */
-  const compose = (next: Draft, key: string, values: string): Restriction[] => {
+  const compose = (next: Draft, fields: ConditionFields): Restriction[] => {
     const tag = {
-      tag_key: key.trim(),
-      tag_values: values.split(",").map((v) => v.trim()).filter(Boolean),
+      tag_key: fields.tagKey.trim(),
+      tag_values: fields.tagValues.split(",").map((v) => v.trim()).filter(Boolean),
+    };
+    // The operator travels explicitly even though it equals the parse default: the wire then never
+    // disagrees with what the select shows, and the writer reads both spellings as one decision.
+    const keyed = {
+      condition_key: fields.conditionKey.trim(),
+      condition_operator: fields.conditionOperator,
+      condition_values: fields.conditionValues.split(",").map((v) => v.trim()).filter(Boolean),
     };
     return SECTIONS.flatMap((intent) => next[intent].map((choice): Restriction => ({
       policy,
@@ -1088,15 +1151,22 @@ function RestrictionEditor({
       actions: [choice.action],
       ...(isScoped(intent)
         ? { resources: choice.resources }
+        : intent === "key_condition" ? keyed
         : intent === "tag_condition" ? tag : {}),
     })));
   };
 
-  const emit = (next: Draft, key = tagKey, values = tagValues) => {
+  const emit = (next: Draft, over: Partial<ConditionFields> = {}) => {
+    const fields: ConditionFields = {
+      tagKey, tagValues, conditionKey, conditionOperator, conditionValues, ...over,
+    };
     setDraft(next);
-    setTagKey(key);
-    setTagValues(values);
-    const composed = compose(next, key, values);
+    setTagKey(fields.tagKey);
+    setTagValues(fields.tagValues);
+    setConditionKey(fields.conditionKey);
+    setConditionOperator(fields.conditionOperator);
+    setConditionValues(fields.conditionValues);
+    const composed = compose(next, fields);
     // Recorded BEFORE onChange: the parent's update lands back here as `existing`, and these bytes
     // are how the resync effect above recognises its own echo instead of reseeding over the draft.
     lastEmitted.current = JSON.stringify(composed);
@@ -1120,6 +1190,11 @@ function RestrictionEditor({
     }
     if (intent === "tag_condition" && flatOnly(action)) {
       return `${action}은 태그를 읽을 자원이 없다 — "동작 자체 거부"에서 고른다`;
+    }
+    // A hand-typed name for the condition section: without a declared key the condition never
+    // evaluates and the writer refuses the statement, so the way to deny one of these is outright.
+    if (intent === "key_condition" && declaredKeys(action).length === 0) {
+      return `${action}은 선언한 요청 조건 키가 없다 — 조건 없이 막으려면 "동작 자체 거부"에서 고른다`;
     }
     return null;
   };
@@ -1180,6 +1255,19 @@ function RestrictionEditor({
   const offeringFor = (intent: Restriction["intent"]) => {
     if (intent === "deny_action") return { offering: covered, hidden: 0 };
     let hidden = 0;
+    if (intent === "key_condition") {
+      // Only actions that declare a request condition key. On the rest the statement would be
+      // recorded and never evaluated, which the writer refuses - and an assessment from before
+      // the reference carried the vocabulary declares nothing here, because unknown is not empty.
+      const offering = covered
+        .map(({ service, offers }) => {
+          const keep = offers.filter((o) => declaredKeys(o.action).length > 0);
+          hidden += offers.length - keep.length;
+          return { service, offers: keep };
+        })
+        .filter((g) => g.offers.length > 0);
+      return { offering, hidden };
+    }
     const offering = covered
       .map(({ service, offers }) => {
         const keep = offers.filter((o) => !o.account_level && !o.creates_target);
@@ -1202,7 +1290,10 @@ function RestrictionEditor({
     // the action, because a page that quietly widened [8 names] into athena:* would be restricting
     // actions this approval does not grant - which is the one thing generator/restriction.py
     // refuses by name, and which after B-1 it can now actually see.
-    if (intent === "tag_condition" || choices.length === 0) return null;
+    // key_condition too: a service wildcard covers members the offer never checked against the
+    // key, and the writer judges the key per covered member - lambda:Create* smuggles CreateAlias
+    // in and is refused. The fold has no way to promise every member declares the key.
+    if (intent === "tag_condition" || intent === "key_condition" || choices.length === 0) return null;
     const one = new Set(choices.map((c) => JSON.stringify([...c.resources].sort())));
     // One resource clause, because the statement it would become is one statement. A mixed set is
     // several statements and folding them together is not this offer.
@@ -1287,6 +1378,7 @@ function RestrictionEditor({
                     <code>{choice.action}</code>
                     <span className="muted">
                       {intent === "tag_condition" && "태그 조건"}
+                      {intent === "key_condition" && "요청 조건"}
                       {intent === "deny_action" && "자원 없이 거부"}
                       {isScoped(intent) && (choice.resources.length > 0
                         ? `자원 ${choice.resources.length}개`
@@ -1319,15 +1411,73 @@ function RestrictionEditor({
                   placeholder="env"
                   disabled={disabled}
                   value={tagKey}
-                  onChange={(e) => emit(draft, e.target.value, tagValues)}
+                  onChange={(e) => emit(draft, { tagKey: e.target.value })}
                 />
                 <input
                   type="text"
                   placeholder="prod (쉼표로 여러 개)"
                   disabled={disabled}
                   value={tagValues}
-                  onChange={(e) => emit(draft, tagKey, e.target.value)}
+                  onChange={(e) => emit(draft, { tagValues: e.target.value })}
                 />
+              </fieldset>
+            )}
+
+            {intent === "key_condition" && choices.length > 0 && (
+              <fieldset>
+                <legend>요청 조건</legend>
+                {/* The closed form first and preselected. "이 값이 아니면 거부" holds when the key
+                    is missing and when AWS adds a value later; the open form is chosen, not
+                    defaulted into. */}
+                <select
+                  disabled={disabled}
+                  value={conditionOperator}
+                  onChange={(e) => emit(draft, {
+                    conditionOperator: e.target.value as "StringNotEquals" | "StringEquals",
+                  })}
+                >
+                  <option value="StringNotEquals">StringNotEquals — 이 값이 아니면 거부</option>
+                  <option value="StringEquals">StringEquals — 이 값이면 거부</option>
+                </select>
+                <input
+                  type="text"
+                  list={conditionKeyListId}
+                  placeholder="lambda:FunctionUrlAuthType"
+                  disabled={disabled}
+                  value={conditionKey}
+                  onChange={(e) => emit(draft, { conditionKey: e.target.value })}
+                />
+                {/* Only keys EVERY chosen action declares: the statement carries one key for all
+                    of them, and the writer judges it per action. */}
+                <datalist id={conditionKeyListId}>
+                  {(choices
+                    .map((c) => declaredKeys(c.action))
+                    .reduce<string[] | null>(
+                      (acc, keys) => (acc === null
+                        ? [...keys]
+                        : acc.filter((k) => keys.includes(k))),
+                      null,
+                    ) ?? []).map((key) => <option key={key} value={key} />)}
+                </datalist>
+                <input
+                  type="text"
+                  placeholder="AWS_IAM (쉼표로 여러 개)"
+                  disabled={disabled}
+                  value={conditionValues}
+                  onChange={(e) => emit(draft, { conditionValues: e.target.value })}
+                />
+                {conditionKey.trim() !== "" && (() => {
+                  const undeclared = choices
+                    .filter((c) => !declaredKeys(c.action).includes(conditionKey.trim()))
+                    .map((c) => c.action);
+                  return undeclared.length > 0 && (
+                    <p className="warn-inline">
+                      {undeclared.join(", ")}은 <code>{conditionKey.trim()}</code> 키를 선언하지
+                      않는다. 선언되지 않은 키의 조건은 평가되지 않으므로 서버가 거부한다 — 키를
+                      바꾸거나 그 동작을 빼면 된다.
+                    </p>
+                  );
+                })()}
               </fieldset>
             )}
 
@@ -1338,8 +1488,11 @@ function RestrictionEditor({
                 chosen={choices}
                 /* An action the policy names literally and the reference does not carry. flatOnly is
                    false for anything unknown, so this filter removes only the ones this page can
-                   positively say a list of ARNs cannot scope. */
-                named={intent === "deny_action" ? offerable : offerable.filter((a) => !flatOnly(a))}
+                   positively say a list of ARNs cannot scope. The condition section keeps only what
+                   declares a key - flat or not, the condition gates the request. */
+                named={intent === "deny_action" ? offerable
+                  : intent === "key_condition" ? offerable.filter((a) => declaredKeys(a).length > 0)
+                  : offerable.filter((a) => !flatOnly(a))}
                 covered={offering}
                 uncovered={uncovered}
                 referenceError={referenceError}
@@ -1348,7 +1501,15 @@ function RestrictionEditor({
                 primary={primary}
                 cannotHold={heldElsewhere(intent)}
                 elsewhere={hidden > 0
-                  ? { count: hidden, section: INTENT_LABEL.deny_action }
+                  ? (intent === "key_condition"
+                    ? {
+                      count: hidden,
+                      section: INTENT_LABEL.deny_action,
+                      lead: "선언한 요청 조건 키가 없는 동작",
+                      tail: "선언되지 않은 키의 조건은 평가되지 않아 문장이 기록만 된다. 조건 없이"
+                        + " 막는 결정은 저 구역의 것이다.",
+                    }
+                    : { count: hidden, section: INTENT_LABEL.deny_action })
                   : null}
                 onCommit={(next) => {
                   setSection(intent, next);

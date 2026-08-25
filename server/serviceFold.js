@@ -100,9 +100,11 @@ export function serviceFold({ actions, resources, intent, groups, granted }) {
     // or ticking eight actions would silently become "deny the service".
     required = new Set(inService(granted));
   } else {
-    // tag_condition applies to Resource "*" with a condition on the resource's tag. The wildcard
-    // there would reach every action of the service including the ones that carry no resource and
-    // therefore no tag, and what those do is not something this can establish. Not offered.
+    // The condition intents. tag_condition applies to Resource "*" with a condition on the
+    // resource's tag; the wildcard there would reach every action of the service including the
+    // ones that carry no resource and therefore no tag, and what those do is not something this
+    // can establish. key_condition is judged per covered member against the keys each action
+    // declares, which a service wildcard cannot promise for members nobody looked at. Not offered.
     return null;
   }
 

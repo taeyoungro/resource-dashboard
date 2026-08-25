@@ -38,14 +38,15 @@ interface Props {
   onCancel: () => void;
 }
 
-// The last two are unreachable in practice - neither section opens this dialog, because neither
-// statement carries a resource list. Present so the map is total: a heading that reads as an error
-// beats an undefined one if a route ever appears.
+// The unscoped three are unreachable in practice - no such section opens this dialog, because none
+// of their statements carries a resource list. Present so the map is total: a heading that reads as
+// an error beats an undefined one if a route ever appears.
 const HEADING: Record<Restriction["intent"], string> = {
   allow_only: "허용할 자원 — 고른 것만 남고 나머지는 거부된다",
   deny_only: "거부할 자원 — 고른 것만 거부된다",
   deny_action: "동작 자체 거부는 자원을 지목하지 않는다",
   tag_condition: "태그 조건은 자원을 지목하지 않는다",
+  key_condition: "요청 조건은 자원을 지목하지 않는다",
 };
 
 export function ResourcePicker({
