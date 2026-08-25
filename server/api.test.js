@@ -535,11 +535,131 @@ test('deny_action refuses what it would record and never evaluate', async () => 
   );
 });
 
-test('four sections on one policy are four restrictions in the marker', async () => {
+// An assessment whose reference carries the condition-key vocabulary, for the key_condition gates.
+// The design review's example: lambda:CreateFunctionUrlConfig declares lambda:FunctionUrlAuthType.
+const KEYED = {
+  ...ASSESSMENT,
+  action_reference: {
+    ...ASSESSMENT.action_reference,
+    services: {
+      ...ASSESSMENT.action_reference.services,
+      lambda: { CreateFunctionUrlConfig: ['Write', ['function']] },
+    },
+    condition_keys: { lambda: { CreateFunctionUrlConfig: ['lambda:FunctionUrlAuthType'] } },
+  },
+};
+
+test('a key_condition on a declared key is written, operator and all', async () => {
+  // The operator is absent on purpose: the writer's parser fills in StringNotEquals, so the route
+  // must not demand it - absence is the closed default, not a third state.
+  const { route, s3, impactSha256 } = harness({ assessment: KEYED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ policy: restriction.policy, intent: 'key_condition',
+                       actions: ['lambda:CreateFunctionUrlConfig'],
+                       condition_key: 'lambda:FunctionUrlAuthType',
+                       condition_values: ['AWS_IAM'] }],
+      expected_impact_sha256: impactSha256,
+    }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal(marker.restrictions[0].intent, 'key_condition');
+  assert.equal(marker.restrictions[0].condition_key, 'lambda:FunctionUrlAuthType');
+  assert.deepEqual(marker.restrictions[0].condition_values, ['AWS_IAM']);
+});
+
+test('a key the action does not declare is refused with what it does declare', async () => {
+  // On an action that does not declare the key, the condition never evaluates - under StringEquals
+  // the statement denies nothing, under StringNotEquals it denies every call - and either way it
+  // reads as the control that was chosen. The writer refuses this; refusing here means the person
+  // hears it while choosing, with the declared keys as the way forward.
+  const { route, impactSha256 } = harness({ assessment: KEYED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ policy: restriction.policy, intent: 'key_condition',
+                         actions: ['lambda:CreateFunctionUrlConfig'],
+                         condition_key: 'lambda:FunctionUrlSomethingElse',
+                         condition_values: ['NONE'] }],
+        expected_impact_sha256: impactSha256,
+      }),
+    }),
+    /does not declare .*It declares: lambda:FunctionUrlAuthType/,
+  );
+  // And an action with no declared keys at all says that, rather than listing nothing.
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ policy: restriction.policy, intent: 'key_condition',
+                         actions: ['sqs:DeleteMessage'],
+                         condition_key: 'sqs:SomeKey', condition_values: ['x'] }],
+        expected_impact_sha256: impactSha256,
+      }),
+    }),
+    /declares no service condition key at all/,
+  );
+});
+
+test('an assessment without the vocabulary passes key_condition through to the writer', async () => {
+  // The same arrangement created_formats has: an assessment written before the reference carried
+  // condition_keys cannot distinguish "declares no keys" from "predates the map", so the route does
+  // not guess - the writer refuses authoritatively, and the runbook's re-query step closes the
+  // window. Structural gates still apply either way.
+  const { route, s3 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ policy: restriction.policy, intent: 'key_condition',
+                       actions: ['sqs:DeleteMessage'],
+                       condition_key: 'sqs:SomeKey', condition_values: ['x'] }],
+      expected_impact_sha256: ASSESSMENT_SHA,
+    }),
+  });
+  assert.ok(s3.puts.some((p) => p.key.startsWith('applier/')));
+});
+
+test('key_condition refuses what it would record and never evaluate', async () => {
+  const { route, impactSha256 } = harness({ assessment: KEYED });
+  const attempt = (extra) => route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ policy: restriction.policy, intent: 'key_condition',
+                       actions: ['lambda:CreateFunctionUrlConfig'],
+                       condition_key: 'lambda:FunctionUrlAuthType',
+                       condition_values: ['AWS_IAM'], ...extra }],
+      expected_impact_sha256: impactSha256,
+    }),
+  });
+  await assert.rejects(attempt({ condition_values: [] }), /needs both a condition key/);
+  await assert.rejects(attempt({ condition_operator: 'StringLike' }), /must be one of/);
+  await assert.rejects(attempt({ resources: [QUEUE] }), /change nothing about the statement/);
+  await assert.rejects(attempt({ tag_key: 'env', tag_values: ['prod'] }), /"태그로 거부"/);
+});
+
+test('condition fields on any other intent are refused as recorded-and-inert', async () => {
+  // The mirror of the writer's cross-intent gate: only key_condition composes a request-key
+  // condition, so these fields anywhere else would sit in the marker and never reach a statement.
+  const { route } = harness({ pushed: PUSHED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ ...restriction, condition_key: 'sqs:SomeKey' }],
+        expected_impact_sha256: ASSESSMENT_SHA,
+      }),
+    }),
+    /Only "조건으로 거부" composes a request-key condition/,
+  );
+});
+
+test('five sections on one policy are five restrictions in the marker', async () => {
   // The composability the editor was rebuilt for. A policy carried exactly one intent because the
   // page had one dropdown, never because the wire could not hold more - a Deny is a Deny whatever
   // prompted it, and each decision composes its own statement into the one inline document.
-  const { route, s3 } = harness({ pushed: PUSHED });
+  const { route, s3, impactSha256 } = harness({ assessment: KEYED });
   await route['POST /api/plans/:id/decision']({
     params: { id: PLAN_ID },
     body: decision({
@@ -551,13 +671,16 @@ test('four sections on one policy are four restrictions in the marker', async ()
         { policy: restriction.policy, intent: 'deny_action', actions: ['sqs:CreateQueue'] },
         { policy: restriction.policy, intent: 'tag_condition',
           actions: ['sqs:PurgeQueue'], tag_key: 'env', tag_values: ['prod'] },
+        { policy: restriction.policy, intent: 'key_condition',
+          actions: ['lambda:CreateFunctionUrlConfig'],
+          condition_key: 'lambda:FunctionUrlAuthType', condition_values: ['AWS_IAM'] },
       ],
-      expected_impact_sha256: ASSESSMENT_SHA,
+      expected_impact_sha256: impactSha256,
     }),
   });
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.deepEqual(marker.restrictions.map((r) => r.intent),
-                   ['allow_only', 'deny_only', 'deny_action', 'tag_condition']);
+                   ['allow_only', 'deny_only', 'deny_action', 'tag_condition', 'key_condition']);
 });
 
 test('an action with resource types is unaffected by the account-level checks', async () => {

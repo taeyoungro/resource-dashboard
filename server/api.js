@@ -84,14 +84,19 @@ export function authorisedToAnnounce(config, headerValue) {
 // estimates that and says so before submitting, and generator/restriction.py measures it exactly.
 const MAX_RESTRICTIONS = 200;
 
-// The four forms, and they are not interchangeable - they produce different statements and go stale
+// The five forms, and they are not interchangeable - they produce different statements and go stale
 // in different directions. See event_pipeline code/generator/restriction.py.
 //
 // They are also composable: one policy may carry a decision of each, arriving as separate entries in
 // this list. deny_action is the same STATEMENT as deny_only with an empty resource list and a
 // different DECISION - an empty deny_only is a forgotten pick and is still refused as one, while
-// deny_action is the action chosen for itself and is refused for nothing.
-const RESTRICTION_INTENTS = new Set(['allow_only', 'deny_only', 'deny_action', 'tag_condition']);
+// deny_action is the action chosen for itself and is refused for nothing. key_condition gates the
+// action on a request condition key the action itself declares; its operator default is
+// StringNotEquals, filled in at parse on the writing side, so absence is not a third state.
+const RESTRICTION_INTENTS = new Set([
+  'allow_only', 'deny_only', 'deny_action', 'tag_condition', 'key_condition',
+]);
+const CONDITION_OPERATORS = new Set(['StringNotEquals', 'StringEquals']);
 
 export const INGEST_ROUTES = new Set([
   'POST /api/notifications',
@@ -811,6 +816,17 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
             }
           }
         }
+        // The condition-key vocabulary the assessment carries, action -> the keys it declares.
+        // Absent as a whole on assessments written before the reference carried it - then the
+        // declared-key gate below passes through and the writer refuses authoritatively, the same
+        // arrangement created_formats has. Absent per action means the action declares none.
+        const referenceConditionKeys = stored.document.action_reference?.condition_keys;
+        const declaredKeys = new Map();
+        for (const [service, block] of Object.entries(referenceConditionKeys ?? {})) {
+          for (const [name, keys] of Object.entries(block)) {
+            declaredKeys.set(`${service}:${name}`, new Set(keys ?? []));
+          }
+        }
         for (const restriction of restrictions) {
           if (!RESTRICTION_INTENTS.has(restriction.intent)) {
             throw new HttpError(400, `restriction intent must be one of `
@@ -841,6 +857,78 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
                 '"동작 자체 거부" is unconditional by construction; a tag here would be recorded and '
                 + 'never evaluated.',
               );
+            }
+          }
+          // The mirror of the writer's cross-intent gate: only key_condition composes a request-key
+          // condition, so these fields on any other intent would sit in the marker as part of the
+          // decision and never reach the statement - recorded-and-inert.
+          if (restriction.intent !== 'key_condition'
+              && (restriction.condition_key || restriction.condition_operator
+                  || (Array.isArray(restriction.condition_values)
+                      && restriction.condition_values.length > 0))) {
+            throw new HttpError(
+              400,
+              `a ${restriction.intent} restriction carries condition fields. Only "조건으로 거부" `
+              + 'composes a request-key condition; anywhere else they would be recorded and never '
+              + 'evaluated.',
+            );
+          }
+          if (restriction.intent === 'key_condition') {
+            const values = Array.isArray(restriction.condition_values)
+              ? restriction.condition_values : [];
+            if (!restriction.condition_key || values.length === 0
+                || values.some((v) => typeof v !== 'string' || !v.trim())) {
+              throw new HttpError(
+                400,
+                '"조건으로 거부" needs both a condition key and at least one value, as strings.',
+              );
+            }
+            // Absent is not an error - the writer parses it as StringNotEquals, the closed form.
+            if (restriction.condition_operator != null
+                && !CONDITION_OPERATORS.has(restriction.condition_operator)) {
+              throw new HttpError(
+                400,
+                `condition_operator must be one of ${[...CONDITION_OPERATORS].join(', ')}. `
+                + 'StringNotEquals is the closed form - a missing key or a value AWS adds later is '
+                + 'denied; StringEquals is the open form and says so.',
+              );
+            }
+            if (Array.isArray(restriction.resources) && restriction.resources.length > 0) {
+              throw new HttpError(
+                400,
+                '"조건으로 거부" gates the action on a request key - Resource "*" - so the resources '
+                + 'named here would be recorded and change nothing about the statement. If the '
+                + 'resources are the point, the section is "이 자원만 허용" or "이 자원만 거부".',
+              );
+            }
+            if (restriction.tag_key || (Array.isArray(restriction.tag_values)
+                                        && restriction.tag_values.length > 0)) {
+              throw new HttpError(
+                400,
+                '"조건으로 거부" reads a request condition key; a resource tag is the section '
+                + '"태그로 거부", which owns its own gates.',
+              );
+            }
+            // The coherence gate, early: on an action that does not declare the key, the condition
+            // never evaluates - under StringEquals the statement denies nothing, under
+            // StringNotEquals it denies every call - and either way it reads as the control that
+            // was chosen. Exact names only: a wildcard action is left to the writer, which expands
+            // it per covered member; an assessment without the vocabulary likewise.
+            if (referenceConditionKeys) {
+              for (const action of actions) {
+                if (action.includes('*')) continue;
+                if (!declaredKeys.get(action.trim())?.has(restriction.condition_key)) {
+                  const known = [...(declaredKeys.get(action.trim()) ?? [])];
+                  throw new HttpError(
+                    400,
+                    `${action} does not declare ${restriction.condition_key}, so the key would be `
+                    + 'absent from its request context and the condition would never evaluate. '
+                    + (known.length
+                      ? `It declares: ${known.slice(0, 4).join(', ')}.`
+                      : 'It declares no service condition key at all.'),
+                  );
+                }
+              }
             }
           }
           for (const action of actions) {

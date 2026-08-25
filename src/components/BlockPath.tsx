@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
   Finding, ImpactActionReference, ImpactGroup, ImpactPolicy, Restriction,
 } from "../types";
@@ -67,6 +67,13 @@ export function BlockPath({
     return entry ? entry[1].length === 0 || entry[2] === true : false;
   };
 
+  /** Same vocabulary as the editor's condition section: the keys an action declares, or []. */
+  const declaredKeys = (action: string): string[] => {
+    const cut = action.indexOf(":");
+    return reference?.condition_keys?.[action.slice(0, cut)]?.[action.slice(cut + 1)] ?? [];
+  };
+  const conditionKeyListId = useId();
+
   const reachedBy = (action: string): ImpactGroup[] =>
     policy.affected.filter((g) => g.actions.includes(action));
 
@@ -78,6 +85,11 @@ export function BlockPath({
   const [scoping, setScoping] = useState<string | null>(null);
   const [tagKey, setTagKey] = useState("");
   const [tagValues, setTagValues] = useState("");
+  const [conditionKey, setConditionKey] = useState("");
+  const [conditionOperator, setConditionOperator] = useState<"StringNotEquals" | "StringEquals">(
+    "StringNotEquals",
+  );
+  const [conditionValues, setConditionValues] = useState("");
 
   const toggle = (action: string) => setSelected((current) => {
     const next = new Set(current);
@@ -100,6 +112,15 @@ export function BlockPath({
     : [];
   const tagMissing = intent === "tag_condition"
     && (!tagKey.trim() || tagValues.split(",").every((v) => !v.trim()));
+  const conditionMissing = intent === "key_condition"
+    && (!conditionKey.trim() || conditionValues.split(",").every((v) => !v.trim()));
+  // Chosen actions that do not declare the typed key. Dropped and named, exactly as unreachable
+  // actions are under a scoped intent: on these the condition would never evaluate and the writer
+  // refuses the statement. Only judged once a key is typed - before that the gate above holds
+  // 적용 shut anyway.
+  const keyless = intent === "key_condition" && conditionKey.trim()
+    ? chosen.filter((o) => !declaredKeys(o.action).includes(conditionKey.trim()))
+    : [];
 
   /** The decisions 적용 hands to mergeBlock. One restriction per action, like everywhere else. */
   const additions = (): Restriction[] => {
@@ -109,6 +130,20 @@ export function BlockPath({
     };
     const rows: Restriction[] = [];
     for (const { action } of chosen) {
+      if (intent === "key_condition") {
+        // BEFORE the flat-only routing, which must not apply here: the condition gates the
+        // REQUEST, not a resource, so an action a list of ARNs cannot scope carries it fine
+        // (ec2:DescribeVpcs declares ec2:Region) - rerouting would drop the condition. What is
+        // dropped instead is an action that does not declare the key, named in the footer.
+        if (!declaredKeys(action).includes(conditionKey.trim())) continue;
+        rows.push({
+          policy: finding.policyName, intent, actions: [action],
+          condition_key: conditionKey.trim(),
+          condition_operator: conditionOperator,
+          condition_values: conditionValues.split(",").map((v) => v.trim()).filter(Boolean),
+        });
+        continue;
+      }
       if (flatOnly(action)) {
         // A list of ARNs cannot scope it, so the flat Deny is the only statement it has -
         // whatever intent the rest are under. Said in the row, decided here.
@@ -130,7 +165,7 @@ export function BlockPath({
     return rows;
   };
 
-  const writable = chosen.length - unreachable.length;
+  const writable = chosen.length - unreachable.length - keyless.length;
   /** Prior decisions 적용 will replace - a newer decision, and the row says it is one. */
   const held = new Set(
     restrictions.filter((r) => r.policy === finding.policyName)
@@ -185,7 +220,7 @@ export function BlockPath({
                     <input type="checkbox" checked={on} disabled={forbidden}
                            onChange={() => toggle(action)} />
                     <code className={forbidden ? "deny-forbidden" : undefined}>{action}</code>
-                    {isFlat && !forbidden && (
+                    {isFlat && !forbidden && intent !== "key_condition" && (
                       <span className="rtype" title="자원 목록으로 좁힐 수 없어, 어느 형태를 골라도 동작 자체 거부로 작성됩니다.">
                         동작 자체 거부로 작성
                       </span>
@@ -228,6 +263,31 @@ export function BlockPath({
                    onChange={(e) => setTagValues(e.target.value)} />
           </fieldset>
         )}
+
+        {intent === "key_condition" && (
+          <fieldset>
+            <legend>요청 조건</legend>
+            <select value={conditionOperator}
+                    onChange={(e) => setConditionOperator(
+                      e.target.value as "StringNotEquals" | "StringEquals",
+                    )}>
+              <option value="StringNotEquals">StringNotEquals — 이 값이 아니면 거부</option>
+              <option value="StringEquals">StringEquals — 이 값이면 거부</option>
+            </select>
+            <input type="text" list={conditionKeyListId}
+                   placeholder="lambda:FunctionUrlAuthType" value={conditionKey}
+                   onChange={(e) => setConditionKey(e.target.value)} />
+            {/* The union of what the chosen actions declare, because a key some of them lack drops
+                only those - named in the footer - where the editor's stricter list would offer
+                nothing until the selection shrank. */}
+            <datalist id={conditionKeyListId}>
+              {[...new Set(chosen.flatMap((o) => declaredKeys(o.action)))].sort()
+                .map((key) => <option key={key} value={key} />)}
+            </datalist>
+            <input type="text" placeholder="AWS_IAM (쉼표로 여러 개)" value={conditionValues}
+                   onChange={(e) => setConditionValues(e.target.value)} />
+          </fieldset>
+        )}
       </div>
 
       <footer>
@@ -245,12 +305,20 @@ export function BlockPath({
             {unreachable.slice(0, 3).map((o) => o.action).join(", ")}
           </span>
         )}
+        {keyless.length > 0 && (
+          <span className="dropped-actions">
+            <code>{conditionKey.trim()}</code> 키를 선언하지 않아 빠진다 —{" "}
+            {keyless.slice(0, 3).map((o) => o.action).join(", ")}
+            {keyless.length > 3 && ` 외 ${keyless.length - 3}개`}
+          </span>
+        )}
         <button type="button" className="grow" onClick={onClose}>취소</button>
         <button
           type="button"
           className="commit"
-          disabled={writable <= 0 || needsPick.length > 0 || tagMissing}
-          title={tagMissing ? "태그 키와 값이 필요하다" : undefined}
+          disabled={writable <= 0 || needsPick.length > 0 || tagMissing || conditionMissing}
+          title={tagMissing ? "태그 키와 값이 필요하다"
+            : conditionMissing ? "조건 키와 값이 필요하다" : undefined}
           onClick={() => {
             onChange(mergeBlock(restrictions, finding.policyName, additions()));
             onClose();

@@ -311,9 +311,19 @@ export interface Restriction {
   resources?: string[];
   tag_key?: string;
   tag_values?: string[];
+  /**
+   * key_condition only. The key must be one the ACTION DECLARES (action_reference.condition_keys),
+   * or the condition never evaluates - StringEquals then denies nothing, StringNotEquals denies
+   * every call, and either way the statement reads as the chosen control. The operator defaults to
+   * StringNotEquals, the closed form: a missing key or a value AWS adds later is denied.
+   */
+  condition_key?: string;
+  condition_operator?: "StringNotEquals" | "StringEquals";
+  condition_values?: string[];
 }
 
-export type RestrictionIntent = "allow_only" | "deny_only" | "deny_action" | "tag_condition";
+export type RestrictionIntent =
+  "allow_only" | "deny_only" | "deny_action" | "tag_condition" | "key_condition";
 
 export interface DecisionResult {
   written: string;
@@ -405,6 +415,13 @@ export interface ImpactActionReference {
    * and the runbook's re-query step is what closes that window.
    */
   created_formats?: Record<string, Record<string, string[]>>;
+  /**
+   * service -> action name -> the service-specific condition keys the action DECLARES, per the AWS
+   * service reference. The key_condition vocabulary: the editor offers these instead of a bare
+   * text field, and the decision route refuses a key outside them - a condition on a key the
+   * action never supplies is recorded and never evaluated. Absent on older assessments.
+   */
+  condition_keys?: Record<string, Record<string, string[]>>;
 }
 
 export type ImpactActionEntry =
