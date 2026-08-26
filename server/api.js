@@ -827,6 +827,28 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
             declaredKeys.set(`${service}:${name}`, new Set(keys ?? []));
           }
         }
+        // The allow_only verdicts, same carriage and same absent-means-older-assessment rule. Per
+        // action: why the intent cannot hold (the call is authorised against resources the caller
+        // never names), or which participating types a decision must keep at least one resource
+        // of each. The writer refuses the first from its own table; the second it CANNOT check -
+        // it receives a flat resource set with no types - so this route is where under-picking is
+        // caught, from the assessment's own typed enumeration.
+        const referenceAllowOnly = stored.document.action_reference?.allow_only;
+        const allowOnlyVerdicts = new Map();
+        for (const [service, block] of Object.entries(referenceAllowOnly ?? {})) {
+          for (const [name, verdict] of Object.entries(block)) {
+            allowOnlyVerdicts.set(`${service}:${name}`, verdict);
+          }
+        }
+        const typeOfArn = new Map();
+        for (const assessed of stored.document.policies ?? []) {
+          for (const group of assessed.affected ?? []) {
+            const type = String(group.resource_type ?? '').split(':')[1] ?? '';
+            for (const resource of group.resources ?? []) {
+              if (type && resource?.arn) typeOfArn.set(resource.arn, type);
+            }
+          }
+        }
         for (const restriction of restrictions) {
           if (!RESTRICTION_INTENTS.has(restriction.intent)) {
             throw new HttpError(400, `restriction intent must be one of `
@@ -982,6 +1004,42 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
                 + 'never match: aws:ResourceTag reads the tags of a resource that exists, and this '
                 + 'one does not until the call succeeds.',
               );
+            }
+          }
+          // The allow_only verdict, early. Wildcards are left to the writer, which judges the
+          // whole statement (a wildcard makes no per-member promise); an assessment without the
+          // map likewise. The cover check is THIS route's own half of the gate - the writer
+          // receives a flat resource set and cannot see types, so an under-picked decision that
+          // slipped past here would compose a statement that over-denies. Closed, never widened.
+          if (restriction.intent === 'allow_only' && referenceAllowOnly) {
+            for (const action of actions) {
+              if (action.includes('*')) continue;
+              const verdict = allowOnlyVerdicts.get(action.trim());
+              if (verdict?.refuse) {
+                const why = verdict.refuse.startsWith('deref:')
+                  ? `요청이 ${verdict.refuse.slice(6)}를 실행 시점에 자원으로 풀어내므로, 호출자가 `
+                    + '지목하지 않는 자원까지 인가된다'
+                  : verdict.refuse.startsWith('unnamed:')
+                    ? `요청이 지목하지 않는 자원 유형(${verdict.refuse.slice(8)})까지 인가된다`
+                    : 'AWS API 모델과 대조할 수 없어 요청이 무엇을 지목하는지 확인할 수 없다';
+                throw new HttpError(
+                  400,
+                  `${action}에는 "이 자원만 허용"이 성립하지 않는다 — ${why}. 목록 밖 자원이 `
+                  + '인가에 끼는 순간 문장이 모든 호출을 거부하면서 범위처럼 읽힌다. "이 자원만 '
+                  + '거부"나 "동작 자체 거부"를 쓴다.',
+                );
+              }
+              const missing = (verdict?.cover ?? []).filter(
+                (type) => !named.some((arn) => typeOfArn.get(arn) === type),
+              );
+              if (missing.length > 0) {
+                throw new HttpError(
+                  400,
+                  `${action}은 ${(verdict.cover ?? []).join(', ')} 유형 모두에 대해 인가된다. `
+                  + `고르지 않은 유형(${missing.join(', ')})의 자원이 목록 밖에 남아 모든 호출이 `
+                  + '거부된다 — 각 유형에서 하나 이상 고른다.',
+                );
+              }
             }
           }
           for (const arn of named) {

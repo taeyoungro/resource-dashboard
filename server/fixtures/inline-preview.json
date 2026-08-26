@@ -8,16 +8,16 @@
      "policy": "AWSLambda_FullAccess",
      "intent": "allow_only",
      "actions": [
-      "lambda:InvokeFunction",
-      "lambda:InvokeFunctionUrl"
+      "lambda:GetFunction",
+      "lambda:UpdateFunctionCode"
      ],
      "resources": [
       "arn:aws:lambda:us-east-1:718100330247:function:testLambda"
      ]
     }
    ],
-   "bytes": 213,
-   "serialised": "{\"Statement\":[{\"Action\":[\"lambda:InvokeFunction\",\"lambda:InvokeFunctionUrl\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:testLambda\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 211,
+   "serialised": "{\"Statement\":[{\"Action\":[\"lambda:GetFunction\",\"lambda:UpdateFunctionCode\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:testLambda\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
    "nested_actions": [],
    "created_formats": {}
   },
@@ -38,15 +38,15 @@
      "policy": "P",
      "intent": "allow_only",
      "actions": [
-      "s3:ListBucket"
+      "s3:GetBucketPolicy"
      ],
      "resources": [
       "arn:aws:s3:::keep"
      ]
     }
    ],
-   "bytes": 259,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:ListBucket\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep/*\",\"arn:aws:s3:::keep/*/*\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 264,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetBucketPolicy\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep/*\",\"arn:aws:s3:::keep/*/*\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}",
    "nested_actions": [
     "s3:GetObject"
    ],

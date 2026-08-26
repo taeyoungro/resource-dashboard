@@ -148,13 +148,20 @@ interface Props {
    * keeping-out reason is not the flat-deny one - the condition section has a reason of its own.
    */
   elsewhere?: { count: number; section: string; lead?: string; tail?: string } | null;
+  /**
+   * A SECOND kept-out bucket with a reason of its own, when one section keeps actions out on two
+   * different grounds at once - 이 자원만 허용 hides the flat-deny bucket AND the actions judged
+   * not to hold the intent, and folding the two counts under one sentence would misattribute one
+   * of them.
+   */
+  alsoKeptOut?: { count: number; section: string; lead: string; tail: string } | null;
   onCommit: (choices: Choice[]) => void;
   onCancel: () => void;
 }
 
 export function ActionPicker({
   policy, intent, chosen, named, covered, uncovered, referenceError, protectedActions, affected,
-  primary, cannotHold = () => null, elsewhere = null, onCommit, onCancel,
+  primary, cannotHold = () => null, elsewhere = null, alsoKeptOut = null, onCommit, onCancel,
 }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -552,6 +559,12 @@ export function ActionPicker({
             없다 — <strong>{elsewhere.section}</strong>에서 고른다.{" "}
             {elsewhere.tail ?? "자원을 인자로 받지 않거나, 자기가 지목하는 자원을 만드는 동작이라 "
               + "이미 존재하는 자원의 목록으로는 좁혀지지 않는다."}
+          </p>
+        )}
+        {alsoKeptOut && alsoKeptOut.count > 0 && (
+          <p className="muted small pick-elsewhere">
+            {alsoKeptOut.lead} {alsoKeptOut.count}개는 여기에 없다 —{" "}
+            <strong>{alsoKeptOut.section}</strong>에서 고른다. {alsoKeptOut.tail}
           </p>
         )}
 
