@@ -1006,3 +1006,73 @@ test('the block dialog drops judged-unsafe actions by name and holds 적용 for 
   assert.match(BLOCK, /coverShort\.length > 0\s*\|\| tagMissing/,
                '적용 commits an under-covered allow_only decision the route will refuse');
 });
+
+const PLAN = readFileSync(new URL('../src/components/PlanDetail.tsx', import.meta.url), 'utf8');
+
+test('the virtual resource test says what it checked, and never says ALLOW', () => {
+  // The check a new account cannot otherwise get: reading a Condition block and working out what
+  // it does to an untagged resource created next month is the thing people get wrong, and
+  // describing that resource and asking is not.
+  assert.ok(IMPACT.includes('<VirtualResourceTest'),
+            'the preview offers no way to ask about a resource that does not exist');
+  assert.match(IMPACT, /아직 없는 자원으로 시험하기/, 'the control has no name');
+  // The one thing it must never claim. This document is Deny-only and an Allow comes from the
+  // attached managed policies, whose Resource and Condition clauses the assessment never carries.
+  assert.ok(!/["'>]\s*허용된다/.test(IMPACT), 'the test claims a call would be allowed');
+  assert.ok(IMPACT.includes('이 문서의 어떤 Deny도 걸리지 않는다'),
+            'NOT_DENIED is rendered as something other than what was checked');
+  // And NOT_DENIED distinguishes its two causes, or it is not readable.
+  assert.match(IMPACT, /answer\.considered\.length > 0/,
+               '"nothing matched" and "matched and did not fire" are shown as one answer');
+  // UNKNOWN names the key instead of guessing - the common case under a closed default.
+  assert.match(IMPACT, /answer\.outcome === UNKNOWN/, 'UNKNOWN is not rendered at all');
+  assert.ok(IMPACT.includes('판정할 수 없다'), 'an unanswerable probe is given a verdict anyway');
+  // The evaluator is pinned against the container's, like the composer beside it.
+  const evaluator = readFileSync(new URL('./virtualResource.js', import.meta.url), 'utf8');
+  assert.ok(evaluator.includes('virtual_resource.py'),
+            'nothing records which side is the authority');
+  assert.match(evaluator, /export const NOT_DENIED = 'NOT_DENIED'/);
+  assert.ok(!/ALLOW/.test(evaluator.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '')),
+            'an ALLOW verdict exists in the evaluator');
+});
+
+test('a tag control says it is only as strong as who can write the tag', () => {
+  // §11 in one line: a Deny that selects by tag is defeated by whoever can move the tag, and the
+  // grant that lets them do it can sit in any attached policy - so the warning is computed over
+  // the WHOLE permission set, not the policy the condition was written against.
+  assert.match(IMPACT, /const tagWriters = useMemo\(/, 'nothing computes who can write tags');
+  assert.match(IMPACT, /\?\.\[0\] === "Tagging"/,
+               'tag writers are found by verb or by name rather than by the AWS access level');
+  assert.ok(IMPACT.includes('이 권한 세트는 태그를 쓸 수 있다'),
+            'the tag section does not say the control can be walked around');
+  assert.ok(IMPACT.includes('동작 자체 거부'),
+            'the warning names no remedy');
+  // The engine half: the capability comes from the digest's level-derived list, and has an edge.
+  const paths = readFileSync(new URL('./candidatePaths.js', import.meta.url), 'utf8');
+  assert.match(paths, /for \(const action of grant\.tag_writes \?\? \[\]\)/,
+               'CAP.TAG is still assigned by the verb fallback alone');
+  assert.match(paths, /id: 'retag'/, 'no edge consumes the tag capability');
+  assert.match(paths, /TAG_TAMPER: 'tag_tamper'/, 'the outcome has no name');
+  const digest = readFileSync(new URL('./riskDigest.js', import.meta.url), 'utf8');
+  assert.match(digest, /tag_writes: risk\.filter\(\(a\) => levelOf\(a, levels\) === 'Tagging'\)/,
+               'the digest does not carry the tag writes, or finds them some other way');
+});
+
+test('a template is a pre-filled form and enters through the decision path', () => {
+  // Not a policy installed anywhere: there is nothing to attach to before a plan is approved, the
+  // writer replaces every AdminDeny statement wholesale, and a statement with no reviewer and no
+  // assessment digest is what the marker contract exists to make impossible.
+  assert.ok(PLAN.includes('<RestrictionTemplates'), 'templates are not offered on the plan');
+  assert.match(PLAN, /onApply=\{\(seeded\) => setRestrictions\(\(current\) => mergeTemplate\(current, seeded\)\)\}/,
+               'applying a template does something other than fill the editor in');
+  assert.match(PLAN, /승인은 여전히 이 계획에\s+대한 결정으로 나간다/,
+               'the page does not say a template still goes through the ordinary decision');
+  // What it drops is said BEFORE the button is pressed - a template that quietly shrank would
+  // read as a control that was fully applied.
+  assert.ok(PLAN.includes('이 계획에 걸 수 없어 빠진다'), 'dropped rows are silent');
+  const templates = readFileSync(new URL('./templates.js', import.meta.url), 'utf8');
+  assert.match(templates, /const INTENTS = new Set\(\['deny_action', 'tag_condition', 'key_condition'\]\)/,
+               'a template may carry an ARN, which is an account fact and not a template');
+  assert.match(templates, /condition_operator: row\.condition_operator \?\? 'StringNotEquals'/,
+               'a template defaults to the open form');
+});

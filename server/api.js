@@ -11,6 +11,7 @@
 // gap is between the two and is worth knowing about rather than being reassured out of.
 
 import { timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 import { NotificationError, parse as parseNotification } from './notifications.js';
 import { putJson } from './s3.js';
@@ -19,6 +20,7 @@ import { planPrefixFromId, readImpact, readPlan } from './sweep.js';
 import { controlPlane } from './controlPlane.js';
 import { condense, digestBytes } from './riskDigest.js';
 import { candidates as proposeCandidates } from './candidatePaths.js';
+import { loadTemplates } from './templates.js';
 import { findings as ruleFindings, sections, summary } from './findings.js';
 import { overlapCount, withOverlap } from './overlap.js';
 import { RULES_SHA256, RULE_ACTIONS } from './rules.js';
@@ -101,6 +103,12 @@ const CONDITION_OPERATORS = new Set(['StringNotEquals', 'StringEquals']);
 // tag_condition joined them when its branch stopped hardcoding StringEquals - the open form, under
 // which a resource carrying no such tag at all does not match and walks past the control.
 const CONDITION_INTENTS = new Set(['tag_condition', 'key_condition']);
+
+// Deployment configuration, read once at first use. undefined means "not yet read"; [] with an
+// error set means the file is unusable and the page gets no template section - the closed
+// direction, because a template that half-loaded would seed a restriction nobody wrote.
+let templates;
+let templateError = null;
 
 export const INGEST_ROUTES = new Set([
   'POST /api/notifications',
@@ -305,6 +313,27 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // forced, back when the model call lived inside its own request.
       analysis_runs: runs.size(),
     }),
+
+    // The standard restrictions this deployment offers, for the page to pre-fill the editor with.
+    //
+    // Read once at first use and cached, like the rule file: it is deployment configuration, not
+    // account state. A malformed file makes the route report the reason and offer nothing - the
+    // page then simply has no template section, which is the closed direction: a template that
+    // half-loaded would seed a restriction nobody wrote.
+    'GET /api/templates': async () => {
+      if (templates === undefined) {
+        try {
+          templates = loadTemplates(JSON.parse(
+            readFileSync(new URL('./restriction-templates.json', import.meta.url), 'utf-8')));
+          templateError = null;
+        } catch (error) {
+          templates = [];
+          templateError = error instanceof Error ? error.message : String(error);
+          log.warn('restriction templates unusable', { reason: templateError });
+        }
+      }
+      return { templates, error: templateError };
+    },
 
     'GET /api/state': async () => {
       const state = store.get();

@@ -111,6 +111,10 @@ const CEILING = {
   [OUTCOME.DATA_EGRESS]: 'HIGH',
   [OUTCOME.NETWORK_EXPOSURE]: 'MEDIUM',
   [OUTCOME.AVAILABILITY_DENIAL]: 'MEDIUM',
+  // What it defeats is a control an approver chose, not a resource - so its ceiling is the ceiling
+  // of the control. MEDIUM rather than higher because on its own it grants nothing: it matters
+  // exactly when a tag_condition restriction is in play, and the editor says so at that moment.
+  [OUTCOME.TAG_TAMPER]: 'MEDIUM',
 };
 
 const GRADE_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4 };

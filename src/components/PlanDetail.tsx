@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
-  AssessmentState, PlanDetail as Detail, Restriction, RiskAnalysisCitation,
+  AssessmentState, Impact as Assessment, PlanDetail as Detail, Restriction, RestrictionTemplate,
+  RiskAnalysisCitation,
 } from "../types";
+import { mergeTemplate, seedFromTemplate } from "../../server/templates.js";
 import { Impact } from "./Impact";
 import { RiskAnalysis } from "./RiskAnalysis";
 import { clock } from "../time";
@@ -85,13 +87,20 @@ export function PlanDetail({
           pipeline outage. What is unavailable without one is the RESTRICTION - it names resources,
           and the enumerated set is the only fence those names can be checked against. */}
       {detail.assessment ? (
-        <Impact
-          assessment={detail.assessment}
-          source={detail.assessment_source}
-          restrictions={restrictions}
-          onChange={setRestrictions}
-          disabled={busy || decided}
-        />
+        <>
+          <RestrictionTemplates
+            assessment={detail.assessment}
+            disabled={busy || decided}
+            onApply={(seeded) => setRestrictions((current) => mergeTemplate(current, seeded))}
+          />
+          <Impact
+            assessment={detail.assessment}
+            source={detail.assessment_source}
+            restrictions={restrictions}
+            onChange={setRestrictions}
+            disabled={busy || decided}
+          />
+        </>
       ) : assessmentState === "in_progress" ? (
         <div className="notice">
           <strong>영향도 평가가 진행 중입니다.</strong> 이 계획은 지금도 승인할 수 있습니다 — 다만
@@ -242,5 +251,79 @@ export function PlanDetail({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The decisions an organisation made once, offered as a pre-filled form.
+ *
+ * Deliberately not a policy installed anywhere. A template seeds the restriction array the approver
+ * is already looking at - they see it, edit it, and approve it for THIS plan - so every gate the
+ * route and the inline writer hold still runs, unchanged, on an ordinary decision with a reviewer
+ * and a comment and an assessment digest behind it. server/templates.js records why the other shape
+ * was refused.
+ *
+ * Above the editor because it fills the editor in, and what it drops is said before the button is
+ * pressed: an action no attached policy grants cannot be restricted, and a template that quietly
+ * shrank would read as a control that was fully applied.
+ */
+function RestrictionTemplates({ assessment, disabled, onApply }: {
+  assessment: Assessment;
+  disabled: boolean;
+  onApply: (seeded: Restriction[]) => void;
+}) {
+  const [templates, setTemplates] = useState<RestrictionTemplate[]>([]);
+  const [applied, setApplied] = useState<string[]>([]);
+
+  useEffect(() => {
+    let live = true;
+    fetch("/api/templates")
+      .then((r) => (r.ok ? r.json() : { templates: [] }))
+      .then((body) => { if (live) setTemplates(body.templates ?? []); })
+      .catch(() => { if (live) setTemplates([]); });
+    return () => { live = false; };
+  }, []);
+
+  // Recomputed per template because what survives depends on THIS assessment's grants.
+  const seeded = useMemo(
+    () => templates.map((template) => ({ template, ...seedFromTemplate(template, assessment) })),
+    [templates, assessment],
+  );
+  if (seeded.length === 0) return null;
+
+  return (
+    <details className="templates">
+      <summary>표준 제한 적용 ({seeded.length}개)</summary>
+      <p className="muted small">
+        조직이 한 번 정해 둔 결정이다. 누르면 아래 편집기가 채워질 뿐이고, 승인은 여전히 이 계획에
+        대한 결정으로 나간다 — 고치고 빼는 것도 그대로 된다.
+      </p>
+      {seeded.map(({ template, restrictions, dropped }) => (
+        <div key={template.id} className="template-row">
+          <div className="control-row">
+            <span className="section-name">{template.title}</span>
+            <button
+              type="button"
+              disabled={disabled || restrictions.length === 0}
+              onClick={() => { onApply(restrictions); setApplied((a) => [...a, template.id]); }}
+            >
+              {restrictions.length > 0 ? `제한 ${restrictions.length}건 채우기` : "적용할 것이 없다"}
+            </button>
+            {applied.includes(template.id) && <span className="rtype">채웠다</span>}
+          </div>
+          <p className="muted small">{template.why}</p>
+          {dropped.length > 0 && (
+            <p className="warn-inline">
+              {dropped.length}개는 이 계획에 걸 수 없어 빠진다 —{" "}
+              {dropped.slice(0, 4).map((d) => `${d.action}(${
+                d.why === "protected" ? "선언 경로"
+                  : d.why === "no_resource_tag" ? "태그를 읽지 않는 동작" : "부여되지 않음"})`)
+                .join(", ")}
+              {dropped.length > 4 && ` 외 ${dropped.length - 4}개`}
+            </p>
+          )}
+        </div>
+      ))}
+    </details>
   );
 }

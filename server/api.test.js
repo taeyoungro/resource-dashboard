@@ -112,6 +112,7 @@ test('the release is read from the file the installer writes, not only from the 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { routes } from './api.js';
+import { seedFromTemplate } from './templates.js';
 
 const ACCOUNT = '644701781058';
 const REQUEST = `${ACCOUNT}-8f2c41d90b7e6a35`;
@@ -1285,4 +1286,57 @@ test('an approval with no analysis carries no citation', async () => {
   });
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.equal('risk_analysis' in marker, false);
+});
+
+test('the templates route serves what the deployment ships, validated', async () => {
+  const { route } = harness({ pushed: PUSHED });
+  const answer = await route['GET /api/templates']();
+  assert.equal(answer.error, null, 'the shipped template file is unusable');
+  assert.ok(answer.templates.length >= 3);
+  // Only the three intents that mean the same thing in every account - a template carrying an ARN
+  // would name a resource that does not exist in the account being approved.
+  for (const template of answer.templates) {
+    for (const row of template.restrictions) {
+      assert.ok(['deny_action', 'tag_condition', 'key_condition'].includes(row.intent),
+                `${template.id} carries ${row.intent}`);
+      assert.ok(!row.resources, `${template.id} names resources`);
+    }
+  }
+});
+
+test('a template seeds an ordinary decision that the route accepts unchanged', async () => {
+  // The property the whole shape rests on: what arrives at the route is indistinguishable from
+  // something an approver ticked, so every gate still runs on it.
+  const { route, s3, impactSha256 } = harness({ assessment: KEYED });
+  const template = (await route['GET /api/templates']()).templates
+    .find((t) => t.id === 'no-public-function-url');
+  const { restrictions, dropped } = seedFromTemplate(template, KEYED);
+  assert.equal(restrictions.length, 0, 'this assessment grants none of it');
+  assert.ok(dropped.every((d) => d.why === 'not_granted'));
+
+  // And with a policy that DOES grant it, the seeded row goes through the decision route as-is.
+  const granting = {
+    ...KEYED,
+    policies: [{
+      identifier: 'arn:aws:iam::aws:policy/AWSLambda_FullAccess',
+      source: 'aws_managed', default_version_id: 'v7', is_baseline: false, restrictable: true,
+      unreadable: null,
+      actions_granted: ['lambda:CreateFunctionUrlConfig'],
+      actions_offerable: ['lambda:CreateFunctionUrlConfig'],
+      actions_non_restrictable: [], affected: [],
+    }],
+  };
+  const seeded = seedFromTemplate(template, granting).restrictions;
+  assert.equal(seeded.length, 1);
+  assert.equal(seeded[0].condition_operator, 'StringNotEquals');
+  const withGrant = harness({ assessment: granting });
+  await withGrant.route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({ restrictions: seeded, expected_impact_sha256: withGrant.impactSha256 }),
+  });
+  const marker = JSON.parse(
+    withGrant.s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal(marker.restrictions[0].intent, 'key_condition');
+  assert.equal(marker.restrictions[0].condition_key, 'lambda:FunctionUrlAuthType');
+  assert.ok(s3 && impactSha256);
 });

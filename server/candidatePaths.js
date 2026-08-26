@@ -49,6 +49,12 @@ export const OUTCOME = {
   NETWORK_EXPOSURE: 'network_exposure',
   AVAILABILITY_DENIAL: 'availability_denial',
   AUDIT_BLIND: 'audit_blind',
+  // Rewriting the label a control reads. Its own outcome rather than a kind of modify-config,
+  // because what it reaches is not the resource - it is every tag_condition restriction on this
+  // permission set, at once. A Deny that selects by tag is only as strong as the tag, and whoever
+  // can write the tag chooses which side of the condition a resource falls on: under the closed
+  // form they label a resource into the allowed set, under the open form they strip the label off.
+  TAG_TAMPER: 'tag_tamper',
 };
 
 /**
@@ -147,6 +153,20 @@ const EDGES = [
     why: 'the resource can be removed or disabled',
   },
   {
+    id: 'retag',
+    any: [CAP.TAG],
+    outcome: OUTCOME.TAG_TAMPER,
+    // Targetless, and not because tagging is create-shaped - because what this reaches is not a
+    // resource at all. A tag-based Deny selects by label rather than by name, so the resources it
+    // covers are whichever ones carry the tag at evaluation time, and the ability to write tags is
+    // the ability to move a resource across that line. That is true of resources not yet created,
+    // which is exactly the population a tag condition exists to cover.
+    targetless: true,
+    why: 'the tags a Deny condition selects on can be written, so a resource can be moved to the '
+      + 'other side of the condition - relabelled into what a closed form allows, or stripped of '
+      + 'the label an open form denies on',
+  },
+  {
     id: 'blind',
     any: [CAP.TAMPER_AUDIT],
     outcome: OUTCOME.AUDIT_BLIND,
@@ -225,6 +245,16 @@ function grantCapabilities(grant) {
       if (!out.has(cap)) out.set(cap, []);
       out.get(cap).push(action);
     }
+  }
+  // Tag writes come from the ACCESS LEVEL, not from the name. The verb fallback reads the first
+  // word and a tag write rarely starts with one: ec2:CreateTags is create, s3:PutBucketTagging is
+  // modify-config, rds:AddTagsToResource is nothing. So CAP.TAG existed and was never assigned to
+  // the actions that matter, and the whole tag-tamper path was unreachable. riskDigest carries the
+  // names AWS itself calls Tagging; this adds them to whatever the fallback already guessed rather
+  // than replacing it, because ec2:CreateTags really does also create something.
+  for (const action of grant.tag_writes ?? []) {
+    if (!out.has(CAP.TAG)) out.set(CAP.TAG, []);
+    if (!out.get(CAP.TAG).includes(action)) out.get(CAP.TAG).push(action);
   }
   // A service granted whole carries every action of it, INCLUDING the ones the digest folded away
   // by name. Without this the fold would be a hole the graph cannot see through: 'ec2:*' would

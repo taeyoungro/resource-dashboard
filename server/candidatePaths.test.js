@@ -368,3 +368,47 @@ test('an enumerated account still gets the precise unit answer, not the capabili
   assert.equal(found.length, 1, 'the same path was proposed twice, or not at all');
   assert.ok(found[0].target, 'an enumerated account fell back to the capability-only answer');
 });
+
+// ---- writing the tag a control reads ----------------------------------------------------------
+
+test('a tag write is found from the ACCESS LEVEL, never from the verb', () => {
+  // The miss that made the whole tag-tamper path unreachable. CAP.TAG existed and was assigned by
+  // a verb prefix, and a tag write rarely starts with one - so the four actions that matter most
+  // landed in four different buckets and none of them was 'tag'.
+  assert.equal(capabilitiesOf('ec2:CreateTags').caps[0], CAP.CREATE);
+  assert.equal(capabilitiesOf('s3:PutBucketTagging').caps[0], CAP.MODIFY_CONFIG);
+  assert.equal(capabilitiesOf('rds:AddTagsToResource').caps[0], CAP.UNMAPPED);
+  // The digest carries what AWS calls Tagging, and the capability map takes them from there.
+  const writes = ['ec2:CreateTags', 's3:PutBucketTagging', 'rds:AddTagsToResource'];
+  const found = candidates({
+    account_id: ACCOUNT,
+    passrole_grants: [],
+    grants: [{ p: 'P1', name: 'X', risk_actions: writes, tag_writes: writes,
+               non_restrictable: [], units: [] }],
+  });
+  assert.deepEqual(found.map((c) => c.edge), ['retag']);
+  assert.equal(found[0].outcome, OUTCOME.TAG_TAMPER);
+  assert.deepEqual(found[0].steps[0].actions.sort(), [...writes].sort());
+  // Added to what the fallback guessed rather than replacing it - ec2:CreateTags really does
+  // create something, and losing that would be a second miss in the other direction.
+  const caps = found[0].steps.map((s) => s.capability);
+  assert.ok(caps.includes(CAP.TAG));
+});
+
+test('a grant with no tag write proposes no retag path', () => {
+  const quiet = candidates({
+    account_id: ACCOUNT,
+    passrole_grants: [],
+    grants: [{ p: 'P1', name: 'X', risk_actions: ['s3:PutBucketPolicy'], tag_writes: [],
+               non_restrictable: [], units: [] }],
+  });
+  assert.ok(!quiet.some((c) => c.edge === 'retag'));
+  // And a digest written before tag_writes existed says nothing rather than guessing.
+  const older = candidates({
+    account_id: ACCOUNT,
+    passrole_grants: [],
+    grants: [{ p: 'P1', name: 'X', risk_actions: ['ec2:CreateTags'], non_restrictable: [],
+               units: [] }],
+  });
+  assert.ok(!older.some((c) => c.edge === 'retag'));
+});

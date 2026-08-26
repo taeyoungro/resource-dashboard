@@ -1,0 +1,58 @@
+{
+  "_comment": [
+    "Restriction templates: a decision an organisation makes once, offered as a pre-filled form on",
+    "every plan. NOT a policy installed anywhere - see server/templates.js for why that shape was",
+    "refused. Each template names actions literally and only the three intents that say something",
+    "without an inventory, which is also why they are the three that work on a new account.",
+    "",
+    "`why` is shown to the approver beside the button. It is the sentence they are agreeing to, so",
+    "it says what the control does and what it costs, not what it is called."
+  ],
+  "templates": [
+    {
+      "id": "no-public-function-url",
+      "title": "운영 함수의 공개 URL 차단",
+      "why": "함수 URL은 인증 없이 만들면 실행 역할이 인터넷에서 트리거 가능해진다. 이 제한은 URL 생성 자체를 막지 않고 인증 유형이 AWS_IAM이 아닌 생성만 막는다 — 닫힌 형태라 AWS가 인증 유형을 새로 추가해도 막힌다.",
+      "restrictions": [
+        {
+          "intent": "key_condition",
+          "actions": ["lambda:CreateFunctionUrlConfig", "lambda:UpdateFunctionUrlConfig"],
+          "condition_key": "lambda:FunctionUrlAuthType",
+          "condition_values": ["AWS_IAM"],
+          "condition_operator": "StringNotEquals"
+        }
+      ]
+    },
+    {
+      "id": "protect-production-tagged",
+      "title": "운영 태그 자원의 자원 정책 변경 차단",
+      "why": "버킷 정책과 키 정책은 계정 밖 주체에게 접근을 여는 지점이다. Environment=production이 아닌 자원에서만 허용한다 — 닫힌 형태이므로 태그를 아직 붙이지 않은 자원도 막힌다. 태그를 쓸 수 있는 권한이 함께 있으면 이 통제는 그만큼만 강하다는 점을 편집기가 말해 준다.",
+      "restrictions": [
+        {
+          "intent": "tag_condition",
+          "actions": ["s3:PutBucketPolicy", "s3:PutBucketAcl", "kms:PutKeyPolicy"],
+          "tag_key": "Environment",
+          "tag_values": ["production"],
+          "condition_operator": "StringNotEquals"
+        }
+      ]
+    },
+    {
+      "id": "no-audit-tampering",
+      "title": "감사 기록 훼손 차단",
+      "why": "감사 기록을 끄거나 지울 수 있으면 나머지 통제가 사후에 관측 불가능해진다. 자원과 무관하게 동작 자체를 막는다.",
+      "restrictions": [
+        {
+          "intent": "deny_action",
+          "actions": [
+            "cloudtrail:StopLogging",
+            "cloudtrail:DeleteTrail",
+            "config:StopConfigurationRecorder",
+            "config:DeleteConfigurationRecorder",
+            "guardduty:DeleteDetector"
+          ]
+        }
+      ]
+    }
+  ]
+}

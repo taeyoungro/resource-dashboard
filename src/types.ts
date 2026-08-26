@@ -328,6 +328,29 @@ export interface Restriction {
   condition_operator?: "StringNotEquals" | "StringEquals";
 }
 
+/**
+ * A decision an organisation made once, offered as a pre-filled form on every plan.
+ *
+ * Not a policy installed anywhere - see server/templates.js for why that shape was refused. It
+ * names ACTIONS and only the three intents that mean the same thing in every account; the binding
+ * to attached policies is resolved per plan against that plan's own assessment.
+ */
+export interface RestrictionTemplate {
+  id: string;
+  title: string;
+  /** The sentence an approver reads before agreeing - what the control does and what it costs. */
+  why: string;
+  restrictions: {
+    intent: "deny_action" | "tag_condition" | "key_condition";
+    actions: string[];
+    tag_key?: string;
+    tag_values?: string[];
+    condition_key?: string;
+    condition_values?: string[];
+    condition_operator?: "StringNotEquals" | "StringEquals";
+  }[];
+}
+
 export type RestrictionIntent =
   "allow_only" | "deny_only" | "deny_action" | "tag_condition" | "key_condition";
 
