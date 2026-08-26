@@ -422,6 +422,17 @@ export interface ImpactActionReference {
    * action never supplies is recorded and never evaluated. Absent on older assessments.
    */
   condition_keys?: Record<string, Record<string, string[]>>;
+  /**
+   * The allow_only verdict per admitted action that carries one, judged at table build time
+   * against the AWS API request models. `refuse` names why the intent cannot hold: the call is
+   * authorised against resources the caller never names (an AssociationId resolved at call time,
+   * a type no parameter names), so a NotResource of picked ARNs denies every call while reading
+   * as a scope. `cover` lists the participating types a safe multi-type action must keep at least
+   * one resource of EACH - an under-picked type's authorisation context falls outside the list
+   * and denies every call the same way. Safe single-type actions carry nothing. Absent as a whole
+   * on assessments written before the reference carried it - the writer then judges alone.
+   */
+  allow_only?: Record<string, Record<string, { refuse?: string; cover?: string[] }>>;
 }
 
 export type ImpactActionEntry =

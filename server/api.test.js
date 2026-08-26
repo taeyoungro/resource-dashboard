@@ -655,6 +655,98 @@ test('condition fields on any other intent are refused as recorded-and-inert', a
   );
 });
 
+// An assessment whose reference carries allow_only verdicts, and whose groups type the ARNs the
+// cover check reads. ec2:AttachVolume is authorised against the instance AND the volume - a
+// decision keeping only one leaves the other type's authorisation context outside the NotResource
+// and denies every call.
+const EC2_INSTANCE = `arn:aws:ec2:us-east-1:${ACCOUNT}:instance/i-060d7f3f7d9798447`;
+const EC2_VOLUME = `arn:aws:ec2:us-east-1:${ACCOUNT}:volume/vol-049df61146c4d7901`;
+const VERDICTED = {
+  ...ASSESSMENT,
+  allowed_resources: [QUEUE, EC2_INSTANCE, EC2_VOLUME],
+  policies: [{
+    identifier: 'arn:aws:iam::aws:policy/AmazonEC2FullAccess',
+    source: 'aws_managed', default_version_id: 'v5', is_baseline: false, restrictable: true,
+    unreadable: null,
+    actions_granted: ['ec2:AttachVolume'], actions_offerable: ['ec2:AttachVolume'],
+    actions_non_restrictable: [],
+    affected: [
+      { service: 'ec2', resource_type: 'ec2:instance', actions: ['ec2:AttachVolume'],
+        scope: '*', total: 1, truncated: false, sensitive_hits: 0, attribution: 'resource_type',
+        resources: [{ arn: EC2_INSTANCE, region: 'us-east-1', tags: {}, sensitive: false }] },
+      { service: 'ec2', resource_type: 'ec2:volume', actions: ['ec2:AttachVolume'],
+        scope: '*', total: 1, truncated: false, sensitive_hits: 0, attribution: 'resource_type',
+        resources: [{ arn: EC2_VOLUME, region: 'us-east-1', tags: {}, sensitive: false }] },
+    ],
+  }],
+  action_reference: {
+    ...ASSESSMENT.action_reference,
+    services: {
+      ...ASSESSMENT.action_reference.services,
+      ec2: {
+        AttachVolume: ['Write', ['instance', 'volume']],
+        ReplaceRouteTableAssociation: ['Write', ['route-table', 'subnet']],
+      },
+    },
+    allow_only: { ec2: {
+      ReplaceRouteTableAssociation: { refuse: 'deref:AssociationId' },
+      AttachVolume: { cover: ['instance', 'volume'] },
+    } },
+  },
+};
+
+test('an action judged unsafe for allow_only is refused with its mechanism', async () => {
+  // The reported defect class: the call is authorised against the route table CURRENTLY
+  // associated, resolved from the AssociationId - no enumeration can hold that ARN, so the
+  // statement denies every call while reading as a scope. The writer refuses it from the table;
+  // refusing here means the administrator hears it while still choosing.
+  const { route, impactSha256 } = harness({ assessment: VERDICTED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ policy: restriction.policy, intent: 'allow_only',
+                         actions: ['ec2:ReplaceRouteTableAssociation'], resources: [QUEUE] }],
+        expected_impact_sha256: impactSha256,
+      }),
+    }),
+    /AssociationId[\s\S]*범위처럼 읽힌다/,
+  );
+});
+
+test('a safe multi-type action must keep at least one resource of every type', async () => {
+  // The gate the writer cannot hold - it receives a flat resource set with no types - so this
+  // route holds it, from the assessment's own typed enumeration.
+  const { route, s3, impactSha256 } = harness({ assessment: VERDICTED });
+  const attempt = (resources) => route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ policy: restriction.policy, intent: 'allow_only',
+                       actions: ['ec2:AttachVolume'], resources }],
+      expected_impact_sha256: impactSha256,
+    }),
+  });
+  await assert.rejects(attempt([EC2_VOLUME]), /instance/);
+  await attempt([EC2_VOLUME, EC2_INSTANCE]);
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.deepEqual(marker.restrictions[0].actions, ['ec2:AttachVolume']);
+});
+
+test('an assessment without verdicts passes allow_only through to the writer', async () => {
+  // Same arrangement as condition_keys and created_formats: an older assessment cannot say, the
+  // route does not guess, and the writer judges from its own table.
+  const { route, s3 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ policy: restriction.policy, intent: 'allow_only',
+                       actions: ['sqs:DeleteMessage'], resources: [QUEUE] }],
+      expected_impact_sha256: ASSESSMENT_SHA,
+    }),
+  });
+  assert.ok(s3.puts.some((p) => p.key.startsWith('applier/')));
+});
+
 test('five sections on one policy are five restrictions in the marker', async () => {
   // The composability the editor was rebuilt for. A policy carried exactly one intent because the
   // page had one dropdown, never because the wire could not hold more - a Deny is a Deny whatever

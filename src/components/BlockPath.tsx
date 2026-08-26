@@ -74,6 +74,22 @@ export function BlockPath({
   };
   const conditionKeyListId = useId();
 
+  /** Same verdict as the editor's 이 자원만 허용: why the intent cannot hold, or what to cover. */
+  const allowOnlyOf = (action: string): { refuse?: string; cover?: string[] } | undefined => {
+    const cut = action.indexOf(":");
+    return reference?.allow_only?.[action.slice(0, cut)]?.[action.slice(cut + 1)];
+  };
+  /** Picked ARN -> its type, from this policy's own enumeration - what the cover check reads. */
+  const typeOfArn = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const group of policy.affected) {
+      const type = group.resource_type.split(":")[1] ?? "";
+      if (!type) continue;
+      for (const resource of group.resources) map.set(resource.arn, type);
+    }
+    return map;
+  }, [policy]);
+
   const reachedBy = (action: string): ImpactGroup[] =>
     policy.affected.filter((g) => g.actions.includes(action));
 
@@ -121,6 +137,28 @@ export function BlockPath({
   const keyless = intent === "key_condition" && conditionKey.trim()
     ? chosen.filter((o) => !declaredKeys(o.action).includes(conditionKey.trim()))
     : [];
+  // Chosen actions judged not to hold 이 자원만 허용 - authorised against resources the caller
+  // never names, so the NotResource would deny every call while reading as a scope. Dropped and
+  // named the same way; the other intents stay open for them.
+  const unsupported = intent === "allow_only"
+    ? chosen.filter((o) => allowOnlyOf(o.action)?.refuse)
+    : [];
+  // And the cover requirement on the ones that DO hold it: a safe action authorised against
+  // several types needs at least one picked resource of every one, or the unpicked type's
+  // authorisation context denies every call. The decision route refuses exactly this; here it
+  // holds 적용 shut with the missing types named on the row count below.
+  const coverShort = intent === "allow_only"
+    ? chosen
+      .map((o) => ({
+        action: o.action,
+        missing: (allowOnlyOf(o.action)?.cover ?? []).filter(
+          (type) => !(resources.get(o.action) ?? []).some((arn) => typeOfArn.get(arn) === type),
+        ),
+      }))
+      .filter((entry) => entry.missing.length > 0
+        && (resources.get(entry.action) ?? []).length > 0
+        && !unsupported.some((o) => o.action === entry.action))
+    : [];
 
   /** The decisions 적용 hands to mergeBlock. One restriction per action, like everywhere else. */
   const additions = (): Restriction[] => {
@@ -152,6 +190,8 @@ export function BlockPath({
       }
       if (isScoped(intent)) {
         if (reachedBy(action).length === 0) continue;
+        // Judged not to hold 이 자원만 허용: dropped and named in the footer, like keyless ones.
+        if (intent === "allow_only" && allowOnlyOf(action)?.refuse) continue;
         rows.push({
           policy: finding.policyName, intent, actions: [action],
           resources: resources.get(action) ?? [],
@@ -165,7 +205,7 @@ export function BlockPath({
     return rows;
   };
 
-  const writable = chosen.length - unreachable.length - keyless.length;
+  const writable = chosen.length - unreachable.length - keyless.length - unsupported.length;
   /** Prior decisions 적용 will replace - a newer decision, and the row says it is one. */
   const held = new Set(
     restrictions.filter((r) => r.policy === finding.policyName)
@@ -312,13 +352,30 @@ export function BlockPath({
             {keyless.length > 3 && ` 외 ${keyless.length - 3}개`}
           </span>
         )}
+        {unsupported.length > 0 && (
+          <span className="dropped-actions">
+            호출자가 지목하지 않는 자원과 함께 인가되어 "이 자원만 허용"이 성립하지 않아 빠진다 —{" "}
+            {unsupported.slice(0, 3).map((o) => o.action).join(", ")}
+            {unsupported.length > 3 && ` 외 ${unsupported.length - 3}개`}
+          </span>
+        )}
+        {coverShort.length > 0 && (
+          <span className="unwritable">
+            유형마다 하나 이상 골라야 쓸 수 있다 —{" "}
+            {coverShort.slice(0, 3)
+              .map((entry) => `${entry.action} (${entry.missing.join(", ")})`).join(", ")}
+          </span>
+        )}
         <button type="button" className="grow" onClick={onClose}>취소</button>
         <button
           type="button"
           className="commit"
-          disabled={writable <= 0 || needsPick.length > 0 || tagMissing || conditionMissing}
+          disabled={writable <= 0 || needsPick.length > 0 || coverShort.length > 0
+            || tagMissing || conditionMissing}
           title={tagMissing ? "태그 키와 값이 필요하다"
-            : conditionMissing ? "조건 키와 값이 필요하다" : undefined}
+            : conditionMissing ? "조건 키와 값이 필요하다"
+            : coverShort.length > 0 ? "여러 유형에 인가되는 동작은 유형마다 자원을 고른다"
+            : undefined}
           onClick={() => {
             onChange(mergeBlock(restrictions, finding.policyName, additions()));
             onClose();

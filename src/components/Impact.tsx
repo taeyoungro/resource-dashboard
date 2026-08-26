@@ -168,6 +168,24 @@ function conditionKeysOf(reference: ImpactActionReference | null): (action: stri
   };
 }
 
+/**
+ * The allow_only verdict an action carries, from the same reference. `refuse` names why the
+ * intent cannot hold - the call is authorised against resources the caller never names, so a
+ * NotResource of picked ARNs denies every call while reading as a scope. `cover` lists the
+ * participating types a decision must keep at least one resource of EACH. undefined for a safe
+ * single-type action, and for every action of an assessment written before the reference carried
+ * the map - the writer then judges alone, exactly as with created_formats.
+ */
+function allowOnlyVerdictsOf(
+  reference: ImpactActionReference | null,
+): (action: string) => { refuse?: string; cover?: string[] } | undefined {
+  const verdicts = reference?.allow_only ?? {};
+  return (action: string) => {
+    const cut = action.indexOf(":");
+    return verdicts[action.slice(0, cut)]?.[action.slice(cut + 1)];
+  };
+}
+
 /** Which services the PassRole fence will name. Its statements are in the same document. */
 function fenceServicesOf(grants: Assessment["passrole_grants"]): string[] {
   return [...new Set((grants ?? []).flatMap((g) => g.services))].filter(Boolean).sort();
@@ -1047,6 +1065,23 @@ function RestrictionEditor({
   const declaredKeys = conditionKeysOf(reference);
   /** One datalist for the condition-key input, whichever section renders it. */
   const conditionKeyListId = useId();
+  /** The allow_only verdict per action - what 이 자원만 허용 offers, and what a decision must cover. */
+  const allowOnlyOf = allowOnlyVerdictsOf(reference);
+  /**
+   * Picked ARN -> its resource type, from the assessment's own enumeration. What the cover check
+   * reads: a safe multi-type action must keep at least one resource of every participating type,
+   * or the unpicked type's authorisation context falls outside the NotResource and denies every
+   * call. The decision route enforces the same rule from the same groups.
+   */
+  const typeOfArn = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const group of affected) {
+      const type = group.resource_type.split(":")[1] ?? "";
+      if (!type) continue;
+      for (const resource of group.resources) map.set(resource.arn, type);
+    }
+    return map;
+  }, [affected]);
 
   // The draft, seeded from the shared array. Every change emits the whole set upward, so the
   // parent's array stays the single source of truth for what gets submitted while this holds the
@@ -1196,6 +1231,12 @@ function RestrictionEditor({
     if (intent === "key_condition" && declaredKeys(action).length === 0) {
       return `${action}은 선언한 요청 조건 키가 없다 — 조건 없이 막으려면 "동작 자체 거부"에서 고른다`;
     }
+    // A hand-typed name judged not to hold allow_only: the call is authorised against resources
+    // the caller never names, so the NotResource denies every call while reading as a scope.
+    if (intent === "allow_only" && allowOnlyOf(action)?.refuse) {
+      return `${action}은 호출자가 지목하지 않는 자원과 함께 인가된다 — "이 자원만 허용"이 성립하지 `
+        + `않는 동작이다. "이 자원만 거부"나 "동작 자체 거부"에서 고른다`;
+    }
     return null;
   };
 
@@ -1253,7 +1294,7 @@ function RestrictionEditor({
    * many went and where instead of leaving them missing.
    */
   const offeringFor = (intent: Restriction["intent"]) => {
-    if (intent === "deny_action") return { offering: covered, hidden: 0 };
+    if (intent === "deny_action") return { offering: covered, hidden: 0, unsafe: 0 };
     let hidden = 0;
     if (intent === "key_condition") {
       // Only actions that declare a request condition key. On the rest the statement would be
@@ -1266,16 +1307,25 @@ function RestrictionEditor({
           return { service, offers: keep };
         })
         .filter((g) => g.offers.length > 0);
-      return { offering, hidden };
+      return { offering, hidden, unsafe: 0 };
     }
+    // 이 자원만 허용 additionally offers only what was JUDGED to hold it: an action authorised
+    // against resources the caller never names composes a NotResource that denies every call
+    // while reading as a scope, and the writer refuses it from the same verdict. Counted apart
+    // from the flat-deny bucket because it goes somewhere else (이 자원만 거부 or 동작 자체 거부).
+    let unsafe = 0;
     const offering = covered
       .map(({ service, offers }) => {
-        const keep = offers.filter((o) => !o.account_level && !o.creates_target);
-        hidden += offers.length - keep.length;
+        const scoped = offers.filter((o) => !o.account_level && !o.creates_target);
+        hidden += offers.length - scoped.length;
+        const keep = intent === "allow_only"
+          ? scoped.filter((o) => !allowOnlyOf(o.action)?.refuse)
+          : scoped;
+        unsafe += scoped.length - keep.length;
         return { service, offers: keep };
       })
       .filter((g) => g.offers.length > 0);
-    return { offering, hidden };
+    return { offering, hidden, unsafe };
   };
 
   /**
@@ -1352,7 +1402,20 @@ function RestrictionEditor({
 
       {SECTIONS.map((intent) => {
         const choices = draft[intent];
-        const { offering, hidden } = offeringFor(intent);
+        const { offering, hidden, unsafe } = offeringFor(intent);
+        // 이 자원만 허용 choices whose action is authorised against SEVERAL types and whose picks
+        // do not yet cover them all - the decision route refuses exactly these, so they are said
+        // here first, per row and once for the section.
+        const coverShort = intent === "allow_only"
+          ? choices
+            .map((choice) => ({
+              choice,
+              missing: (allowOnlyOf(choice.action)?.cover ?? []).filter(
+                (type) => !choice.resources.some((arn) => typeOfArn.get(arn) === type),
+              ),
+            }))
+            .filter(({ missing }) => missing.length > 0)
+          : [];
         return (
           <section key={intent}
                    className={choices.length > 0 ? "restrict-section on" : "restrict-section"}>
@@ -1384,6 +1447,12 @@ function RestrictionEditor({
                         ? `자원 ${choice.resources.length}개`
                         : "자원 미지정")}
                     </span>
+                    {intent === "allow_only" && (() => {
+                      const missing = coverShort.find((c) => c.choice === choice)?.missing;
+                      return missing && (
+                        <span className="unwritable">유형 미충족: {missing.join(", ")}</span>
+                      );
+                    })()}
                   </li>
                 ))}
               </ul>
@@ -1400,6 +1469,14 @@ function RestrictionEditor({
                 자원을 지정하지 않은 동작이 있다. 직접 적은 이름이면 서버가 판단하고, 자원으로 좁힐
                 수 없는 동작이면 이유를 말하며 거부한다 — 그 경우 <strong>동작 자체 거부</strong>로
                 옮기면 된다.
+              </p>
+            )}
+
+            {coverShort.length > 0 && (
+              <p className="warn-inline">
+                여러 유형에 대해 인가되는 동작은 <strong>유형마다 하나 이상</strong> 골라야 한다 —
+                고르지 않은 유형의 자원이 목록 밖에 남아 문장이 모든 호출을 거부한다. 결재 경로가
+                같은 이유로 거부한다: {coverShort.map(({ choice }) => choice.action).join(", ")}
               </p>
             )}
 
@@ -1489,10 +1566,14 @@ function RestrictionEditor({
                 /* An action the policy names literally and the reference does not carry. flatOnly is
                    false for anything unknown, so this filter removes only the ones this page can
                    positively say a list of ARNs cannot scope. The condition section keeps only what
-                   declares a key - flat or not, the condition gates the request. */
+                   declares a key - flat or not, the condition gates the request. 이 자원만 허용
+                   additionally drops what was judged not to hold it; an action the verdict map does
+                   not know stays, and the server judges. */
                 named={intent === "deny_action" ? offerable
                   : intent === "key_condition" ? offerable.filter((a) => declaredKeys(a).length > 0)
-                  : offerable.filter((a) => !flatOnly(a))}
+                  : intent === "allow_only"
+                    ? offerable.filter((a) => !flatOnly(a) && !allowOnlyOf(a)?.refuse)
+                    : offerable.filter((a) => !flatOnly(a))}
                 covered={offering}
                 uncovered={uncovered}
                 referenceError={referenceError}
@@ -1510,6 +1591,15 @@ function RestrictionEditor({
                         + " 막는 결정은 저 구역의 것이다.",
                     }
                     : { count: hidden, section: INTENT_LABEL.deny_action })
+                  : null}
+                alsoKeptOut={intent === "allow_only" && unsafe > 0
+                  ? {
+                    count: unsafe,
+                    section: `${INTENT_LABEL.deny_only} · ${INTENT_LABEL.deny_action}`,
+                    lead: "호출자가 지목하지 않는 자원과 함께 인가되는 동작",
+                    tail: "목록 밖 자원이 인가에 끼는 순간 문장이 모든 호출을 거부하면서 범위처럼"
+                      + " 읽힌다. 판정은 AWS API 요청 모델과의 대조에서 온다.",
+                  }
                   : null}
                 onCommit={(next) => {
                   setSection(intent, next);

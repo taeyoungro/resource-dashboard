@@ -426,7 +426,7 @@ test('an action a resource list cannot scope has a section of its own', () => {
             'the fold is back inside the picker, so the section is a second way to say one thing');
   assert.ok(INTENTS.includes('deny_action: "동작 자체 거부"'), 'the section has no name');
   // The scoped sections do not offer them at all. offeringFor is what removes them.
-  assert.match(IMPACT, /const offeringFor = \(intent: Restriction\["intent"\]\) => \{[\s\S]{0,200}if \(intent === "deny_action"\) return \{ offering: covered, hidden: 0 \}/,
+  assert.match(IMPACT, /const offeringFor = \(intent: Restriction\["intent"\]\) => \{[\s\S]{0,200}if \(intent === "deny_action"\) return \{ offering: covered, hidden: 0, unsafe: 0 \}/,
                '동작 자체 거부 is being filtered like the scoped sections, so it offers nothing');
   assert.match(IMPACT, /!o\.account_level && !o\.creates_target/,
                'the scoped offering is filtered on only one of the two reasons');
@@ -903,4 +903,69 @@ test('조건으로 거부 - the key is declared, the default is closed, the rout
   const offer = IMPACT.slice(IMPACT.indexOf('const foldOffer ='), IMPACT.indexOf('const totalChosen ='));
   assert.ok(offer.includes('intent === "key_condition"'),
             'a condition section is offered a wildcard whose members may not declare the key');
+});
+
+const API = readFileSync(new URL('./api.js', import.meta.url), 'utf8');
+
+test('이 자원만 허용 offers only what was judged to hold it, and demands every type', () => {
+  // The reported defect class: IAM authorises a multi-resource call against every resource in the
+  // request context INCLUDING ones the caller never names - ec2:ReplaceRouteTableAssociation is
+  // authorised against the route table currently associated, resolved from the AssociationId at
+  // call time - so a NotResource of picked ARNs denies every call while reading as a scope. The
+  // verdict is judged at table build time against the AWS API request models and carried by the
+  // assessment; every door answers from the same bytes.
+  //
+  // The editor's offering drops judged-unsafe actions IN ADDITION to the flat-deny bucket, and the
+  // two counts travel separately - they go to different sections for different reasons.
+  assert.match(IMPACT, /scoped\.filter\(\(o\) => !allowOnlyOf\(o\.action\)\?\.refuse\)/,
+               'the offering shows actions whose statement would deny every call');
+  assert.ok(IMPACT.includes('!o.account_level && !o.creates_target'),
+            'the verdict filter replaced the flat-deny filter instead of composing with it');
+  assert.ok(IMPACT.includes('alsoKeptOut={intent === "allow_only" && unsafe > 0'),
+            'the judged-unsafe absences are folded into the flat-deny sentence or not said');
+  assert.ok(PICKER.includes('{alsoKeptOut.lead} {alsoKeptOut.count}개는 여기에 없다'),
+            'the second kept-out bucket has no sentence of its own');
+  // A hand-typed name goes through the same judgement; one the map does not know passes through
+  // for the server to judge - unknown is not empty, but it is also not this page's to refuse.
+  assert.match(IMPACT, /offerable\.filter\(\(a\) => !flatOnly\(a\) && !allowOnlyOf\(a\)\?\.refuse\)/,
+               'a hand-typed judged-unsafe name is accepted into the section');
+  assert.match(IMPACT, /성립하지[\s\S]{0,40}않는 동작이다/,
+               'heldElsewhere does not name why the action cannot be held');
+  // The cover requirement: a safe action authorised against several types needs a pick in every
+  // one, said per row and per section, and typed from the assessment's own enumeration.
+  assert.match(IMPACT, /const coverShort = intent === "allow_only"/,
+               'nothing computes which chosen actions under-cover their types');
+  assert.ok(IMPACT.includes('유형 미충족:'), 'an under-covered row does not say which types');
+  assert.ok(IMPACT.includes('유형마다 하나 이상'), 'the section does not state the rule');
+  assert.match(IMPACT, /typeOfArn\.get\(arn\) === type/,
+               'cover is checked by something other than the enumeration type of the picked ARN');
+});
+
+test('the decision route mirrors the verdict and holds the cover gate the writer cannot', () => {
+  // The writer refuses judged-unsafe actions from its own table but receives a FLAT resource set,
+  // so under-picking types is refused HERE, from the assessment's typed groups - the one half of
+  // the gate that lives on this side alone. Wildcards pass through: the writer judges the whole
+  // statement, and a wildcard makes no per-member promise.
+  assert.match(API, /referenceAllowOnly = stored\.document\.action_reference\?\.allow_only/,
+               'the route does not read the carried verdicts');
+  assert.match(API, /if \(restriction\.intent === 'allow_only' && referenceAllowOnly\)/,
+               'the gate runs without the map, so an old assessment refuses everything');
+  assert.match(API, /if \(action\.includes\('\*'\)\) continue;/,
+               'a wildcard is judged per member here, vetoing the shape the writer accepts');
+  assert.match(API, /verdict\?\.refuse/, 'the refusal half of the verdict is not enforced');
+  assert.match(API, /typeOfArn\.get\(arn\) === type/,
+               'the cover half is not checked against the enumeration types');
+  assert.ok(API.includes('각 유형에서 하나 이상 고른다'),
+            'an under-covered decision is refused without saying what to do');
+});
+
+test('the block dialog drops judged-unsafe actions by name and holds 적용 for cover', () => {
+  assert.match(BLOCK, /const unsupported = intent === "allow_only"/,
+               'the dialog writes allow_only decisions the writer will refuse');
+  assert.ok(BLOCK.includes('성립하지 않아 빠진다'),
+            'a judged-unsafe action is dropped silently');
+  assert.match(BLOCK, /intent === "allow_only" && allowOnlyOf\(action\)\?\.refuse\) continue;/,
+               'additions still writes rows for dropped actions');
+  assert.match(BLOCK, /coverShort\.length > 0\s*\|\| tagMissing/,
+               '적용 commits an under-covered allow_only decision the route will refuse');
 });
