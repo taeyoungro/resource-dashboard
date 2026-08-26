@@ -517,6 +517,7 @@ type Draft = Record<Restriction["intent"], Choice[]>;
 type ConditionFields = {
   tagKey: string;
   tagValues: string;
+  tagOperator: "StringNotEquals" | "StringEquals";
   conditionKey: string;
   conditionOperator: "StringNotEquals" | "StringEquals";
   conditionValues: string;
@@ -1068,6 +1069,16 @@ function RestrictionEditor({
   /** The allow_only verdict per action - what 이 자원만 허용 offers, and what a decision must cover. */
   const allowOnlyOf = allowOnlyVerdictsOf(reference);
   /**
+   * Whether AWS evaluates aws:ResourceTag for what this action names. False for the actions the
+   * assessment names in no_resource_tag: on those the key is absent from the request context and
+   * the condition never fires - under StringEquals the statement denies nothing, under
+   * StringNotEquals it denies every call, and both read as the control that was chosen. An
+   * assessment written before the reference carried the list says nothing, and the writer judges.
+   */
+  const untaggable = useMemo(
+    () => new Set(reference?.no_resource_tag ?? []), [reference],
+  );
+  /**
    * Picked ARN -> its resource type, from the assessment's own enumeration. What the cover check
    * reads: a safe multi-type action must keep at least one resource of every participating type,
    * or the unpicked type's authorisation context falls outside the NotResource and denies every
@@ -1118,6 +1129,13 @@ function RestrictionEditor({
   const tagSeed = existing.find((r) => r.intent === "tag_condition");
   const [tagKey, setTagKey] = useState(() => tagSeed?.tag_key ?? "");
   const [tagValues, setTagValues] = useState(() => (tagSeed?.tag_values ?? []).join(","));
+  // A NEW tag decision is proposed CLOSED; a stored one keeps the operator it was approved with,
+  // and a stored one with no operator was approved as StringEquals - the shape the branch used to
+  // hardcode. Seeding those two differently is the whole point: an old control must not silently
+  // invert, and a new one must not silently rot open.
+  const [tagOperator, setTagOperator] = useState<"StringNotEquals" | "StringEquals">(
+    () => (tagSeed ? tagSeed.condition_operator ?? "StringEquals" : "StringNotEquals"),
+  );
   // The condition inputs, seeded the same way. An operator absent on the wire seeds as the closed
   // default - restriction.from_dict fills StringNotEquals in at parse, so this shows the operator
   // the writer will read, not a blank.
@@ -1149,6 +1167,7 @@ function RestrictionEditor({
     const tag = existing.find((r) => r.intent === "tag_condition");
     setTagKey(tag?.tag_key ?? "");
     setTagValues((tag?.tag_values ?? []).join(","));
+    setTagOperator(tag ? tag.condition_operator ?? "StringEquals" : "StringNotEquals");
     const keyed = existing.find((r) => r.intent === "key_condition");
     setConditionKey(keyed?.condition_key ?? "");
     setConditionOperator(keyed?.condition_operator ?? "StringNotEquals");
@@ -1172,6 +1191,9 @@ function RestrictionEditor({
     const tag = {
       tag_key: fields.tagKey.trim(),
       tag_values: fields.tagValues.split(",").map((v) => v.trim()).filter(Boolean),
+      // Travels explicitly even when it equals a default, so the wire never disagrees with what the
+      // select shows and no reader has to know which intent's absence means what.
+      condition_operator: fields.tagOperator,
     };
     // The operator travels explicitly even though it equals the parse default: the wire then never
     // disagrees with what the select shows, and the writer reads both spellings as one decision.
@@ -1193,11 +1215,12 @@ function RestrictionEditor({
 
   const emit = (next: Draft, over: Partial<ConditionFields> = {}) => {
     const fields: ConditionFields = {
-      tagKey, tagValues, conditionKey, conditionOperator, conditionValues, ...over,
+      tagKey, tagValues, tagOperator, conditionKey, conditionOperator, conditionValues, ...over,
     };
     setDraft(next);
     setTagKey(fields.tagKey);
     setTagValues(fields.tagValues);
+    setTagOperator(fields.tagOperator);
     setConditionKey(fields.conditionKey);
     setConditionOperator(fields.conditionOperator);
     setConditionValues(fields.conditionValues);
@@ -1225,6 +1248,12 @@ function RestrictionEditor({
     }
     if (intent === "tag_condition" && flatOnly(action)) {
       return `${action}은 태그를 읽을 자원이 없다 — "동작 자체 거부"에서 고른다`;
+    }
+    // A hand-typed name AWS reads no resource tag for: the condition is absent from the request
+    // context and the statement never fires, whichever operator it carries.
+    if (intent === "tag_condition" && untaggable.has(action)) {
+      return `${action}이 지목하는 유형에는 AWS가 aws:ResourceTag를 평가하지 않는다 — 조건이 발화하지 `
+        + `않으므로 "동작 자체 거부"나 "조건으로 거부"에서 고른다`;
     }
     // A hand-typed name for the condition section: without a declared key the condition never
     // evaluates and the writer refuses the statement, so the way to deny one of these is outright.
@@ -1318,9 +1347,14 @@ function RestrictionEditor({
       .map(({ service, offers }) => {
         const scoped = offers.filter((o) => !o.account_level && !o.creates_target);
         hidden += offers.length - scoped.length;
+        // Each section drops one further set for a reason of its own, counted apart from the
+        // flat-deny bucket because it goes somewhere else: 이 자원만 허용 drops what the verdict
+        // says cannot hold it, 태그로 거부 drops what AWS reads no resource tag for.
         const keep = intent === "allow_only"
           ? scoped.filter((o) => !allowOnlyOf(o.action)?.refuse)
-          : scoped;
+          : intent === "tag_condition"
+            ? scoped.filter((o) => !untaggable.has(o.action))
+            : scoped;
         unsafe += scoped.length - keep.length;
         return { service, offers: keep };
       })
@@ -1483,6 +1517,19 @@ function RestrictionEditor({
             {intent === "tag_condition" && choices.length > 0 && (
               <fieldset>
                 <legend>태그</legend>
+                {/* The closed form first and proposed for a new decision. "이 태그가 아니면 거부"
+                    also catches the resource carrying no such tag at all, which is what the open
+                    form lets past — and letting it past is what this section used to do always. */}
+                <select
+                  disabled={disabled}
+                  value={tagOperator}
+                  onChange={(e) => emit(draft, {
+                    tagOperator: e.target.value as "StringNotEquals" | "StringEquals",
+                  })}
+                >
+                  <option value="StringNotEquals">StringNotEquals — 이 태그가 아니면 거부</option>
+                  <option value="StringEquals">StringEquals — 이 태그면 거부</option>
+                </select>
                 <input
                   type="text"
                   placeholder="env"
@@ -1497,6 +1544,13 @@ function RestrictionEditor({
                   value={tagValues}
                   onChange={(e) => emit(draft, { tagValues: e.target.value })}
                 />
+                {tagOperator === "StringEquals" && (
+                  <p className="warn-inline">
+                    열린 형태다 — <strong>그 태그가 붙지 않은 자원은 걸리지 않는다.</strong> 태그를
+                    아직 안 붙인 자원, 내일 만들어질 자원, 태그를 뗀 자원이 전부 통과한다. "운영은
+                    막는다"가 의도라면 <strong>StringNotEquals</strong>가 그 뜻이다.
+                  </p>
+                )}
               </fieldset>
             )}
 
@@ -1573,6 +1627,8 @@ function RestrictionEditor({
                   : intent === "key_condition" ? offerable.filter((a) => declaredKeys(a).length > 0)
                   : intent === "allow_only"
                     ? offerable.filter((a) => !flatOnly(a) && !allowOnlyOf(a)?.refuse)
+                  : intent === "tag_condition"
+                    ? offerable.filter((a) => !flatOnly(a) && !untaggable.has(a))
                     : offerable.filter((a) => !flatOnly(a))}
                 covered={offering}
                 uncovered={uncovered}
@@ -1592,7 +1648,7 @@ function RestrictionEditor({
                     }
                     : { count: hidden, section: INTENT_LABEL.deny_action })
                   : null}
-                alsoKeptOut={intent === "allow_only" && unsafe > 0
+                alsoKeptOut={unsafe > 0 && intent === "allow_only"
                   ? {
                     count: unsafe,
                     section: `${INTENT_LABEL.deny_only} · ${INTENT_LABEL.deny_action}`,
@@ -1600,7 +1656,15 @@ function RestrictionEditor({
                     tail: "목록 밖 자원이 인가에 끼는 순간 문장이 모든 호출을 거부하면서 범위처럼"
                       + " 읽힌다. 판정은 AWS API 요청 모델과의 대조에서 온다.",
                   }
-                  : null}
+                  : unsafe > 0 && intent === "tag_condition"
+                    ? {
+                      count: unsafe,
+                      section: `${INTENT_LABEL.deny_action} · ${INTENT_LABEL.key_condition}`,
+                      lead: "AWS가 aws:ResourceTag를 평가하지 않는 동작",
+                      tail: "조건이 요청 문맥에 없어 문장이 기록만 되고 아무 때도 발화하지 않는다 —"
+                        + " 어느 연산자를 골라도 마찬가지다.",
+                    }
+                    : null}
                 onCommit={(next) => {
                   setSection(intent, next);
                   setPicking(null);

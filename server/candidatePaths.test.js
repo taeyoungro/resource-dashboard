@@ -300,3 +300,71 @@ test('an action nobody classified is reported as unmapped, never guessed into a 
   // And a verb match says it is a guess.
   assert.equal(capabilitiesOf('quantum:CreateThing').source, 'verb');
 });
+
+// ---- the empty account: what a grant means before anything exists ------------------------------
+//
+// The measured blind spot. With nothing enumerated the digest produces no units, so the unit pass
+// runs zero times and only the targetless edges speak. Before this, three of them did - mint,
+// pass-and-run, grant-self - which left exactly two of seven outcomes reachable and made the whole
+// DATA_EGRESS / NETWORK_EXPOSURE / AUDIT_BLIND family invisible on a new account. That is the
+// account where a preventive control is most often asked for, and where the grant is least
+// examined.
+
+const EMPTY = (actions) => ({
+  account_id: ACCOUNT,
+  passrole_grants: [],
+  grants: [{ p: 'P1', name: 'X', risk_actions: actions, non_restrictable: [], units: [] }],
+});
+
+test('opening something to the outside is real with nothing enumerated - reading it is not', () => {
+  // The distinction the per-capability field exists for. s3:PutBucketPolicy says "whatever comes
+  // to exist can be published" and is true on day one; s3:GetObject needs the object to be there,
+  // and proposing it on an empty account would be noise an approver has to clear.
+  const opened = candidates(EMPTY(['s3:PutBucketPolicy', 'lambda:CreateFunctionUrlConfig']));
+  const exfiltrate = opened.filter((c) => c.edge === 'exfiltrate');
+  assert.equal(exfiltrate.length, 1, 'publishing is invisible on an empty account');
+  assert.equal(exfiltrate[0].outcome, OUTCOME.DATA_EGRESS);
+  assert.equal(exfiltrate[0].target, null);
+  assert.deepEqual(exfiltrate[0].steps.map((s) => s.capability), [CAP.SHARE_EXTERNAL]);
+
+  const read = candidates(EMPTY(['s3:GetObject', 'dynamodb:Scan', 'secretsmanager:GetSecretValue']));
+  assert.deepEqual(read, [], 'reading a resource that does not exist was proposed as a path');
+  // And the mixed grant proposes the publishing half ALONE - not the reads riding along with it.
+  const mixed = candidates(EMPTY(['s3:GetObject', 's3:PutBucketPolicy']));
+  assert.deepEqual(mixed.flatMap((c) => c.steps.flatMap((s) => s.actions)),
+                   ['s3:PutBucketPolicy']);
+});
+
+test('a way into the network, and a blinded audit, need no inventory either', () => {
+  const network = candidates(EMPTY(['ec2:CreateInternetGateway',
+                                    'ec2:AuthorizeSecurityGroupIngress']));
+  assert.deepEqual(network.map((c) => c.outcome), [OUTCOME.NETWORK_EXPOSURE]);
+  // Every action on this edge BRINGS the path into being, so the whole edge is targetless - no
+  // per-capability split, unlike exfiltrate.
+  assert.deepEqual(network[0].steps.map((s) => s.capability).sort(),
+                   [CAP.NETWORK_INGRESS, CAP.NETWORK_ROUTE].sort());
+
+  const audit = candidates(EMPTY(['cloudtrail:StopLogging', 'config:StopConfigurationRecorder']));
+  assert.deepEqual(audit.map((c) => c.outcome), [OUTCOME.AUDIT_BLIND]);
+  // This one was never really a unit finding: what it acts on is account-level audit machinery an
+  // index of workload resources does not report, so it was invisible on a FULL account too.
+  assert.equal(audit[0].target, null);
+});
+
+test('an enumerated account still gets the precise unit answer, not the capability one', () => {
+  // The widening this must not become. Where resources exist, the unit pass names them, and the
+  // policy-scope pass is skipped for that edge so the same path is not proposed twice.
+  const bucket = `arn:aws:s3:::opt-solution-markers`;
+  const digest = {
+    account_id: ACCOUNT,
+    passrole_grants: [],
+    grants: [{
+      p: 'P1', name: 'X', risk_actions: ['s3:PutBucketPolicy'], non_restrictable: [],
+      units: [{ t: 's3:bucket', acts: [0], n: 1, sample: [bucket], truncated: false,
+                colocation: 'sound', attribution: 'resource_type' }],
+    }],
+  };
+  const found = candidates(digest).filter((c) => c.edge === 'exfiltrate');
+  assert.equal(found.length, 1, 'the same path was proposed twice, or not at all');
+  assert.ok(found[0].target, 'an enumerated account fell back to the capability-only answer');
+});

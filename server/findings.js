@@ -106,6 +106,19 @@ export function unitActions(grant, unit) {
  * been attributed to these resources at all - which attribution='service' says they were not.
  */
 function scopeUnits(rule, grant) {
+  // A resourceActionSet rule with a fallback, used ONLY when the grant enumerated nothing.
+  //
+  // The reason it is a fallback and not a scope swap: on an account that HAS resources, the unit
+  // pass is what makes the target list precise - E-2 fires on the lambda unit and names the lambda
+  // functions. Evaluating it at policy scope there would attach every unit the grant touches,
+  // including resources of other services, which is a wider answer to a narrower question. But
+  // with nothing enumerated the unit pass produces no scopes at all, and the rule goes silent in
+  // exactly the account where the capability it names is least examined - a new one, where
+  // "this grant can open an unauthenticated invoke path to whatever gets created" is the whole
+  // finding. So: precise where precision is possible, capability-only where it is not.
+  if (rule.whenNoUnits && (grant.units ?? []).length === 0) {
+    return scopeUnits({ ...rule, evaluatedOn: rule.whenNoUnits, whenNoUnits: null }, grant);
+  }
   switch (rule.evaluatedOn) {
     case 'resourceActionSet':
       return (grant.units ?? []).map((unit) => ({
@@ -236,6 +249,13 @@ function assetGrade(rule, units) {
 function truncationOf(units) {
   if (units.some((u) => u.truncated === true)) return true;
   if (units.some((u) => u.truncated === null || u.truncated === undefined)) return null;
+  // NO units is not a complete enumeration, it is no enumeration - nothing here established that
+  // the target list is whole, so saying false claims something nobody checked. T-6: unknown
+  // completeness is null, never false. This is the shape a capability-only finding has - a
+  // policyActionUnion rule on a grant with nothing enumerated, which is every rule finding on a
+  // new account - and reporting those as "enumeration complete" is the one way the empty-account
+  // recovery could have become a new lie.
+  if (units.length === 0) return null;
   return false;
 }
 

@@ -314,12 +314,18 @@ export interface Restriction {
   /**
    * key_condition only. The key must be one the ACTION DECLARES (action_reference.condition_keys),
    * or the condition never evaluates - StringEquals then denies nothing, StringNotEquals denies
-   * every call, and either way the statement reads as the chosen control. The operator defaults to
-   * StringNotEquals, the closed form: a missing key or a value AWS adds later is denied.
+   * every call, and either way the statement reads as the chosen control.
    */
   condition_key?: string;
-  condition_operator?: "StringNotEquals" | "StringEquals";
   condition_values?: string[];
+  /**
+   * BOTH condition intents carry the operator. tag_condition's branch hardcoded StringEquals until
+   * the operator existed, so absence on a STORED tag decision means StringEquals - the open form,
+   * under which a resource carrying no such tag does not match and walks past the control. The
+   * editor proposes StringNotEquals for a new one; that is a different thing from what an unmarked
+   * old record means. key_condition was born closed and its absence means StringNotEquals.
+   */
+  condition_operator?: "StringNotEquals" | "StringEquals";
 }
 
 export type RestrictionIntent =
@@ -433,6 +439,13 @@ export interface ImpactActionReference {
    * on assessments written before the reference carried it - the writer then judges alone.
    */
   allow_only?: Record<string, Record<string, { refuse?: string; cover?: string[] }>>;
+  /**
+   * The actions AWS evaluates no aws:ResourceTag for - every resource type they name lacks the
+   * key, or they name none at all. A tag condition on one of these never fires: under StringEquals
+   * it denies nothing, under StringNotEquals it denies every call, and both read as the chosen
+   * control. Fully-qualified names ("iam:AttachGroupPolicy"). Absent on older assessments.
+   */
+  no_resource_tag?: string[];
 }
 
 export type ImpactActionEntry =

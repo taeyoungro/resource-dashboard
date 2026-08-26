@@ -906,6 +906,7 @@ test('조건으로 거부 - the key is declared, the default is closed, the rout
 });
 
 const API = readFileSync(new URL('./api.js', import.meta.url), 'utf8');
+const PREVIEW = readFileSync(new URL('./inlinePreview.js', import.meta.url), 'utf8');
 
 test('이 자원만 허용 offers only what was judged to hold it, and demands every type', () => {
   // The reported defect class: IAM authorises a multi-resource call against every resource in the
@@ -921,7 +922,7 @@ test('이 자원만 허용 offers only what was judged to hold it, and demands e
                'the offering shows actions whose statement would deny every call');
   assert.ok(IMPACT.includes('!o.account_level && !o.creates_target'),
             'the verdict filter replaced the flat-deny filter instead of composing with it');
-  assert.ok(IMPACT.includes('alsoKeptOut={intent === "allow_only" && unsafe > 0'),
+  assert.ok(IMPACT.includes('alsoKeptOut={unsafe > 0 && intent === "allow_only"'),
             'the judged-unsafe absences are folded into the flat-deny sentence or not said');
   assert.ok(PICKER.includes('{alsoKeptOut.lead} {alsoKeptOut.count}개는 여기에 없다'),
             'the second kept-out bucket has no sentence of its own');
@@ -939,6 +940,42 @@ test('이 자원만 허용 offers only what was judged to hold it, and demands e
   assert.ok(IMPACT.includes('유형마다 하나 이상'), 'the section does not state the rule');
   assert.match(IMPACT, /typeOfArn\.get\(arn\) === type/,
                'cover is checked by something other than the enumeration type of the picked ARN');
+});
+
+test('태그로 거부 - the operator is a decision, and the tag has to be one AWS reads', () => {
+  // The fix. The tag branch hardcoded StringEquals - the OPEN form - so every tag restriction this
+  // platform ever wrote let past exactly what an administrator asking for "production is off
+  // limits" meant to catch: a resource carrying no Environment tag at all does not match
+  // StringEquals, the Deny does not fire, and the untagged resource is allowed.
+  assert.match(PREVIEW, /\[conditionOperator\(restriction\)\]: \{\s*\[`aws:ResourceTag\/\$\{restriction\.tag_key \?\? ''\}`\]/,
+               'the preview hardcodes the tag operator again');
+  // The two condition intents' absences mean DIFFERENT things, and both languages say so in one
+  // place. key_condition was born closed; every stored tag decision composed StringEquals, so
+  // reading an unmarked one as closed would invert a control somebody already approved.
+  assert.match(PREVIEW, /DEFAULT_CONDITION_OPERATOR = \{\s*key_condition: 'StringNotEquals',\s*tag_condition: 'StringEquals',/,
+               'the per-intent default is gone, or the tag default flipped under stored records');
+  // The editor proposes the closed form for a NEW decision and preserves a stored one.
+  assert.match(IMPACT, /tagSeed \? tagSeed\.condition_operator \?\? "StringEquals" : "StringNotEquals"/,
+               'a new tag decision is proposed open, or a stored one is silently flipped');
+  assert.match(IMPACT, /setTagOperator\(tag \? tag\.condition_operator \?\? "StringEquals" : "StringNotEquals"\)/,
+               'the resync does not reseed the tag operator the same way it seeds it');
+  assert.ok(IMPACT.includes('condition_operator: fields.tagOperator'),
+            'the chosen tag operator never reaches the wire');
+  // Choosing the open form is allowed and says which way it rots - the same honesty the condition
+  // section already carries.
+  assert.ok(IMPACT.includes('그 태그가 붙지 않은 자원은 걸리지 않는다'),
+            'the open tag form is offered without saying what it lets past');
+  // And the coherence gate tag_condition was missing while key_condition had one.
+  assert.match(IMPACT, /scoped\.filter\(\(o\) => !untaggable\.has\(o\.action\)\)/,
+               'the tag section offers actions whose condition can never fire');
+  assert.match(IMPACT, /reference\?\.no_resource_tag/,
+               'the editor does not read the carried tag vocabulary');
+  assert.ok(IMPACT.includes('AWS가 aws:ResourceTag를 평가하지 않는 동작'),
+            'the actions kept out of the tag section are not said, or share the wrong sentence');
+  assert.match(API, /restriction\.intent === 'tag_condition' && referenceNoResourceTag/,
+               'the route does not mirror the tag coherence gate, or refuses on an old assessment');
+  assert.match(API, /CONDITION_INTENTS = new Set\(\['tag_condition', 'key_condition'\]\)/,
+               'the operator is accepted on an intent whose statement has no condition');
 });
 
 test('the decision route mirrors the verdict and holds the cover gate the writer cannot', () => {

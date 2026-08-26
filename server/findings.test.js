@@ -356,3 +356,34 @@ test('the baseline is evaluated like any other grant, and marked', () => {
   const [found] = only(findings(d), 'D-3');
   assert.equal(found.isBaseline, true);
 });
+
+// ---- the empty account: a rule that names a capability must still fire ------------------------
+
+test('E-2 falls back to policy scope when the account enumerated nothing', () => {
+  // On an account with resources, the unit pass is what makes the target list precise - E-2 fires
+  // on the lambda unit and names the functions. With nothing enumerated it produced no scopes at
+  // all and went silent, in exactly the account where "this grant can open an unauthenticated
+  // invoke path to whatever gets created" is the whole finding.
+  const empty = digest([grant('AWSLambda_FullAccess', ['lambda:CreateFunctionUrlConfig'], [])]);
+  const found = findings(empty).find((f) => f.id === 'E-2');
+  assert.ok(found, 'the rule is silent on an empty account');
+  assert.deepEqual(found.triggerActions, ['lambda:CreateFunctionUrlConfig']);
+  assert.deepEqual(found.targets, []);
+  // Nothing established that the target list is whole, so completeness is UNKNOWN - never false.
+  // Saying false would report a capability-only finding as a complete enumeration.
+  assert.equal(found.truncated, null);
+  assert.equal(summary(findings(empty)).enumerationIncomplete, 1);
+});
+
+test('the fallback does not widen a finding on an account that has resources', () => {
+  // The regression this must not become: policy scope attaches every unit the grant touches,
+  // including resources of other services, which is a wider answer to a narrower question.
+  const actions = ['lambda:CreateFunctionUrlConfig'];
+  const riskActions = [...actions, 's3:GetObject'];
+  const full = digest([grant('AWSLambda_FullAccess', riskActions,
+                             [unit('lambda:function', actions, riskActions),
+                              unit('s3:bucket', ['s3:GetObject'], riskActions)])]);
+  const found = findings(full).find((f) => f.id === 'E-2');
+  assert.equal(found.targets.length, 1, 'the unit pass was replaced by the policy-scope one');
+  assert.equal(found.truncated, false, 'a real enumeration was reported as unknown');
+});

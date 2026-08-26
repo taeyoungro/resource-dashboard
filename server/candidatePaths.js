@@ -117,12 +117,27 @@ const EDGES = [
     id: 'exfiltrate',
     any: [CAP.READ_DATA, CAP.READ_SECRET, CAP.SHARE_EXTERNAL, CAP.SNAPSHOT],
     outcome: OUTCOME.DATA_EGRESS,
+    targetless: true,
+    // Only the half that is real with nothing enumerated, which is why the field exists at all.
+    // Reading a table, a secret or a snapshot needs the table, the secret or the volume to be
+    // there - proposing those on an empty account is noise an approver has to clear. OPENING
+    // something to the outside is a property of the grant: s3:PutBucketPolicy, kms:PutKeyPolicy
+    // and lambda:CreateFunctionUrlConfig say "whatever comes to exist can be published", and that
+    // is true on day one. It was also the blind spot measured: the whole DATA_EGRESS outcome was
+    // unreachable on a new account, so the very action a preventive control is most often asked
+    // for produced no finding at all.
+    targetlessCaps: [CAP.SHARE_EXTERNAL],
     why: 'contents can be read, copied, or opened to a principal outside this account',
   },
   {
     id: 'open-network',
     any: [CAP.NETWORK_ROUTE, CAP.NETWORK_INGRESS],
     outcome: OUTCOME.NETWORK_EXPOSURE,
+    // Whole edge. Every action here BRINGS the path into being - CreateInternetGateway,
+    // CreateRoute, AuthorizeSecurityGroupIngress, CreateLoadBalancer - so "this grant can open a
+    // way into the network" needs no inventory to be true, and an account with nothing in it yet
+    // is exactly where that grant goes unexamined.
+    targetless: true,
     why: 'a path into or out of the network can be created',
   },
   {
@@ -135,6 +150,12 @@ const EDGES = [
     id: 'blind',
     any: [CAP.TAMPER_AUDIT],
     outcome: OUTCOME.AUDIT_BLIND,
+    // Whole edge, and this one was never really a unit finding. What it acts on is account-level
+    // audit machinery - the trail, the Config recorder, the GuardDuty detector - which an index of
+    // workload resources does not report, so the capability was invisible whether the account was
+    // new or full. It is also the outcome an approver most needs to see before granting, because
+    // it is the one that makes the others unobservable afterwards.
+    targetless: true,
     why: 'the record of what happened can be shortened, stopped or deleted',
   },
 ];
@@ -308,13 +329,18 @@ export function candidates(digest) {
     // existing thing - rewriting code, stopping an instance, reading a table - says nothing when
     // there is no such thing, and proposing it would be noise an approver has to clear. An edge
     // that BRINGS SOMETHING INTO BEING - minting a credential, writing a policy onto a principal,
-    // passing a role to a service it then creates - is real on an empty account, and it is
-    // precisely what a groups-only view cannot see: a create action reaches nothing that exists,
-    // so it appears in no unit at all.
+    // passing a role to a service it then creates, publishing whatever comes to exist, opening a
+    // way into the network - is real on an empty account, and it is precisely what a groups-only
+    // view cannot see: a create action reaches nothing that exists, so it appears in no unit.
+    //
+    // The distinction is per CAPABILITY where an edge holds both kinds. `exfiltrate` is the one
+    // that does: reading a table needs the table, publishing a bucket policy does not, and marking
+    // the whole edge targetless would have proposed every s3:GetObject grant on an empty account.
+    // targetlessCaps names the half that survives; without it the edge's whole `any` list does.
     for (const edge of EDGES) {
       if (!edge.targetless) continue;
       if (edge.needs && !edge.needs.every((cap) => policyCaps.has(cap))) continue;
-      const hit = (edge.any ?? []).filter((cap) => policyCaps.has(cap));
+      const hit = (edge.targetlessCaps ?? edge.any ?? []).filter((cap) => policyCaps.has(cap));
       if (hit.length === 0) continue;
       // Only when no unit already carried it, so the same path is not proposed twice.
       const already = out.some((c) => c.edge === edge.id && c.policy_id === grant.p);
