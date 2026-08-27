@@ -1340,3 +1340,76 @@ test('a template seeds an ordinary decision that the route accepts unchanged', a
   assert.equal(marker.restrictions[0].condition_key, 'lambda:FunctionUrlAuthType');
   assert.ok(s3 && impactSha256);
 });
+
+// ---- one policy at a time ----------------------------------------------------------------------
+
+/** Two attached policies that fire different rules, so a scope is visible in the result. */
+const TWO_POLICIES = {
+  ...ASSESSMENT,
+  policies: [
+    { source: 'aws_managed', identifier: 'arn:aws:iam::aws:policy/AmazonEC2FullAccess',
+      default_version_id: 'v1', is_baseline: false, restrictable: true, unreadable: null,
+      actions_granted: ['ec2:TerminateInstances'], actions_offerable: ['ec2:TerminateInstances'],
+      affected: [] },
+    { source: 'aws_managed', identifier: 'arn:aws:iam::aws:policy/AWSLambda_FullAccess',
+      default_version_id: 'v1', is_baseline: false, restrictable: true, unreadable: null,
+      actions_granted: ['lambda:DeleteFunction'], actions_offerable: ['lambda:DeleteFunction'],
+      affected: [] },
+  ],
+  action_reference: {
+    ...ASSESSMENT.action_reference,
+    services: {
+      ...ASSESSMENT.action_reference.services,
+      ec2: { TerminateInstances: ['Write', ['instance']] },
+      lambda: { DeleteFunction: ['Write', ['function']] },
+    },
+  },
+};
+
+test('an analysis can be scoped to one attached policy, and the scope is echoed', async () => {
+  // Five attached policies is five policies' worth of candidates, and the model half is billed per
+  // candidate. Nothing in either half is computed ACROSS policies - every finding and every
+  // candidate belongs to exactly one grant - so scoping is a filter and loses nothing.
+  const { route } = harness({ assessment: TWO_POLICIES });
+  const whole = await route['POST /api/plans/:id/analysis'](
+    { params: { id: PLAN_ID }, body: { engine: 'rules' } });
+  assert.equal(whole.policies.length, 2, 'the fixture has nothing to scope between');
+  assert.ok(whole.rule_findings.length >= 2, 'both policies should have fired something');
+  assert.equal(whole.policy, null);
+
+  const one = whole.policies[0].identifier;
+  const scoped = await route['POST /api/plans/:id/analysis'](
+    { params: { id: PLAN_ID }, body: { engine: 'rules', policy: one } });
+  assert.equal(scoped.policy, one);
+  assert.ok(scoped.rule_findings.every((f) => f.policyName === one),
+            "a scoped analysis returned another policy's findings");
+  assert.ok(scoped.rule_findings.length < whole.rule_findings.length,
+            'the scope filtered nothing out');
+  // The roster travels either way, so the page can draw every area from one call.
+  assert.deepEqual(scoped.policies, whole.policies);
+});
+
+test('a policy that is not attached is refused rather than silently meaning all of them', async () => {
+  // A typo that fell through to the whole plan would bill for five and report as one.
+  const { route } = harness({ assessment: TWO_POLICIES });
+  await assert.rejects(
+    route['POST /api/plans/:id/analysis'](
+      { params: { id: PLAN_ID }, body: { engine: 'rules', policy: 'arn:aws:iam::aws:policy/Nope' } }),
+    (e) => e.status === 400 && /not an attached policy/.test(e.message),
+  );
+});
+
+test('polling one scope never returns another scope\'s run', async () => {
+  // Two policies analysed separately are two runs under one plan id. A poll that did not name the
+  // scope would be handed whichever happened to be there - an answer about a different policy,
+  // under this one's heading.
+  const { route } = harness({ assessment: TWO_POLICIES });
+  await assert.rejects(
+    route['GET /api/plans/:id/analysis']({
+      params: { id: PLAN_ID },
+      query: new URLSearchParams({ policy: 'arn:aws:iam::aws:policy/AmazonEC2FullAccess' }),
+    }),
+    (e) => e.status === 404 && /AmazonEC2FullAccess/.test(e.message),
+    'the poll fell back to the whole-plan run',
+  );
+});

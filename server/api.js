@@ -529,12 +529,6 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
 
       const key = stored.digest ?? null;
 
-      // Already answered, about this same assessment. Returned rather than asked again: the model
-      // half costs money and minutes, and a second press of the button - or a browser reload - is
-      // not a request for a second opinion.
-      const finished = runs.get(id, key);
-      if (finished && finished.state === DONE) return withRun(finished.answer, finished);
-
       const digest = condense(stored.document, {
         controlPlane: controlPlane(config),
         ruleActions: RULE_ACTIONS,
@@ -547,14 +541,55 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // this side of the wire, so threading it costs no digest bytes, and the digest is what an
       // approval is bound to.
       const reference = referenceIndex(stored.document);
-      const rules = ruleFindings(digest, undefined, reference);
+
+      /**
+       * Which attached policy this ask is about, or null for all of them.
+       *
+       * Every finding and every candidate belongs to exactly one grant - nothing in either half is
+       * computed across policies - so scoping is a filter rather than a different analysis, and it
+       * loses nothing. What it saves is the model half: five attached policies is five policies'
+       * worth of candidates, and an approver who only wants to know about AmazonEC2FullAccess
+       * should not pay for the other four.
+       *
+       * Refused rather than ignored when it names nothing. A typo that silently analysed the whole
+       * plan would bill for five and report as one.
+       */
+      const roster = (digest.grants ?? []).map((g) => ({
+        id: g.p,
+        identifier: g.name,
+        is_baseline: g.is_baseline === true,
+        restrictable: g.restrictable !== false,
+      }));
+      const scope = typeof body?.policy === 'string' && body.policy.trim() ? body.policy : null;
+      if (scope && !roster.some((p) => p.identifier === scope)) {
+        throw new HttpError(400, `${scope} is not an attached policy of this plan. Attached: `
+          + roster.map((p) => p.identifier).join(', '));
+      }
+      const mine = (list, field) => (scope ? list.filter((x) => x[field] === scope) : list);
+
+      // The run this ask belongs to. Two policies analysed separately are two runs, and neither is
+      // the whole-plan one - without the scope in the id, the second ask would join the first and
+      // be handed an answer about a different policy.
+      const runId = scope ? `${id}::${scope}` : id;
+
+      // Already answered, about this same assessment AND this same scope. Returned rather than
+      // asked again: the model half costs money and minutes, and a second press of the button - or
+      // a browser reload - is not a request for a second opinion.
+      const finished = runs.get(runId, key);
+      if (finished && finished.state === DONE) return withRun(finished.answer, finished);
+
+      const rules = mine(ruleFindings(digest, undefined, reference), 'policyName');
       // The candidates, each told which rules already cover it. Both halves run over the same
       // digest and reach the same places by different routes; without this the approver reads
       // twelve paths twice, in two cases at two different grades.
-      const candidates = withOverlap(proposeCandidates(digest, reference), rules);
+      const candidates = mine(withOverlap(proposeCandidates(digest, reference), rules), 'policy');
 
       const answer = {
         plan_id: id,
+        // What was asked about, echoed so a cached or polled answer cannot be read as another
+        // scope's, and the roster so the page can draw one area per policy without a second call.
+        policy: scope,
+        policies: roster,
         request_id: stored.document.request_id,
         impact_sha256: key,
         rules_sha256: RULES_SHA256,
@@ -595,7 +630,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // assessment - and if so it rides along here. That is not this call starting anything: it
         // is handing back work that was already bought, the same as the DONE short-circuit above
         // does for a repeated ask. Nothing here calls runs.start.
-        const inFlight = runs.get(id, key);
+        const inFlight = runs.get(runId, key);
         return inFlight ? withRun(answer, inFlight) : answer;
       }
 
@@ -603,7 +638,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // call per batch, in sequence, and on a real assessment that is minutes - which is what put
       // a 504 in front of this route when it was all one request. So the model half is started and
       // not awaited: this returns the rule findings now, and the page polls GET for the rest.
-      const entry = runs.start(id, key, async (report) => {
+      const entry = runs.start(runId, key, async (report) => {
         const done = { ...answer };
         try {
           const client = await modelClient();
@@ -621,7 +656,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
             'analysis plan=%s candidates=%d covered=%d answered=%d findings=%d rejected=%d '
             + 'dropped=%d failed=%d digest=%dB in=%d out=%d cached=%d took=%dms slowest=%dms '
             + 'batches=%d at=%d',
-            id, a.candidates, done.candidates_covered_by_rules, a.answered ?? 0, a.findings.length,
+            runId, a.candidates, done.candidates_covered_by_rules, a.answered ?? 0, a.findings.length,
             a.rejected.length, a.dropped.length, a.failures.length, done.digest_bytes,
             a.usage.input, a.usage.output, a.usage.cacheRead,
             a.timing?.totalMs ?? 0, Math.max(0, ...(a.timing?.batchMs ?? [0])),
@@ -633,7 +668,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
           done.analysis_error = error instanceof AnalysisError || error instanceof HttpError
             ? error.message
             : `the model call failed: ${error.message ?? String(error)}`;
-          log.warn('analysis plan=%s failed: %s', id, done.analysis_error);
+          log.warn('analysis plan=%s failed: %s', runId, done.analysis_error);
         }
         return done;
       });
@@ -650,20 +685,25 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
      * one that used to matter belonged to the POST, which held a connection open for the whole
      * model call and got a 504 for it.
      */
-    'GET /api/plans/:id/analysis': async ({ params }) => {
+    'GET /api/plans/:id/analysis': async ({ params, query }) => {
       const id = planId(params.id);
+      // Which scope is being polled. A GET has no body, so it comes from the query - and it has to
+      // come from somewhere: two policies analysed separately are two runs under one plan, and a
+      // poll without it would return whichever happened to be there.
+      const scope = query?.get('policy')?.trim() || null;
+      const runId = scope ? `${id}::${scope}` : id;
       // No key given, so the run is returned with the assessment it is about stated on it. The
       // page holds that digest already and refuses a citation that does not match it, so a run
       // left over from a replaced assessment cannot be read as this plan's answer.
-      const entry = runs.get(id, null);
+      const entry = runs.get(runId, null);
       if (!entry) {
-        throw new HttpError(404, `no analysis has been started for ${id} in this process. Press `
+        throw new HttpError(404, `no analysis has been started for ${runId} in this process. Press `
           + 'the button again - a restart loses what was running, and nothing is stored.');
       }
       if (entry.state === DONE) return withRun(entry.answer, entry);
       // A failure here is the RUN failing, not the model - a model outage comes back as a finished
       // answer carrying analysis_error, because the rules in it still stand.
-      return { plan_id: id, run: runState(entry) };
+      return { plan_id: id, policy: scope, run: runState(entry) };
     },
 
     'POST /api/plans/:id/decision': async ({ params, body }) => {

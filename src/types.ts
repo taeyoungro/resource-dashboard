@@ -824,6 +824,14 @@ export interface RiskAnalysisAnswer {
    */
   types_unknown?: Record<string, number>;
   /**
+   * Which attached policy this answer is about, or null for the whole plan.
+   *
+   * Echoed by the server so a cached or polled answer cannot be read as another scope's.
+   */
+  policy?: string | null;
+  /** Every attached policy, so the page can draw one area each without a second call. */
+  policies?: { id: string; identifier: string; is_baseline: boolean; restrictable: boolean }[];
+  /**
    * Mutating actions no layer could classify - not curated, not classified by the assessment's
    * action reference, and no recognised verb.
    *

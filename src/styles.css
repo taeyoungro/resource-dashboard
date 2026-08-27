@@ -729,6 +729,29 @@ dialog.picker button.commit {
 .finding-section h4 { margin: 0 0 8px; font-size: 14px; }
 .finding-section h5 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
 
+/* One scope's analysis. The whole-plan one sits bare; a per-policy one sits inside its own block,
+   so the buttons a reader presses are unmistakably the ones for the policy above them. */
+.scope-head { margin-top: 8px; align-items: center; flex-wrap: wrap; gap: 8px; }
+.scopes { margin-top: 26px; border-top: 1px solid var(--border); padding-top: 14px; }
+.scopes > h4 { margin: 0 0 4px; font-size: 14px; }
+.scopes > p { margin: 0 0 10px; }
+.scope-policy-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: var(--panel);
+}
+.scope-policy-block > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+.scope-policy-block[open] > summary { margin-bottom: 6px; }
+
 /* The two areas. Bounded rather than merely spaced: the whole point is that a finding belongs to
    one question or the other, and an approver has to be able to see where one answer stops. */
 .finding-area {
