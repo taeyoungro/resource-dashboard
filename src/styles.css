@@ -285,6 +285,24 @@ pre.plan {
   line-height: 1.5;
 }
 
+/* A refused inspection. Louder than .warn because it is not advice about a decision - it says the
+   last thing that happened to this resource failed, and before the inspector recorded it that
+   sentence reached nobody. First on the panel, so it is read before the plan under it. */
+.refusal {
+  padding: 0.8rem 0.9rem;
+  margin: 0.8rem 0;
+  border: 1px solid var(--danger);
+  border-left: 4px solid var(--danger);
+  border-radius: 6px;
+  background: rgba(207, 34, 46, 0.08);
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+.refusal > strong { color: var(--danger); }
+.refusal p { margin: 0.5rem 0 0; }
+.refusal pre.plan { margin: 0.5rem 0; white-space: pre-wrap; }
+.refusal .meta { gap: 0.9rem; }
+
 .warn, .warn-inline {
   padding: 0.6rem 0.8rem;
   margin: 0.6rem 0;

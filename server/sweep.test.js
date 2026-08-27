@@ -267,7 +267,7 @@ test('newest plan first', async () => {
 
 test('an empty bucket is an empty answer and not an error', async () => {
   const state = await sweep(fakeS3({}), CONFIG, { now: NOW });
-  assert.deepEqual(state.counts, { failed: 0, running: 0, awaiting_decision: 0 });
+  assert.deepEqual(state.counts, { failed: 0, running: 0, awaiting_decision: 0, refused: 0 });
   assert.deepEqual(state.errors, []);
 });
 
@@ -635,4 +635,153 @@ test('the fetch cap counts only what was not already held', async () => {
   assert.equal(state.bodies.held, 3);
   assert.equal(state.bodies.fetched, 2, 'only the two that were never announced');
   assert.equal(s3.gets.length, 2);
+});
+
+// ---- a refused inspection ----------------------------------------------------------------------
+//
+// The silence this closes. A refusal is a COMPLETED run, so the marker is deleted, so the request
+// used to vanish: the reason existed in CloudWatch and nowhere a person at this page would ever be.
+// The observed case was a spec role carrying twelve managed policies against a limit of ten - no
+// plan, no failure, no row, and an administrator whose edit apparently did nothing.
+
+const REFUSAL = '12 managed policies including the baseline, and the limit is 10';
+
+const withRefusal = (fixture, { at, requestId, reason = REFUSAL, kind = 'ps_role' }) => {
+  const objects = [...fixture.objects, { key: `${fixture.prefix}refusal.json`, lastModified: at }];
+  const bodies = {
+    ...fixture.bodies,
+    [`${BUCKET}/${fixture.prefix}refusal.json`]: {
+      schema: 1, request_id: requestId, account_id: '644701781058', resource: 'ps-Taeyoung',
+      kind, reason, refused_at: at,
+    },
+  };
+  return { ...fixture, objects, bodies };
+};
+
+test('a refusal newer than the plan is shown, and outranks what the plan was waiting for', async () => {
+  // The plan is real and still approvable - but it describes an EARLIER version of the resource,
+  // and the last attempt to plan the current one failed. Reporting it as awaiting a decision would
+  // answer a question nobody asked while the one that was asked went unmentioned.
+  const plan = planFixture('644701781058', 'ps-Taeyoung',
+                           { at: ago(600), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
+  const withIt = withRefusal(plan, { at: ago(60), requestId: '644701781058-a21abcd0ebbaad7e' });
+  const state = await sweep(fakeS3({ [BUCKET]: withIt.objects }, withIt.bodies), CONFIG,
+                            { now: NOW });
+  const [row] = state.plans;
+  assert.equal(row.state, 'refused');
+  assert.equal(row.refusal.reason, REFUSAL);
+  assert.equal(row.refusal.request_id, '644701781058-a21abcd0ebbaad7e');
+  assert.equal(row.refusal.supersedes_plan, true,
+               'nothing says the plan on screen is older than the last thing that happened');
+  assert.equal(state.counts.refused, 1);
+  // The plan itself is still there and still readable - the refusal explains it, it does not
+  // replace it.
+  assert.equal(row.request_id, '644701781058-aaaaaaaaaaaaaaa1');
+  assert.ok(row.plan_bytes !== null);
+});
+
+test('a refusal superseded by a later plan is not shown at all', async () => {
+  // The inspector holds no delete on this bucket, so a record cannot be removed when the problem
+  // is fixed. It does not need to be: a later successful inspection rewrites request.json with its
+  // own id, and the ids then agree.
+  const plan = planFixture('644701781058', 'ps-Taeyoung',
+                           { at: ago(60), requestId: '644701781058-a21abcd0ebbaad7e' });
+  const stale = withRefusal(plan, { at: ago(600), requestId: '644701781058-a21abcd0ebbaad7e' });
+  const state = await sweep(fakeS3({ [BUCKET]: stale.objects }, stale.bodies), CONFIG,
+                            { now: NOW });
+  const [row] = state.plans;
+  assert.equal(row.refusal, null, 'a fixed resource still reports itself as refused');
+  assert.equal(row.state, 'awaiting_decision');
+  assert.equal(state.counts.refused, 0);
+});
+
+test('a resource whose FIRST inspection was refused is a row, not an incompleteness warning', async () => {
+  // The prefix holds nothing but the record. Reporting that as "incomplete" would file the one
+  // thing that explains it under the noise everybody learns to ignore.
+  const prefix = '644701781058/ps-Taeyoung/plan/';
+  const objects = [{ key: `${prefix}refusal.json`, lastModified: ago(60) }];
+  const bodies = {
+    [`${BUCKET}/${prefix}refusal.json`]: {
+      schema: 1, request_id: '644701781058-a21abcd0ebbaad7e', account_id: '644701781058',
+      resource: 'ps-Taeyoung', kind: 'ps_role', reason: REFUSAL, refused_at: ago(60),
+    },
+  };
+  const state = await sweep(fakeS3({ [BUCKET]: objects }, bodies), CONFIG, { now: NOW });
+  assert.deepEqual(state.errors, [], 'the refusal was reported as an incomplete upload');
+  const [row] = state.plans;
+  assert.equal(row.state, 'refused');
+  assert.equal(row.plan_id, '644701781058:ps-Taeyoung');
+  assert.equal(row.account_id, '644701781058');
+  assert.equal(row.resource, 'ps-Taeyoung');
+  assert.equal(row.refusal.reason, REFUSAL);
+  // There has never been a plan here, so nothing is superseded and nothing can be approved.
+  assert.equal(row.refusal.supersedes_plan, false);
+  assert.equal(row.plan_bytes, null);
+  assert.equal(row.assessment, 'unavailable');
+});
+
+test('a prefix with neither a plan nor a refusal is still reported as incomplete', async () => {
+  // The refusal branch must not swallow the case it was added beside.
+  const prefix = '644701781058/ps-Taeyoung/plan/';
+  const state = await sweep(
+    fakeS3({ [BUCKET]: [{ key: `${prefix}tfplan`, lastModified: ago(60) }] }, {}),
+    CONFIG, { now: NOW });
+  assert.equal(state.plans.length, 0);
+  assert.match(state.errors[0] ?? '', /is incomplete/);
+});
+
+// The row says a refusal happened; the PANEL is where somebody reads what it was. The sweep runs on
+// an interval, so the detail reads the prefix itself rather than being handed the row's copy - the
+// moment this matters most is the one right after an administrator changed the resource and opened
+// the plan to find out what happened to it.
+
+test('the panel carries the refusal, read as the prefix is when it opens', async () => {
+  const plan = planFixture('644701781058', 'ps-Taeyoung',
+                           { at: ago(600), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
+  const withIt = withRefusal(plan, { at: ago(60), requestId: '644701781058-a21abcd0ebbaad7e' });
+  const detail = await readPlan(fakeS3({ [BUCKET]: withIt.objects }, withIt.bodies), CONFIG,
+                                '644701781058:ps-Taeyoung');
+  assert.equal(detail.refusal.reason, REFUSAL, 'the reason reaches the page verbatim');
+  assert.equal(detail.refusal.supersedes_plan, true);
+  // And the plan is still all there. The refusal explains the plan, it does not replace it: this
+  // one is real, approvable, and describes an earlier version of the resource.
+  assert.equal(detail.plan_stored, true);
+  assert.ok(detail.plan_file_sha256);
+  assert.equal(detail.request_id, '644701781058-aaaaaaaaaaaaaaa1');
+});
+
+test('a resource that never got a plan opens on the reason and nothing else', async () => {
+  const prefix = '644701781058/ps-Taeyoung/plan/';
+  const objects = [{ key: `${prefix}refusal.json`, lastModified: ago(60) }];
+  const bodies = {
+    [`${BUCKET}/${prefix}refusal.json`]: {
+      schema: 1, request_id: '644701781058-a21abcd0ebbaad7e', account_id: '644701781058',
+      resource: 'ps-Taeyoung', kind: 'ps_role', reason: REFUSAL, refused_at: ago(60),
+    },
+  };
+  const detail = await readPlan(fakeS3({ [BUCKET]: objects }, bodies), CONFIG,
+                                '644701781058:ps-Taeyoung');
+  assert.ok(detail, 'the panel 404s and the reason is unreachable from the row that offers it');
+  assert.equal(detail.refusal.reason, REFUSAL);
+  assert.equal(detail.refusal.supersedes_plan, false);
+  // plan_stored is what tells the page the emptiness below is nothing-was-written rather than
+  // reading-failed, and it is what stops a decision form being offered for a plan that is not there.
+  assert.equal(detail.plan_stored, false);
+  assert.equal(detail.plan_file_sha256, null);
+  assert.equal(detail.changes_sha256, null, 'and so it could not be approved even if it were shown');
+});
+
+test('a refusal the panel cannot parse leaves the plan readable', async () => {
+  // The plan is the thing being decided about. A record that will not parse is a lost explanation,
+  // not a reason to withhold the plan it was explaining - which would turn a bad byte in an
+  // advisory artifact into an outage on the decision path.
+  const plan = planFixture('644701781058', 'ps-Taeyoung',
+                           { at: ago(600), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
+  const objects = [...plan.objects,
+                   { key: `${plan.prefix}refusal.json`, lastModified: ago(60) }];
+  const bodies = { ...plan.bodies, [`${BUCKET}/${plan.prefix}refusal.json`]: 'not json at all' };
+  const detail = await readPlan(fakeS3({ [BUCKET]: objects }, bodies), CONFIG,
+                                '644701781058:ps-Taeyoung');
+  assert.equal(detail.refusal, null);
+  assert.ok(detail.plan_file_sha256);
 });

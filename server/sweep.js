@@ -43,6 +43,21 @@ const MANIFEST_ARTIFACT = 'request.json';
 // make a fresh plan look already decided.
 const OUTCOME_ARTIFACT = 'outcome.json';
 
+/**
+ * What a REFUSED inspection leaves behind, written by the inspector into the plan prefix.
+ *
+ * The gap it closes: a refusal is a completed run, so the marker is deleted, so the request used
+ * to vanish - the reason existed in CloudWatch and nowhere a person at this page would ever be.
+ * The observed case was a spec role carrying twelve managed policies against a limit of ten: no
+ * plan, no failure, no row.
+ *
+ * It carries the request id that produced it, and that is what keeps it from outliving the
+ * problem. The inspector holds no delete on the state bucket, so a later successful inspection
+ * cannot remove this - it rewrites request.json with its OWN id instead, and the comparison in
+ * refusalFor() then reads the record as superseded. Nothing has to clean up.
+ */
+const REFUSAL_ARTIFACT = 'refusal.json';
+
 // The inspector's reduction of what the plan will DO, written beside the plan. See event_pipeline
 // code/inspector/generator/digest.py.
 //
@@ -278,7 +293,26 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
     // every new inspection, so "incomplete" is a state a healthy system passes through, and only
     // one that persists is a fault. It is still reported - a half-written plan nobody can see is
     // worse than a noisy row - and it resolves itself on the next sweep.
+    // A refusal, read before the completeness check, because a resource whose FIRST inspection was
+    // refused has a prefix holding nothing else - and reporting that as "incomplete" would file the
+    // one thing that explains it under the noise an administrator learns to ignore.
+    let refusal = null;
+    const refusalObject = artifacts.get(REFUSAL_ARTIFACT);
+    if (refusalObject) {
+      try {
+        refusal = await getJson(s3, config.stateBucket, refusalObject.key);
+      } catch (err) {
+        errors.push(`${refusalObject.key}: ${err.message}`);
+      }
+    }
+
     if (!plan || !configObject || !manifestObject) {
+      if (refusal) {
+        // No plan has ever been produced for this resource. There is nothing to approve and
+        // nothing to wait for - what there is is a reason, and it is the whole row.
+        plans.push(refusedOnly(planId, refusal, refusalObject, artifacts));
+        continue;
+      }
       errors.push(
         `${prefix} is incomplete (${[...artifacts.keys()].sort().join(', ') || 'empty'})`,
       );
@@ -322,17 +356,76 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
       plan_etag: plan.etag,
       plan_bytes: plan.size,
       artifacts: [...artifacts.keys()].sort(),
-      state: planState(manifest, outcome, requestId, decidedRequestIds),
+      state: planState(manifest, outcome, requestId, decidedRequestIds,
+                        refusalFor(refusal, requestId, refusalObject)),
       outcome: outcomeFor(outcome, requestId),
       // Whether the page can offer a restriction, and what to say while it cannot. Never a reason
       // to withhold the approval itself - see assessmentState().
       assessment: assessmentState(artifacts, requestId, outstandingAssessments),
       assessment_digest_stored: artifacts.has(IMPACT_DIGEST_ARTIFACT),
+      // The last inspection of this resource, when it refused. Null when the record is about the
+      // plan that is standing - see refusalFor.
+      refusal: refusalFor(refusal, requestId, refusalObject),
     });
   }
 
   plans.sort((a, b) => (b.planned_at ?? '').localeCompare(a.planned_at ?? ''));
   return plans;
+}
+
+/**
+ * The refusal to SHOW, or null.
+ *
+ * Three states, and only one of them is worth a row:
+ *
+ *   no record                       nothing was refused
+ *   record's request id == the      the refusal is about the inspection that produced the plan
+ *   plan's                          standing here. That cannot happen - a refused run writes no
+ *                                   plan - so it means a later inspection succeeded and rewrote
+ *                                   request.json, and this record is superseded
+ *   record's request id != the      the refusal is NEWER than the plan. The spec moved on, the
+ *   plan's                          last attempt to plan it failed, and the plan on screen
+ *                                   describes an earlier version of the resource
+ *
+ * The third is the one that matters and the one nothing said before. `supersedes_plan` carries it
+ * rather than leaving the page to compare two ids, because what it means - "what you are looking
+ * at is older than the last thing that happened" - is not obvious from the ids themselves.
+ *
+ * There is a transient: a successful inspection writes the plan artifacts and request.json LAST,
+ * so between the two writes an old refusal briefly reads as current. The next sweep resolves it,
+ * which is the same shape as the "incomplete" transient above.
+ */
+function refusalFor(refusal, requestId, object) {
+  if (!refusal || typeof refusal.reason !== 'string' || !refusal.reason.trim()) return null;
+  const refusedRequest = typeof refusal.request_id === 'string' ? refusal.request_id : null;
+  if (requestId && refusedRequest === requestId) return null;
+  return {
+    request_id: refusedRequest,
+    kind: typeof refusal.kind === 'string' ? refusal.kind : null,
+    reason: refusal.reason,
+    refused_at: refusal.refused_at ?? object?.lastModified ?? null,
+    supersedes_plan: Boolean(requestId),
+  };
+}
+
+/** A resource whose first inspection was refused: a reason, and nothing else to decide about. */
+function refusedOnly(planId, refusal, object, artifacts) {
+  const colon = planId.indexOf(':');
+  return {
+    plan_id: planId,
+    request_id: typeof refusal.request_id === 'string' ? refusal.request_id : null,
+    account_id: planId.slice(0, colon),
+    resource: planId.slice(colon + 1),
+    planned_at: refusal.refused_at ?? object?.lastModified ?? null,
+    plan_etag: null,
+    plan_bytes: null,
+    artifacts: [...artifacts.keys()].sort(),
+    state: 'refused',
+    outcome: null,
+    assessment: 'unavailable',
+    assessment_digest_stored: false,
+    refusal: refusalFor(refusal, null, object),
+  };
 }
 
 /** The applier's record for THIS plan, or null.
@@ -369,9 +462,14 @@ function outcomeFor(outcome, requestId) {
  * skipping the write would leave the PREVIOUS plan standing - one that does have changes and is
  * approvable, describing an edit the administrator may since have reverted.
  */
-function planState(manifest, outcome, requestId, decidedRequestIds) {
+function planState(manifest, outcome, requestId, decidedRequestIds, refusal) {
   const mine = outcomeFor(outcome, requestId);
   if (mine) return mine.applied ? 'applied' : 'closed';
+  // A refusal NEWER than this plan outranks what the plan says it is waiting for. The plan is
+  // real and still approvable, but it describes an earlier version of the resource and the last
+  // attempt to plan the current one failed - so "awaiting decision" would be answering a question
+  // nobody asked while the one that was asked went unmentioned.
+  if (refusal?.supersedes_plan) return 'refused';
   if (manifest?.has_changes === false) return 'no_changes';
   // Decided means an approval marker is sitting in applier/ and the applier has not finished with
   // it yet. It disappears when the applier does, and outcome.json takes its place.
@@ -456,6 +554,10 @@ export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}
       failed: markers.filter((m) => m.state === 'failed').length,
       running: markers.filter((m) => m.state === 'running').length,
       awaiting_decision: plans.filter((p) => p.state === 'awaiting_decision').length,
+      // Counted beside the failures rather than beside the plans, because that is what it is: a
+      // request that produced nothing and used to leave no trace at all. A number here is what
+      // makes "I changed something and nothing happened" answerable at a glance.
+      refused: plans.filter((p) => p.state === 'refused').length,
     },
   };
 }
@@ -507,8 +609,9 @@ export async function readPlan(s3, config, planId) {
 
   const byName = new Map(objects.map((o) => [o.key.slice(prefix.length), o]));
   const planObject = byName.get(PLAN_ARTIFACT);
+  const refusalObject = byName.get(REFUSAL_ARTIFACT);
 
-  const [planText, configJson, planJson, planBytes, digestText, manifest, outcome] =
+  const [planText, configJson, planJson, planBytes, digestText, manifest, outcome, refusal] =
     await Promise.all([
     byName.has('plan.txt')
       ? getBytes(s3, config.stateBucket, `${prefix}plan.txt`).then((b) => b.toString('utf-8'))
@@ -532,23 +635,39 @@ export async function readPlan(s3, config, planId) {
     byName.has(OUTCOME_ARTIFACT)
       ? getJson(s3, config.stateBucket, `${prefix}${OUTCOME_ARTIFACT}`)
       : Promise.resolve(null),
+    // Read here and not carried over from the sweep's row, because the sweep runs on an interval
+    // and this reads the prefix as it is when somebody opens it. The gap between the two is exactly
+    // when a refusal matters most: an administrator who just changed the resource opens the plan to
+    // see what happened.
+    refusalObject
+      ? getJson(s3, config.stateBucket, `${prefix}${REFUSAL_ARTIFACT}`).catch(() => null)
+      : Promise.resolve(null),
   ]);
 
   const identity = identityFromConfig(configJson);
+  const requestId = typeof manifest?.request_id === 'string' ? manifest.request_id : null;
   return {
     plan_id: planId,
     // From request.json, not from the key. A plan is keyed by the governed resource; the request
     // id says which inspection produced the one currently stored, and it is what the approval
     // marker gets named by.
-    request_id: typeof manifest?.request_id === 'string' ? manifest.request_id : null,
+    request_id: requestId,
     // The inspector's own word on whether there is anything to do. A plan with none is stored so
     // that it replaces the previous one, not because it is waiting for somebody.
     has_changes: manifest?.has_changes !== false,
 
     // What the applier did, if it has finished with this plan. Terminal: a plan with an outcome
     // has been dealt with and is not awaiting anything.
-    outcome: outcomeFor(outcome, typeof manifest?.request_id === 'string'
-      ? manifest.request_id : null),
+    outcome: outcomeFor(outcome, requestId),
+
+    // Why the last inspection produced no plan, when it produced none. Null when nothing was
+    // refused, and null when the record describes the inspection that produced the plan standing
+    // here - see refusalFor.
+    refusal: refusalFor(refusal, requestId, refusalObject),
+    // Whether there is a plan in this prefix AT ALL. False on a resource whose first inspection was
+    // refused: the page then holds a reason and nothing to decide, and every other field below is
+    // empty because there is nothing to fill it with - not because reading failed.
+    plan_stored: Boolean(planObject),
     account_id: identity.accountId,
     resource: identity.resource,
     planned_at: manifest?.planned_at ?? planObject?.lastModified ?? null,

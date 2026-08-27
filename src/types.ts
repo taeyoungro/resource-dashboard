@@ -59,8 +59,14 @@ export interface PlanSummary {
    * applied            the applier applied it and recorded outcome.json
    * closed             the applier finished with it without applying - a denial
    * no_changes         the twin already matches the spec; nothing to decide
+   * refused            the LAST inspection of this resource produced no plan. Either there has
+   *                    never been one, or the one stored here is older than that inspection - the
+   *                    spec moved on and planning the current version failed. Nobody's decision;
+   *                    somebody has to change the resource
    */
-  state: "awaiting_decision" | "decided" | "applied" | "closed" | "no_changes";
+  state: "awaiting_decision" | "decided" | "applied" | "closed" | "no_changes" | "refused";
+  /** Why the last inspection produced no plan, when it did not. See PlanRefusal. */
+  refusal: PlanRefusal | null;
 
   /** The applier's record, once it has finished with this plan. Null until then. */
   outcome: PlanOutcome | null;
@@ -77,6 +83,32 @@ export interface PlanSummary {
    */
   assessment: AssessmentState;
   assessment_digest_stored: boolean;
+}
+
+/**
+ * What a refused inspection left behind, written by the inspector into the plan prefix.
+ *
+ * The gap it closes: a refusal is a COMPLETED run, so its marker is deleted, so the request used
+ * to vanish - the reason lived in CloudWatch and nowhere a person at this page would ever be. A
+ * spec role carrying twelve managed policies against a limit of ten produced no plan, no failure
+ * and no row.
+ */
+export interface PlanRefusal {
+  /** The inspection that was refused. Compared with the plan's own to decide what this means. */
+  request_id: string | null;
+  kind: string | null;
+  /**
+   * The refusal message verbatim, never a code. What makes it actionable is the sentence -
+   * "12 managed policies including the baseline, and the limit is 10" says remove two.
+   */
+  reason: string;
+  refused_at: string | null;
+  /**
+   * True when a plan IS stored here and this refusal is newer than it. The plan is real and still
+   * approvable, and it describes an earlier version of the resource - which is the thing nothing
+   * said before, and the reason the state outranks "awaiting decision".
+   */
+  supersedes_plan: boolean;
 }
 
 export type AssessmentState = "ready" | "in_progress" | "unavailable";
@@ -126,6 +158,20 @@ export interface PlanDetail {
   request_id: string | null;
   /** False when the twin already matches the spec. Such a plan cannot be approved. */
   has_changes: boolean;
+  /**
+   * Why the last inspection of this resource produced no plan, when it produced none.
+   *
+   * Read from the prefix as this page opens rather than carried from the sweep's row: the sweep
+   * runs on an interval, and the moment a refusal matters most is the one right after somebody
+   * changed the resource and came here to see what happened.
+   */
+  refusal: PlanRefusal | null;
+  /**
+   * Whether a plan is stored here at all. False on a resource whose FIRST inspection was refused -
+   * there is a reason and nothing to decide, and the empty fields below are empty because nothing
+   * was ever written, not because reading them failed.
+   */
+  plan_stored: boolean;
   /** What the applier did, once it has finished. A plan with one is not awaiting anything. */
   outcome: PlanOutcome | null;
   account_id: string | null;

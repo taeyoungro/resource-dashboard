@@ -1076,3 +1076,31 @@ test('a template is a pre-filled form and enters through the decision path', () 
   assert.match(templates, /condition_operator: row\.condition_operator \?\? 'StringNotEquals'/,
                'a template defaults to the open form');
 });
+
+test('a refused inspection is read on the panel, ahead of the plan it explains', () => {
+  // The silence: a refusal is a COMPLETED run, so its marker is deleted, so the request left no
+  // row - the reason reached CloudWatch and nobody. Twelve managed policies against a limit of ten
+  // produced no plan, no failure and no row, and the administrator's side of it was that they
+  // changed something and nothing happened.
+  assert.ok(PLAN.includes('<RefusalNotice'), 'the panel never shows why an inspection refused');
+  // Ahead of the gate, or a resource that has NEVER been planned renders an empty page: the one
+  // case where the reason is the only thing there is to show.
+  const notice = PLAN.indexOf('<RefusalNotice');
+  const gate = PLAN.indexOf('{!detail.plan_stored && detail.refusal ? null : (');
+  assert.ok(notice > 0 && gate > notice,
+            'the refusal is inside the block that is hidden when there is no plan');
+  // The sentence, not a category. What makes it actionable is "12 ... and the limit is 10" saying
+  // remove two; a code would send somebody back to the log this exists to replace.
+  assert.match(PLAN, /<pre className="plan">\{refusal\.reason\}<\/pre>/,
+               'the reason is summarised rather than printed as it was written');
+  // And the two shapes are distinguished, because they ask for different things.
+  assert.ok(PLAN.includes('마지막 검사가 거부되어 이 계획은 최신이 아닙니다'),
+            'a plan older than the last refusal is not said to be older');
+  assert.ok(PLAN.includes('결정할 것이 없습니다'),
+            'a resource with no plan is offered a decision anyway');
+  // The detail reads the prefix rather than taking the sweep's copy: the sweep runs on an interval
+  // and this page is opened seconds after the edit that was refused.
+  const sweep = readFileSync(new URL('./sweep.js', import.meta.url), 'utf8');
+  assert.match(sweep, /plan_stored: Boolean\(planObject\)/,
+               'the panel cannot tell "never planned" from "read failed"');
+});
