@@ -1113,6 +1113,30 @@ test('the two risk areas are separate, and the action one claims no resources', 
             'the capability candidate is suppressed as soon as one resource of the type exists');
 });
 
+test('every card says how much of its path this decision cuts, in three states', () => {
+  const ui = readFileSync(new URL('../src/components/RiskAnalysis.tsx', import.meta.url), 'utf8');
+  for (const [state, label, css] of [['full', '완전 차단됨', 'badge-ok'],
+                                     ['partial', '일부 차단됨', 'badge-warn'],
+                                     ['none', '차단되지 않음', 'badge-danger']]) {
+    assert.ok(ui.includes(label), `${state} has no label`);
+    assert.match(ui, new RegExp(`label: "${label}",\\s*\\n\\s*className: "${css}"`),
+                 `${label} is not the colour the state means`);
+  }
+  // Computed for EVERY card, not only the ones offered a 차단 button. A card with no button - a
+  // declaration-path action, or a decision already closed - still has to say it is not blocked, or
+  // the absence of a button reads as the path being handled.
+  assert.match(ui, /const containmentOf = \(finding: Finding\): ContainmentState =>/);
+  assert.match(ui, /containment=\{containmentOf\(f\)\}/);
+  assert.ok(!/blockProps\(f\) && containmentOf/.test(ui), 'the badge is gated on the button');
+
+  // Only 동작 자체 거부 is complete, and that is the judgement worth pinning: every other intent is
+  // conditional on ARNs that exist today or on a value somebody may choose.
+  const block = readFileSync(new URL('./blockPath.js', import.meta.url), 'utf8');
+  assert.match(block, /r\.intent === 'deny_action'/);
+  assert.match(block, /offered\.every\(\(o\) => !o\.protected && denied\.has\(o\.action\)\)/,
+               'a path holding a protected action can be reported as completely blocked');
+});
+
 test('an action is classified from what AWS publishes, not only from a hand-written table', () => {
   // The measured gap: the curated table is 136 entries against 12,328 mutating actions, the verb
   // fallback carries the rest by reading the first word, and 46% of them land in a bucket no edge

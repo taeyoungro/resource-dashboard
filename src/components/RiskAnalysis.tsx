@@ -6,7 +6,7 @@ import type {
   Impact as ImpactAssessment, Restriction, RiskAnalysisAnswer, RiskAnalysisCitation,
 } from "../types";
 import { BlockPath } from "./BlockPath";
-import { alreadyRestricted } from "../../server/blockPath.js";
+import { alreadyRestricted, containmentState } from "../../server/blockPath.js";
 
 // The findings, as an approver reads them.
 //
@@ -71,6 +71,8 @@ interface Props {
  * did. See the comment above the exported component.
  */
 type View = "rules" | "ai" | "both";
+/** 카드 배지가 말하는 세 상태. server/blockPath.js가 판정한다. */
+type ContainmentState = "full" | "partial" | "none";
 
 const GRADE_ORDER: Record<Grade, number> = {
   CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4,
@@ -317,8 +319,38 @@ function Containment({ finding }: { finding: Finding }) {
  * and the keyboard both work on it, and a card cannot get stuck open in a state nothing resets when
  * the plan changes.
  */
-function Card({ finding, block, showAxis = false }: {
+/**
+ * 이 경로가 지금 결정에서 얼마나 끊기는가.
+ *
+ * "동작 자체 거부"만 완전 차단이다. 그 의도는 Resource "*"에 Condition 없이 Deny를 쓰므로 계정의
+ * 어떤 것도 옆으로 빠져나가지 못한다. 나머지 넷은 전부 무언가에 조건부다 — allow_only·deny_only는
+ * 오늘 존재하는 ARN 목록에, 조건 의도 둘은 누군가 값을 고를 수 있는 태그나 요청 키에.
+ * 둘 다 진짜 통제이지만 같은 주장이 아니고, 같은 색으로 보이면 안 된다.
+ */
+const CONTAINMENT: Record<ContainmentState, { label: string; className: string; why: string }> = {
+  full: {
+    label: "완전 차단됨",
+    className: "badge-ok",
+    why: "이 경로의 동작이 전부 '동작 자체 거부'로 막혔습니다. Resource \"*\"에 조건 없는 Deny이므로 "
+      + "자원이 무엇이든, 앞으로 무엇이 생기든 통합니다.",
+  },
+  partial: {
+    label: "일부 차단됨",
+    className: "badge-warn",
+    why: "이 경로에 제한이 걸렸으나 전부를 무조건 막지는 않습니다. 자원을 지목하는 제한은 오늘 있는 "
+      + "자원의 목록이고, 조건 제한은 태그나 요청 키의 값에 달려 있습니다.",
+  },
+  none: {
+    label: "차단되지 않음",
+    className: "badge-danger",
+    why: "이 경로에 대해 아직 아무 제한도 작성되지 않았습니다. 승인하면 이 경로는 그대로 남습니다.",
+  },
+};
+
+function Card({ finding, block, containment, showAxis = false }: {
   finding: Finding;
+  /** 이 경로가 지금 작성 중인 결정에서 얼마나 끊기는가. */
+  containment: ContainmentState;
   /**
    * The path-cut control, when this finding can have one: the dialog opener and the actions of
    * this finding already sitting in the restriction set. null hides the row entirely - a finding
@@ -381,6 +413,13 @@ function Card({ finding, block, showAxis = false }: {
           <AssetGradeBadge grade={finding.assetImpactGrade} evidence={finding.assetEvidence} />
           <span className={finding.status === "CONFIRMED" ? "badge badge-ok" : "badge badge-warn"}>
             {STATUS_LABEL[finding.status]}
+          </span>
+          {/* 증거의 상태 옆에, 이 결정이 그 경로를 실제로 얼마나 끊는가. 앞의 배지는 판정이
+              확실한지를 말하고 이것은 그것에 대해 무엇을 했는지를 말한다 — 승인 직전에 둘을
+              나란히 읽을 수 있어야 한다. */}
+          <span className={`badge ${CONTAINMENT[containment].className}`}
+                title={CONTAINMENT[containment].why}>
+            {CONTAINMENT[containment].label}
           </span>
         </span>
       </summary>
@@ -781,6 +820,16 @@ export function RiskAnalysis({
     };
   };
 
+  /**
+   * 이 경로가 지금 작성 중인 결정에서 얼마나 끊기는가.
+   *
+   * blockProps와 달리 카드마다 항상 계산한다. 차단 단추를 내주지 않는 카드 — 선언 경로라 제한할 수
+   * 없는 것, 결정이 이미 닫힌 것 — 에서도 "차단되지 않음"은 승인자가 알아야 하는 사실이고, 단추가
+   * 없다는 것이 막혀 있다는 뜻으로 읽히면 안 된다.
+   */
+  const containmentOf = (finding: Finding): ContainmentState =>
+    containmentState(finding, restrictions, assessment?.protected_actions ?? []);
+
   return (
     <section className="impact">
       <h3>위험 및 공격 경로</h3>
@@ -879,7 +928,7 @@ export function RiskAnalysis({
                       </h5>
                       {items.map((f) => (
                         <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
-                              block={blockProps(f)} />
+                              block={blockProps(f)} containment={containmentOf(f)} />
                       ))}
                     </div>
                   );
@@ -899,7 +948,7 @@ export function RiskAnalysis({
               </h4>
               {unassessable.map((f) => (
                 <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
-                      block={blockProps(f)} showAxis />
+                      block={blockProps(f)} containment={containmentOf(f)} showAxis />
               ))}
             </div>
           )}

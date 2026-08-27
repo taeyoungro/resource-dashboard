@@ -27,3 +27,17 @@ export declare function mergeBlock(
 
 /** The offered actions already restricted under the finding's policy, for the dialog and the card. */
 export declare function alreadyRestricted(finding: Finding, restrictions: Restriction[]): string[];
+
+/**
+ * How much of a path the decision being composed cuts.
+ *
+ * 'full' means every offered action is denied outright under deny_action - a Deny on Resource "*"
+ * with no Condition. 'partial' means something else was written: every other intent is conditional
+ * on ARNs that exist today, or on a tag or request key whose value somebody may choose. A card
+ * holding a protected action is never 'full' - the declaration path stays open by design.
+ */
+export declare function containmentState(
+  finding: Finding,
+  restrictions: Restriction[],
+  protectedActions?: string[],
+): "full" | "partial" | "none";

@@ -80,3 +80,36 @@ export function alreadyRestricted(finding, restrictions) {
   );
   return blockOffer(finding).filter((o) => held.has(o.action)).map((o) => o.action);
 }
+
+/**
+ * How much of this path the decision being composed actually cuts.
+ *
+ * Three answers, and the distinction that matters is the first one:
+ *
+ *   full     every action the card offers is denied OUTRIGHT - intent deny_action, which composes a
+ *            Deny with Resource "*" and no Condition. Nothing about the account can walk past it
+ *   partial  something was written for this path and it is not that. Every other intent is
+ *            conditional on something the statement names: allow_only and deny_only on a list of
+ *            ARNs, which is a list of what exists TODAY, and the condition intents on a tag or a
+ *            request key whose value somebody may be able to choose. Those are real controls and
+ *            they are not the same claim
+ *   none     nothing has been written for this path yet
+ *
+ * A protected action can never be denied, so a card holding one is never full however much is
+ * written: the declaration path stays open by design and calling that "완전 차단됨" would promise an
+ * administrator something the restriction cannot deliver. This is the same rule Containment renders
+ * by, applied to the summary badge.
+ */
+export function containmentState(finding, restrictions, protectedActions = []) {
+  const offered = blockOffer(finding, protectedActions);
+  if (offered.length === 0) return 'none';
+
+  const mine = (restrictions ?? []).filter((r) => r.policy === finding?.policyName);
+  const denied = new Set(
+    mine.filter((r) => r.intent === 'deny_action').flatMap((r) => r.actions ?? []),
+  );
+  const touched = new Set(mine.flatMap((r) => r.actions ?? []));
+
+  if (offered.every((o) => !o.protected && denied.has(o.action))) return 'full';
+  return offered.some((o) => touched.has(o.action)) ? 'partial' : 'none';
+}
