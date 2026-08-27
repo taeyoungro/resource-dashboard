@@ -630,3 +630,23 @@ test('relatedTo is only shown for rules that actually fired on the same policy',
   const [linked] = only(findings(both), 'R-1', 'action');
   assert.deepEqual(linked.relatedFired, ['E-1']);
 });
+
+test('sharing a disk copy out of the account is its own rule, linked to making one', () => {
+  // The other half of X-5, and the half that leaves. Making a copy keeps the data inside the
+  // account; sharing it does not, and un-sharing does not recall what the recipient already
+  // copied. It is graded above X-5 for that irreversibility rather than for being harder.
+  const share = ['ec2:ModifySnapshotAttribute', 'ec2:ModifyImageAttribute'];
+  const [alone] = only(findings(digest([grant('P', share, [])])), 'X-6', 'action');
+  assert.ok(alone, 'sharing a snapshot externally fires no rule');
+  assert.equal(alone.escalationGrade, 'HIGH');
+  assert.deepEqual(alone.triggerActions.sort(), share.slice().sort());
+  // Nothing to link to: the grant cannot make a copy, so the chain is not here.
+  assert.deepEqual(alone.relatedFired, []);
+
+  // Both halves in one policy: each card points at the other, and only then.
+  const both = ['ec2:CreateSnapshot', ...share];
+  const list = findings(digest([grant('AmazonEC2FullAccess', both, [])]));
+  const at = (id) => list.find((f) => f.id === id);
+  assert.deepEqual(at('X-6').relatedFired, ['X-5']);
+  assert.deepEqual(at('X-5').relatedFired, ['X-6'], 'the link is one-directional');
+});

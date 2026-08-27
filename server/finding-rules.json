@@ -153,8 +153,26 @@
           { "action": "ec2:CreateImage" }
         ]
       },
+      "relatedTo": ["X-6"],
       "narrative": "볼륨의 사본을 만든다. 디스크에 있는 것이 전부 사본에 들어가고, 사본은 원본과 별개의 자원이므로 원본에 걸린 제한을 따라가지 않는다.",
       "notes": "만들어지는 사본의 ARN은 아직 없다. 자원을 지목하는 제한으로는 사본 생성 자체를 막을 수 없고, 동작 자체 거부만 통한다."
+    },
+    {
+      "id": "X-6",
+      "title": "디스크 사본의 외부 계정 공유",
+      "category": "EXPOSURE",
+      "escalationGrade": "HIGH",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "anyOf": [
+          { "action": "ec2:ModifySnapshotAttribute" },
+          { "action": "ec2:ModifyImageAttribute" }
+        ]
+      },
+      "relatedTo": ["X-5"],
+      "narrative": "스냅샷이나 이미지를 다른 계정에 공유하거나 공개로 바꾼다. 이것은 계정 경계 밖으로 나가는 단계이고 되돌릴 수 없다 — 공유를 거둬들여도 받는 쪽이 이미 복사한 사본은 회수되지 않는다.",
+      "notes": "사본을 만드는 권한과 함께 있으면 임의의 볼륨을 복제해 밖으로 내보내는 경로가 된다. 두 규칙이 같은 정책에서 함께 발화했는지는 카드의 연결 항목이 말한다."
     },
     {
       "id": "R-1",
