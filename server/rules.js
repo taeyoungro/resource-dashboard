@@ -121,6 +121,16 @@ function checkRule(rule, index, seen) {
       + 'axis as well as the resource one, which is what this asked for and is no longer '
       + 'conditional on the account being empty. Remove the field');
   }
+  if (rule.axes !== undefined) {
+    // Which of the two questions this rule can answer. Omitted means both, which is the ordinary
+    // case. A rule naming ['action'] says its subject is not a reach over resources at all - a
+    // bill, or a setting - and the resource axis would otherwise attach whatever types its actions
+    // happen to name and call them the finding's targets.
+    if (!Array.isArray(rule.axes) || rule.axes.length === 0
+        || rule.axes.some((a) => a !== 'action' && a !== 'resource')) {
+      throw new RuleError(`${at}: axes must be a non-empty array of "action" and/or "resource"`);
+    }
+  }
   if (rule.forceRestrictable !== undefined && typeof rule.forceRestrictable !== 'boolean') {
     throw new RuleError(`${at}: forceRestrictable must be a boolean`);
   }

@@ -484,6 +484,12 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
  */
 function axesFor(rule) {
   if (rule.evaluatedOn === 'policyNonRestrictable') return [AXIS.ACTION];
+  // A rule may also say so outright, for a finding whose subject is not a reach over resources at
+  // all. C-1 is the case that needed it: ec2:RunInstances names eighteen resource types, so the
+  // resource axis dutifully produced "this cost path reaches these two key pairs" - and a bill is
+  // not bounded by the key pairs it happens to name. The card was answering a question nobody asked
+  // with resources that had nothing to do with the answer.
+  if (rule.axes) return rule.axes.map((a) => (a === 'action' ? AXIS.ACTION : AXIS.RESOURCE));
   return [AXIS.RESOURCE, AXIS.ACTION];
 }
 
@@ -568,6 +574,11 @@ export function summary(list) {
     byStatus: by('status'),
     byCategory: by('category'),
     notRestrictable: list.filter((f) => !f.restrictable).length,
-    enumerationIncomplete: list.filter((f) => f.truncated !== false).length,
+    // Resource-axis findings only. An action-axis finding makes no enumeration, so counting it
+    // as "enumeration incomplete" reports a doubt about a list it never had - and the card
+    // already suppresses the warning for exactly that reason, so the metric was the only place
+    // still saying it. Measured on a real plan: the count equalled the action-axis total.
+    enumerationIncomplete: list.filter(
+      (f) => f.axis !== AXIS.ACTION && f.truncated !== false).length,
   };
 }

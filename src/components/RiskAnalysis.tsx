@@ -601,7 +601,11 @@ function Summary({ answer, findings, view }: {
   const count = (grade: Grade) => findings.filter((f) => f.escalationGrade === grade).length;
   const confirmed = findings.filter((f) => f.status === "CONFIRMED").length;
   const blocked = findings.filter((f) => !f.restrictable).length;
-  const incomplete = findings.filter((f) => f.truncated !== false).length;
+  // Resource-axis only: an action-axis finding enumerates nothing, so it has no list to be
+  // short. The cards already suppress the warning for that reason and the metric did not,
+  // so a plan with 13 capability findings read as 13 incomplete enumerations.
+  const incomplete = findings.filter(
+    (f) => f.axis !== "action" && f.truncated !== false).length;
   const model = answer.analysis;
 
   return (
