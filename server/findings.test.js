@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import { RULES, RULES_SHA256, RULE_ACTIONS, RuleError, validate } from './rules.js';
 import { evaluateGrant, findings, sections, sortFindings, summary } from './findings.js';
 import { referenceIndex } from './capabilities.js';
+import { blockOffer, containmentState } from './blockPath.js';
 
 const ACCOUNT = '718100330247';
 const arn = (type, i) => `arn:aws:${type.split(':')[0]}:us-east-1:${ACCOUNT}:${type.split(':')[1]}/r${i}`;
@@ -355,7 +356,10 @@ test('trigger actions are the names as written, and sections come out in the sta
   ])]));
   const trigger = new Set(list.flatMap((f) => f.triggerActions));
   for (const action of actions) assert.ok(trigger.has(action), action);
-  assert.deepEqual(sections(list).map((s) => s.category), ['ESCALATION', 'EXPOSURE', 'DESTRUCTIVE']);
+  // RECON is here because ec2:GetConsoleOutput is reconnaissance and is now filed as such. It used
+  // to fire X-3 under EXPOSURE, in one card that also narrated disk copies - see R-2.
+  assert.deepEqual(sections(list).map((s) => s.category),
+                   ['ESCALATION', 'RECON', 'DESTRUCTIVE']);
 
   const counts = summary(list);
   assert.equal(counts.total, list.length);
@@ -416,7 +420,7 @@ test('an empty account gets the whole action axis, not three rules of it', () =>
   const empty = digest([grant('AmazonEC2FullAccess', actions, [],
                               { unscoped_actions: actions })]);
   const list = findings(empty);
-  assert.deepEqual(list.map((f) => f.id).sort(), ['D-1', 'D-3', 'E-3', 'X-2', 'X-3']);
+  assert.deepEqual(list.map((f) => f.id).sort(), ['D-1', 'D-3', 'E-3', 'X-2', 'X-5']);
   assert.ok(list.every((f) => f.axis === 'action'), 'a resource axis finding with no resources');
   assert.ok(list.every((f) => f.targets.length === 0), 'the action axis attached ARNs');
   // Nothing to point at: there is no resource-axis twin, and saying there is would send a reader
@@ -533,4 +537,116 @@ test('a rule may not name a capability that does not exist', () => {
     rules: [{ ...RULES[0], predicate: { capability: 'rebnid' } }],
   };
   assert.throws(() => validate(bad), (e) => e instanceof RuleError && /rebnid/.test(e.message));
+});
+
+// ---- anyOf is a list of alternatives, and every one of them has to be reported -----------------
+//
+// It used to return the FIRST branch that hit. That was a defect on the decision path, not a
+// cosmetic one: AmazonEC2FullAccess grants all five of the old X-3's actions, the card reported
+// ec2:GetConsoleOutput alone, the 차단 dialog offered that alone, an approver denied it and the
+// card went green - while ec2:CreateImage, a full copy of the disk, stayed granted. Seven of
+// thirteen rules had the hole.
+
+test('every branch that matched is reported, not the first', () => {
+  const acts = ['ec2:CreateSnapshot', 'ec2:CreateImage'];
+  const [found] = only(findings(digest([grant('AmazonEC2FullAccess', acts, [])])), 'X-5', 'action');
+  assert.ok(found, 'the rule did not fire at all');
+  assert.deepEqual(found.triggerActions.sort(), acts.slice().sort(),
+                   'a granted action is missing from the trigger list, so the block dialog will '
+                   + 'not offer it and the containment badge can go green while it stands');
+});
+
+test('a card offers everything that made it appear, so blocking it really blocks it', () => {
+  // The end-to-end shape of the same defect, through the two functions that consume triggerActions.
+  const acts = ['ec2:CreateSnapshot', 'ec2:CreateImage'];
+  const [found] = only(findings(digest([grant('AmazonEC2FullAccess', acts, [])])), 'X-5', 'action');
+  const offered = blockOffer(found).map((o) => o.action);
+  assert.deepEqual(offered.sort(), acts.slice().sort());
+  const denied = [{ policy: found.policyName, intent: 'deny_action', actions: offered }];
+  assert.equal(containmentState(found, denied), 'full');
+  // And denying only what the old code offered must NOT read as complete.
+  const partial = [{ policy: found.policyName, intent: 'deny_action', actions: ['ec2:CreateSnapshot'] }];
+  assert.equal(containmentState(found, partial), 'partial');
+});
+
+test('one branch needing co-location does not impose it on the alternatives', () => {
+  // E-3 is anyOf[ UpdateFunctionCode, ReplaceIamInstanceProfileAssociation, allOf[Stop,Modify,Start] ].
+  // Collecting every branch means several actions are reported, and the naive reading of that -
+  // "several actions, so they must meet on one resource" - would downgrade a finding that a SINGLE
+  // action already establishes. The branches are alternatives.
+  const acts = ['lambda:UpdateFunctionCode', 'ec2:StopInstances', 'ec2:ModifyInstanceAttribute',
+                'ec2:StartInstances'];
+  const [mixed] = only(findings(digest([grant('Wide', acts, [])])), 'E-3', 'action');
+  assert.ok(mixed.triggerActions.length > 1, 'the branches were not collected');
+  assert.equal(mixed.status, 'CONFIRMED',
+               'a rule one action satisfies was marked unverified for lacking co-location');
+
+  // With ONLY the conjunction granted there is no atomic alternative, and the doubt is real again.
+  const triple = acts.slice(1);
+  const [conj] = only(findings(digest([grant('Triple', triple, [])])), 'E-3', 'action');
+  assert.equal(conj.status, 'UNVERIFIED');
+  assert.ok(conj.blockedBy.some((r) => r.includes('granted on named ARNs')));
+});
+
+// ---- one card, one mechanism --------------------------------------------------------------------
+
+test('reading boot output and copying a disk are different findings', () => {
+  // They were one rule, one grade and one sentence - "부팅 출력에 남은 구성값을 읽거나 볼륨 사본을
+  // 생성할 수 있다" - printed whichever of the five actions fired. A grant holding only
+  // ec2:GetConsoleOutput was told it could copy volumes, and was graded MEDIUM EXPOSURE for a read
+  // that yields network topology and an account number.
+  const acts = ['ec2:GetConsoleOutput', 'ec2:GetPasswordData', 'ec2:CreateImage'];
+  const list = findings(digest([grant('AmazonEC2FullAccess', acts, [])]));
+  const at = (id) => list.find((f) => f.id === id);
+
+  assert.equal(at('R-2').category, 'RECON', 'reading boot output is filed as exposure');
+  assert.equal(at('R-2').escalationGrade, 'LOW');
+  assert.deepEqual(at('R-2').triggerActions, ['ec2:GetConsoleOutput']);
+  // And it says what is actually in there, without claiming a credential is.
+  assert.ok(at('R-2').narrative.includes('출력한 경우에만'),
+            'the narrative asserts a credential is in the boot output');
+  assert.ok(!at('R-2').narrative.includes('사본'), 'a boot-output read still narrates disk copies');
+
+  assert.equal(at('X-3').escalationGrade, 'MEDIUM');
+  assert.deepEqual(at('X-3').triggerActions, ['ec2:GetPasswordData']);
+  assert.equal(at('X-5').category, 'EXPOSURE');
+  assert.deepEqual(at('X-5').triggerActions, ['ec2:CreateImage']);
+});
+
+// ---- a connection is a claim about THIS account -------------------------------------------------
+
+test('relatedTo is only shown for rules that actually fired on the same policy', () => {
+  // The card printed "E-1 과 같은 정책에서 함께 성립합니다" whenever relatedTo was non-empty, so
+  // R-1 said it on every policy carrying the four IAM reads - including ones where E-1 never
+  // fired. R-1's own note asks for the conditional; nothing was applying it.
+  const reads = ['iam:GetRole', 'iam:ListRoles', 'iam:ListAttachedRolePolicies'];
+  const alone = digest([grant('Recon', [], [], { non_restrictable: reads })]);
+  const [quiet] = only(findings(alone), 'R-1', 'action');
+  assert.deepEqual(quiet.relatedTo, ['E-1'], 'the rule file still says what it connects to');
+  assert.deepEqual(quiet.relatedFired, [], 'a connection was claimed to a rule that did not fire');
+
+  const escalation = ['iam:PassRole', 'lambda:CreateFunction', 'lambda:InvokeFunction'];
+  const both = digest([grant('Recon', escalation, [], { non_restrictable: reads })]);
+  const [linked] = only(findings(both), 'R-1', 'action');
+  assert.deepEqual(linked.relatedFired, ['E-1']);
+});
+
+test('sharing a disk copy out of the account is its own rule, linked to making one', () => {
+  // The other half of X-5, and the half that leaves. Making a copy keeps the data inside the
+  // account; sharing it does not, and un-sharing does not recall what the recipient already
+  // copied. It is graded above X-5 for that irreversibility rather than for being harder.
+  const share = ['ec2:ModifySnapshotAttribute', 'ec2:ModifyImageAttribute'];
+  const [alone] = only(findings(digest([grant('P', share, [])])), 'X-6', 'action');
+  assert.ok(alone, 'sharing a snapshot externally fires no rule');
+  assert.equal(alone.escalationGrade, 'HIGH');
+  assert.deepEqual(alone.triggerActions.sort(), share.slice().sort());
+  // Nothing to link to: the grant cannot make a copy, so the chain is not here.
+  assert.deepEqual(alone.relatedFired, []);
+
+  // Both halves in one policy: each card points at the other, and only then.
+  const both = ['ec2:CreateSnapshot', ...share];
+  const list = findings(digest([grant('AmazonEC2FullAccess', both, [])]));
+  const at = (id) => list.find((f) => f.id === id);
+  assert.deepEqual(at('X-6').relatedFired, ['X-5']);
+  assert.deepEqual(at('X-5').relatedFired, ['X-6'], 'the link is one-directional');
 });

@@ -1098,9 +1098,15 @@ test('the two risk areas are separate, and the action one claims no resources', 
   // keeps: a capability carrying ARNs would be answering the other question with a list that goes
   // stale.
   assert.match(engine, /units: \[\],/, 'the action axis can carry a resource list');
-  assert.match(engine, /hits\.length < 2 \|\| hits\.every\(\(a\) => unscoped\.has\(a\)\)/,
+  assert.match(engine, /colocated: found\.atomic \|\| hits\.every\(\(a\) => unscoped\.has\(a\)\)/,
                'the action axis asserts co-location it cannot show - the same false positive the '
                + 'unit scope exists to prevent, through the other door');
+  // And the doubt applies only where the rule NEEDS several actions to meet. `atomic` is the
+  // per-hit answer: E-3's single-action branch needs no co-location, its Stop/Modify/Start branch
+  // does, and one card can be reached by either.
+  assert.match(engine, /atomic = atomic \|\| hit\.atomic;/,
+               'anyOf branches are alternatives and one of them needing co-location must not '
+               + 'impose it on the others');
   // A resource-axis finding that reaches nothing is the action-axis one wearing the wrong heading.
   assert.match(engine, /axis === AXIS\.RESOURCE && targets\.length === 0\) continue/);
 
@@ -1111,6 +1117,34 @@ test('the two risk areas are separate, and the action one claims no resources', 
   const paths = readFileSync(new URL('./candidatePaths.js', import.meta.url), 'utf8');
   assert.ok(!/const already = out\.some/.test(paths),
             'the capability candidate is suppressed as soon as one resource of the type exists');
+});
+
+test('anyOf reports every branch, so a green badge is not a lie', () => {
+  // The worst defect this analysis has had. anyOf returned the FIRST branch that hit, and that
+  // return value is what the trigger list, the block dialog, the containment badge and the target
+  // filter all read - so AmazonEC2FullAccess showed ec2:GetConsoleOutput alone, an approver denied
+  // it, the card went green, and ec2:CreateImage stayed granted. Seven of thirteen rules.
+  const engine = readFileSync(new URL('./findings.js', import.meta.url), 'utf8');
+  assert.ok(!/if \(hit\) return hit;/.test(engine), 'anyOf still stops at the first branch');
+  assert.match(engine, /for \(const sub of predicate\.anyOf\) \{[\s\S]*?if \(!hit\) continue;/,
+               'anyOf does not collect the branches that did not come first');
+  // A card must never narrate a mechanism it did not fire on, which is why the old X-3 is three
+  // rules now rather than one with a longer sentence.
+  const doc = JSON.parse(readFileSync(new URL('./finding-rules.json', import.meta.url), 'utf8'));
+  const byId = new Map(doc.rules.map((r) => [r.id, r]));
+  assert.equal(byId.get('R-2')?.category, 'RECON', 'reading boot output is filed as exposure');
+  assert.equal(byId.get('X-5')?.category, 'EXPOSURE');
+  assert.ok(!/사본/.test(byId.get('R-2')?.narrative ?? ''),
+            'the boot-output rule still narrates disk copies');
+  // The dead note is gone. It asked for a narrative composed from the action set, and narratives
+  // are copied verbatim and never composed - so nothing was applying it (T-4).
+  assert.ok(!JSON.stringify(doc).includes('ModifySnapshotAttribute 가 동작 집합에'),
+            'a rule still carries an instruction nothing enforces');
+  // And a connection is a claim about THIS account, so it is checked before it is printed.
+  assert.match(engine, /relatedFired: \(finding\.relatedTo \?\? \[\]\)\.filter\(/);
+  const ui = readFileSync(new URL('../src/components/RiskAnalysis.tsx', import.meta.url), 'utf8');
+  assert.match(ui, /\(finding\.relatedFired \?\? \[\]\)\.length > 0/,
+               'the card prints a connection to a rule that may not have fired');
 });
 
 test('every card says how much of its path this decision cuts, in three states', () => {

@@ -121,7 +121,8 @@ const SECTIONS: { category: FindingCategory; label: string; why: string }[] = [
   { category: "EXPOSURE", label: "노출",
     why: "내용이 밖으로 나가거나 외부에서 닿을 수 있게 되는 경로" },
   { category: "RECON", label: "정찰",
-    why: "무엇이 있는지 읽을 수 있는 경로. 이 목록은 정책 축소로 막을 수 없다" },
+    why: "무엇이 있는지 읽을 수 있는 경로. 그 자체로 접근을 주지는 않으며, 일부는 선언 경로에 "
+      + "있어 정책 축소로 막을 수 없다 — 어느 쪽인지는 카드의 차단 불가 표시가 말한다" },
   { category: "DESTRUCTIVE", label: "파괴",
     why: "있는 것을 지우거나 멈출 수 있는 경로" },
 ];
@@ -497,11 +498,14 @@ function Card({ finding, block, containment, showAxis = false }: {
         </>
       )}
 
-      {finding.relatedTo.length > 0 && (
+      {/* 실제로 이 정책에서 함께 발화한 것만. 전에는 relatedTo가 비어 있지 않으면 무조건 찍혀서,
+          R-1이 E-1이 발화하지 않은 정책에서도 "함께 성립합니다"라고 말했다 — 이 계정에 대한
+          주장인데 확인하지 않고 인쇄한 것이다. */}
+      {(finding.relatedFired ?? []).length > 0 && (
         <div className="finding-row">
           <span className="finding-label">연결</span>
           <span>
-            {finding.relatedTo.join(", ")} 과 같은 정책에서 함께 성립합니다.
+            {finding.relatedFired!.join(", ")} 과 같은 정책에서 함께 성립합니다.
           </span>
         </div>
       )}

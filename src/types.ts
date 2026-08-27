@@ -708,7 +708,15 @@ export interface Finding {
   triggerActions: string[];
   targets: FindingTarget[];
   restrictable: boolean;
+  /** What the RULE says this connects to. A statement about the rule file, not about this account. */
   relatedTo: string[];
+  /**
+   * The subset of relatedTo that actually fired on the same policy.
+   *
+   * The card renders this one. relatedTo alone is what the rule file hoped for, and printing it
+   * unchecked made R-1 claim E-1 was standing beside it on policies where E-1 never fired.
+   */
+  relatedFired?: string[];
   narrative: string;
   notes?: string | null;
   /** null means enumeration completeness was never established. Not the same as false. */
