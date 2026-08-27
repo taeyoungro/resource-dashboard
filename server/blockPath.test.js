@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { alreadyRestricted, blockOffer, mergeBlock } from './blockPath.js';
+import { alreadyRestricted, blockOffer, containmentState, mergeBlock } from './blockPath.js';
 
 const RULE_FINDING = {
   id: 'E-3',
@@ -104,4 +104,74 @@ test('the card can say which offered actions are already in the document', () =>
   assert.deepEqual(alreadyRestricted(RULE_FINDING, [
     { policy: 'other', intent: 'deny_action', actions: ['lambda:UpdateFunctionCode'] },
   ]), []);
+});
+
+// ---- how much of the path this decision actually cuts -------------------------------------------
+//
+// Beside 확인/미확인 on the card, and answering a different question. That badge says whether the
+// judgement is certain; this one says what has been DONE about it. An approver reads both in the
+// same row a moment before pressing 승인.
+
+const RULE = {
+  policyName: 'arn:aws:iam::aws:policy/AmazonEC2FullAccess',
+  triggerActions: ['ec2:CreateRoute', 'ec2:AuthorizeSecurityGroupIngress'],
+};
+const deny = (actions, over = {}) => ({
+  policy: RULE.policyName, intent: 'deny_action', actions, ...over,
+});
+
+test('nothing written is 차단되지 않음, and that is the default a card opens in', () => {
+  assert.equal(containmentState(RULE, []), 'none');
+  // A restriction on ANOTHER policy is not one on this path.
+  assert.equal(containmentState(RULE, [deny(RULE.triggerActions, { policy: 'other' })]), 'none');
+});
+
+test('every action denied OUTRIGHT is 완전 차단됨, and only deny_action counts', () => {
+  assert.equal(containmentState(RULE, [deny(RULE.triggerActions)]), 'full');
+
+  // The same actions under any other intent is not the same claim. allow_only and deny_only name a
+  // list of ARNs, which is a list of what exists TODAY; the condition intents rest on a tag or a
+  // request key whose value somebody may be able to choose. Real controls, different promises.
+  for (const intent of ['allow_only', 'deny_only', 'tag_condition', 'key_condition']) {
+    assert.equal(
+      containmentState(RULE, [deny(RULE.triggerActions, { intent })]), 'partial',
+      `${intent} was reported as a complete block`,
+    );
+  }
+});
+
+test('some of the actions, or the wrong intent on some, is 일부 차단됨', () => {
+  assert.equal(containmentState(RULE, [deny(['ec2:CreateRoute'])]), 'partial');
+  // One denied outright and one only conditionally. The path is not cut.
+  assert.equal(containmentState(RULE, [
+    deny(['ec2:CreateRoute']),
+    deny(['ec2:AuthorizeSecurityGroupIngress'], { intent: 'tag_condition' }),
+  ]), 'partial');
+});
+
+test('a path holding a protected action is never 완전 차단됨, however much is written', () => {
+  // The declaration path stays open by design - restricting one of these locks the user out of the
+  // pipeline that governs them. Calling that a complete block would promise an administrator
+  // something the restriction cannot deliver, which is the same rule Containment renders by.
+  const withProtected = {
+    policyName: RULE.policyName,
+    triggerActions: [...RULE.triggerActions, 'iam:ListRoles'],
+  };
+  const all = [deny(withProtected.triggerActions)];
+  assert.equal(containmentState(withProtected, all, ['iam:ListRoles']), 'partial');
+  // And with nothing protected the very same input IS complete - so the cap is the protection, not
+  // an accident of the action count.
+  assert.equal(containmentState(withProtected, all, []), 'full');
+});
+
+test('a model finding is judged on the actions the verdict named, not the wider cited set', () => {
+  // blockOffer seeds from containment.denyActions for a model finding, and this has to agree with
+  // it - otherwise the badge would demand actions the dialog never offered and could never go green.
+  const model = {
+    source: 'model',
+    policyName: RULE.policyName,
+    triggerActions: ['ec2:CreateRoute', 'ec2:DescribeRouteTables'],
+    containment: { denyActions: ['ec2:CreateRoute'], notRestrictable: [] },
+  };
+  assert.equal(containmentState(model, [deny(['ec2:CreateRoute'])]), 'full');
 });
