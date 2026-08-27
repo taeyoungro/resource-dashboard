@@ -700,3 +700,40 @@ test('severing a shared network path is graded above deleting one resource', () 
   assert.deepEqual(found.triggerActions.sort(), severing.slice().sort(),
                    'the trigger list is short, so the block dialog will not offer them all');
 });
+
+// ---- a finding whose subject is not a reach -----------------------------------------------------
+
+test('a cost finding attaches no resources, because a bill is not bounded by them', () => {
+  // Measured on a real plan. ec2:RunInstances names eighteen resource types, so the resource axis
+  // dutifully produced "이 비용 경로가 이 키페어 2개에 닿는다" - a card answering a question nobody
+  // asked with resources that have nothing to do with the answer.
+  const acts = ['ec2:RunInstances', 'ec2:RequestSpotFleet'];
+  const withUnits = digest([grant('AmazonEC2FullAccess', acts, [
+    unit('ec2:key-pair', acts, acts), unit('ec2:subnet', acts, acts),
+  ])]);
+  assert.deepEqual(only(findings(withUnits), 'C-1'), [],
+                   'a cost path was attached to the key pairs it happens to name');
+  const [capability] = only(findings(withUnits), 'C-1', 'action');
+  assert.ok(capability, 'the cost finding is gone entirely');
+  assert.deepEqual(capability.targets, []);
+});
+
+test('a rule may not name an axis that does not exist', () => {
+  const bad = {
+    schemaVersion: '0.1', sectionOrder: ['ESCALATION'], sort: {},
+    rules: [{ ...RULES[0], axes: ['resource', 'everything'] }],
+  };
+  assert.throws(() => validate(bad), (e) => e instanceof RuleError && /axes must be/.test(e.message));
+});
+
+test('the enumeration-incomplete count is about enumerations', () => {
+  // The cards suppress the warning on an action-axis finding because it made no list; the metric
+  // did not, so a plan whose capability half held 13 findings reported "열거 미확인 13" - a doubt
+  // about a list none of them ever had.
+  const acts = ['ec2:CreateSnapshot', 'ec2:CreateImage'];
+  const d = digest([grant('AmazonEC2FullAccess', acts, [])]);
+  const list = findings(d);
+  assert.ok(list.length > 0 && list.every((f) => f.axis === 'action'), 'fixture has a resource axis');
+  assert.equal(summary(list).enumerationIncomplete, 0,
+               'capability findings are counted as incomplete enumerations');
+});
