@@ -63,6 +63,28 @@ export const CAP = {
   TAMPER_AUDIT: 'tamper-audit',
   TAG: 'tag',
   /**
+   * Turning off a control that would otherwise have refused something.
+   *
+   * Its own capability because it changes no resource and reaches no data - it changes what the
+   * NEXT call is allowed to do. ec2:DisableSnapshotBlockPublicAccess is the clearest case: it grants
+   * nothing at all, and it is the reason a later ModifySnapshotAttribute succeeds. A grant holding
+   * both is not two findings, it is one path with its gate already removed.
+   *
+   * Distinct from tamper-audit, which removes the RECORD rather than the control - one buys time
+   * after the fact, this one clears the way before it.
+   */
+  DISABLE_GUARDRAIL: 'disable-guardrail',
+  /**
+   * Seeing or redirecting traffic that was not addressed to you.
+   *
+   * Neither read-data nor network-ingress. The data is in flight rather than at rest, nothing is
+   * opened to the outside, and the victim workload is untouched and unaware - a mirror session
+   * copies packets off an interface that keeps working exactly as before.
+   */
+  INTERCEPT: 'intercept',
+  /** Committing money. Not a breach; a bill, and one an approver is entitled to see coming. */
+  SPEND: 'spend',
+  /**
    * Re-pointing an existing binding at a different object.
    *
    * Its own capability because it is neither create nor modify: nothing new appears and the
@@ -126,7 +148,8 @@ export const CURATED = {
   'ec2:StartInstances': [CAP.STOP_START],
   'ec2:RebootInstances': [CAP.STOP_START],
   'ec2:TerminateInstances': [CAP.DELETE],
-  'ec2:RunInstances': [CAP.CREATE],
+  // Also spend: a fleet of instances is a bill whether or not it carries a role.
+  'ec2:RunInstances': [CAP.CREATE, CAP.SPEND],
   'ec2:AssociateIamInstanceProfile': [CAP.REPLACE_IDENTITY],
   'ec2:ReplaceIamInstanceProfileAssociation': [CAP.REPLACE_IDENTITY],
   'ec2:CreateLaunchTemplateVersion': [CAP.MODIFY_CODE],
@@ -240,6 +263,121 @@ export const CURATED = {
   'elasticloadbalancing:CreateLoadBalancer': [CAP.NETWORK_INGRESS],
   'elasticloadbalancing:SetSecurityGroups': [CAP.NETWORK_INGRESS],
 
+  // ---- ec2, from the `ec2:*` path catalogue ----
+  //
+  // The classes below came from a hand-written cross-check of what `{"Action":"ec2:*"}` opens.
+  // Every action named here was confirmed to exist against the shipped action table before being
+  // added; the ones the catalogue flagged as unverified all exist, including
+  // ec2:CreateVpcEncryptionControl.
+  //
+  // The distinction the catalogue is built on and that we did not have: an edge that needs
+  // iam:PassRole is gated by PassRole analysis, and an edge that does NOT is open the moment ec2:*
+  // is granted. Almost everything here is the second kind.
+
+  // Turning a control off. None of these grants anything; each is why a later call succeeds.
+  'ec2:DisableSnapshotBlockPublicAccess': [CAP.DISABLE_GUARDRAIL],
+  'ec2:DisableImageBlockPublicAccess': [CAP.DISABLE_GUARDRAIL],
+  'ec2:DisableEbsEncryptionByDefault': [CAP.DISABLE_GUARDRAIL],
+  'ec2:ModifyEbsDefaultKmsKeyId': [CAP.DISABLE_GUARDRAIL],
+  'ec2:ResetEbsDefaultKmsKeyId': [CAP.DISABLE_GUARDRAIL],
+  'ec2:DisableAllowedImagesSettings': [CAP.DISABLE_GUARDRAIL],
+  'ec2:ReplaceImageCriteriaInAllowedImagesSettings': [CAP.DISABLE_GUARDRAIL],
+  'ec2:DisableImageDeregistrationProtection': [CAP.DISABLE_GUARDRAIL],
+  'ec2:ModifyVpcBlockPublicAccessOptions': [CAP.DISABLE_GUARDRAIL],
+  'ec2:CreateVpcBlockPublicAccessExclusion': [CAP.DISABLE_GUARDRAIL],
+  // Re-enabling IMDSv1 or raising the hop limit. It steals nothing by itself; it restores the
+  // condition under which an application-layer request forgery reaches the instance credential.
+  'ec2:ModifyInstanceMetadataOptions': [CAP.DISABLE_GUARDRAIL],
+
+  // The record rather than the control.
+  'ec2:DeleteFlowLogs': [CAP.TAMPER_AUDIT],
+
+  // Traffic that was not addressed to you. The victim interface keeps working and is unaware.
+  'ec2:CreateTrafficMirrorSession': [CAP.INTERCEPT],
+  'ec2:CreateTrafficMirrorTarget': [CAP.INTERCEPT],
+  'ec2:CreateTrafficMirrorFilter': [CAP.INTERCEPT],
+  'ec2:ModifyTrafficMirrorSession': [CAP.INTERCEPT],
+  // Re-pointing name resolution for a whole VPC.
+  'ec2:CreateDhcpOptions': [CAP.INTERCEPT],
+  'ec2:AssociateDhcpOptions': [CAP.INTERCEPT],
+
+  // Ways in and out that the four existing entries did not name.
+  'ec2:AssociateAddress': [CAP.NETWORK_INGRESS],
+  'ec2:CreateNatGateway': [CAP.NETWORK_ROUTE],
+  'ec2:CreateNetworkAclEntry': [CAP.NETWORK_INGRESS],
+  'ec2:ReplaceNetworkAclEntry': [CAP.NETWORK_INGRESS],
+  'ec2:ModifySubnetAttribute': [CAP.NETWORK_INGRESS],
+  'ec2:AssignPrivateIpAddresses': [CAP.NETWORK_INGRESS],
+  'ec2:AssignIpv6Addresses': [CAP.NETWORK_INGRESS],
+  'ec2:ModifyManagedPrefixList': [CAP.NETWORK_INGRESS],
+  'ec2:RestoreManagedPrefixListVersion': [CAP.NETWORK_INGRESS],
+  'ec2:AuthorizeClientVpnIngress': [CAP.NETWORK_INGRESS],
+  'ec2:CreateClientVpnEndpoint': [CAP.NETWORK_INGRESS],
+  'ec2:CreateClientVpnRoute': [CAP.NETWORK_INGRESS],
+  // Joining networks that were separate. A hub attachment reaches every VPC on the hub.
+  'ec2:CreateVpcPeeringConnection': [CAP.NETWORK_ROUTE],
+  'ec2:AcceptVpcPeeringConnection': [CAP.NETWORK_ROUTE],
+  'ec2:CreateTransitGatewayVpcAttachment': [CAP.NETWORK_ROUTE],
+  'ec2:CreateTransitGatewayRoute': [CAP.NETWORK_ROUTE],
+  'ec2:AssociateTransitGatewayRouteTable': [CAP.NETWORK_ROUTE],
+  'ec2:EnableTransitGatewayRouteTablePropagation': [CAP.NETWORK_ROUTE],
+  'ec2:CreateVpnGateway': [CAP.NETWORK_ROUTE],
+  'ec2:AttachVpnGateway': [CAP.NETWORK_ROUTE],
+  'ec2:CreateCustomerGateway': [CAP.NETWORK_ROUTE],
+  'ec2:CreateVpnConnection': [CAP.NETWORK_ROUTE],
+  'ec2:EnableVgwRoutePropagation': [CAP.NETWORK_ROUTE],
+  // An interface in two places at once is a bridge between them.
+  'ec2:CreateNetworkInterface': [CAP.NETWORK_ROUTE],
+  'ec2:AttachNetworkInterface': [CAP.NETWORK_ROUTE],
+  // Publishing an internal load balancer to other accounts through PrivateLink.
+  'ec2:CreateVpcEndpointServiceConfiguration': [CAP.SHARE_EXTERNAL],
+  'ec2:ModifyVpcEndpointServicePermissions': [CAP.SHARE_EXTERNAL],
+  'ec2:AcceptVpcEndpointConnections': [CAP.SHARE_EXTERNAL],
+
+  // Moving a disk image somewhere else, and getting deleted ones back.
+  'ec2:ExportImage': [CAP.SHARE_EXTERNAL],
+  'ec2:CreateStoreImageTask': [CAP.SHARE_EXTERNAL],
+  'ec2:CreateRestoreImageTask': [CAP.SNAPSHOT],
+  'ec2:RestoreSnapshotFromRecycleBin': [CAP.SNAPSHOT],
+  'ec2:RestoreSnapshotTier': [CAP.SNAPSHOT],
+  // Replacing the operating system while the instance keeps its id, addresses, interfaces and role.
+  'ec2:CreateReplaceRootVolumeTask': [CAP.MODIFY_CODE],
+
+  // Removing what is running, or the connection to it, without terminating anything.
+  'ec2:SendDiagnosticInterrupt': [CAP.DELETE],
+  'ec2:RevokeSecurityGroupIngress': [CAP.DELETE],
+  'ec2:RevokeSecurityGroupEgress': [CAP.DELETE],
+  'ec2:DisassociateAddress': [CAP.DELETE],
+  'ec2:ReleaseAddress': [CAP.DELETE],
+  'ec2:UnassignPrivateIpAddresses': [CAP.DELETE],
+  'ec2:DeleteNetworkInterface': [CAP.DELETE],
+  'ec2:DetachNetworkInterface': [CAP.DELETE],
+  'ec2:DetachVolume': [CAP.DELETE],
+  'ec2:DeleteVolume': [CAP.DELETE],
+  'ec2:DetachInternetGateway': [CAP.DELETE],
+  'ec2:DeleteNatGateway': [CAP.DELETE],
+  'ec2:DeleteRouteTable': [CAP.DELETE, CAP.NETWORK_ROUTE],
+  'ec2:DeleteTransitGatewayVpcAttachment': [CAP.DELETE],
+  'ec2:DeleteVpnConnection': [CAP.DELETE],
+  'ec2:DeleteSecurityGroup': [CAP.DELETE],
+  'ec2:DeleteVpcEndpoint': [CAP.DELETE],
+  'ec2:DeregisterImage': [CAP.DELETE],
+  'ec2:DisableImage': [CAP.DELETE],
+
+  // Money. Capacity purchases and fleets commit spend without touching a single existing resource.
+  'ec2:CreateFleet': [CAP.CREATE, CAP.SPEND],
+  'ec2:RequestSpotFleet': [CAP.CREATE, CAP.SPEND],
+  'ec2:RequestSpotInstances': [CAP.CREATE, CAP.SPEND],
+  'ec2:CreateCapacityReservation': [CAP.SPEND],
+  'ec2:CreateCapacityReservationFleet': [CAP.SPEND],
+  'ec2:PurchaseCapacityBlock': [CAP.SPEND],
+  'ec2:PurchaseReservedInstancesOffering': [CAP.SPEND],
+  'ec2:PurchaseScheduledInstances': [CAP.SPEND],
+  'ec2:PurchaseHostReservation': [CAP.SPEND],
+  'ec2:AllocateAddress': [CAP.SPEND],
+  'ec2:EnableFastSnapshotRestores': [CAP.SPEND],
+  'ec2:MonitorInstances': [CAP.SPEND],
+
   // ---- buying time ----
   'cloudtrail:StopLogging': [CAP.TAMPER_AUDIT],
   'cloudtrail:DeleteTrail': [CAP.TAMPER_AUDIT],
@@ -291,6 +429,8 @@ export function referenceIndex(assessment) {
       const row = services[service]?.[name];
       if (!row) return null;
       return {
+        // The action name without its service, which the rebinding check below reads.
+        name,
         level: row[0] ?? null,
         types: row[1] ?? [],
         creates: row[2] === true,
@@ -315,9 +455,24 @@ export function referenceIndex(assessment) {
 export function derivedCapabilities(fact) {
   if (!fact) return [];
   const caps = [];
-  // The request names an association id and the object at the other end is resolved from it - so
-  // the call re-points an existing binding. See CAP.REBIND.
-  if (typeof fact.refuse === 'string' && fact.refuse.startsWith('deref:')) caps.push(CAP.REBIND);
+  // A re-pointing, and only that. See CAP.REBIND.
+  //
+  // `deref:` alone is too wide, and measuring it against the shipped table is what showed it: of
+  // the 18 ec2 actions carrying it, three re-point a binding (Replace*Association), eight REMOVE
+  // one (Disassociate*/Detach*, which is a deletion rather than a swap), and the rest merely take
+  // an attachment id as an INPUT - ec2:CreateTransitGatewayMeteringPolicy names
+  // MiddleboxAttachmentIds and re-points nothing at all. All eighteen are correctly unsafe for
+  // allow_only, which is what the flag was computed for; only the first three are this capability.
+  //
+  // The discriminator is a name check ON TOP of a structural one, which is not the verb fallback
+  // this file argues against: the structural fact is already established by the API model, and the
+  // name only says which of three directions it goes. AWS is consistent here - a swap is
+  // Replace<Thing>Association - and the check is narrow enough that a miss falls back to the
+  // ordinary path rather than inventing a capability.
+  if (typeof fact.refuse === 'string' && fact.refuse.startsWith('deref:')
+      && /^Replace[A-Za-z]*Association$/.test(fact.name ?? '')) {
+    caps.push(CAP.REBIND);
+  }
   if (fact.level === 'Permissions management') {
     // Writing permissions ONTO a principal and opening a resource TO one are different paths with
     // different edges, and the level does not separate them - the resource types do. iam:PutRolePolicy

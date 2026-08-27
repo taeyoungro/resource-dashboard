@@ -65,6 +65,19 @@ export const OUTCOME = {
    * the resource type in front of it, which is what a model is for.
    */
   CONTROL_REBIND: 'control_rebind',
+  /**
+   * A control that would have refused something is turned off.
+   *
+   * Its own outcome because it reaches nothing on its own - it changes what the NEXT call may do.
+   * Disabling snapshot block-public-access grants no access to anything; it is the reason a later
+   * ModifySnapshotAttribute succeeds. An approver reading only the sharing finding would be told
+   * the control still stands.
+   */
+  GUARDRAIL_OFF: 'guardrail_off',
+  /** Traffic copied or redirected while the workload it belongs to keeps running, unaware. */
+  TRAFFIC_INTERCEPT: 'traffic_intercept',
+  /** A bill. Not a breach, and still an approver's business. */
+  COST_AMPLIFY: 'cost_amplify',
 };
 
 /**
@@ -200,6 +213,36 @@ const EDGES = [
     controlPlaneOnly: true,
     why: 'the configuration of a resource this pipeline runs on can be changed, and what that '
       + 'resource does is what decides or applies approvals',
+  },
+  {
+    id: 'unguard',
+    any: [CAP.DISABLE_GUARDRAIL],
+    outcome: OUTCOME.GUARDRAIL_OFF,
+    // A control is account or region scope, not a workload resource, so an index of workloads never
+    // reported it and the capability was invisible whether the account was new or full - the same
+    // shape as `blind`. It is also the edge an approver most needs BEFORE the others: it is what
+    // makes the others succeed.
+    targetless: true,
+    why: 'a setting that would otherwise refuse a call can be turned off, so a control an approver '
+      + 'is relying on stops applying to everything it covers',
+  },
+  {
+    id: 'intercept',
+    any: [CAP.INTERCEPT],
+    outcome: OUTCOME.TRAFFIC_INTERCEPT,
+    // True of interfaces that do not exist yet, and the victim resource is never touched - so an
+    // enumeration of what exists is the wrong place to look for it.
+    targetless: true,
+    why: 'traffic can be copied off an interface, or name resolution re-pointed, while the workload '
+      + 'it belongs to keeps running and unchanged',
+  },
+  {
+    id: 'spend',
+    any: [CAP.SPEND],
+    outcome: OUTCOME.COST_AMPLIFY,
+    targetless: true,
+    why: 'capacity can be bought or launched at will, which is a bill rather than a breach and is '
+      + 'bounded by service quotas rather than by anything in this policy',
   },
   {
     id: 'blind',

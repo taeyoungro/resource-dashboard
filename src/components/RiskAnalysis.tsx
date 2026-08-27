@@ -120,11 +120,17 @@ const SECTIONS: { category: FindingCategory; label: string; why: string }[] = [
     why: "다른 권한을 얻는 경로. 자원이 무엇이든 동작 조합만으로 성립한다" },
   { category: "EXPOSURE", label: "노출",
     why: "내용이 밖으로 나가거나 외부에서 닿을 수 있게 되는 경로" },
+  { category: "EVASION", label: "통제 무력화",
+    why: "거부를 담당하던 설정이나 무슨 일이 있었는지 남기는 기록을 끄는 경로. 그 자체로는 아무것도 "
+      + "얻지 않고, 다른 경로가 성립하거나 드러나지 않게 만든다" },
   { category: "RECON", label: "정찰",
     why: "무엇이 있는지 읽을 수 있는 경로. 그 자체로 접근을 주지는 않으며, 일부는 선언 경로에 "
       + "있어 정책 축소로 막을 수 없다 — 어느 쪽인지는 카드의 차단 불가 표시가 말한다" },
   { category: "DESTRUCTIVE", label: "파괴",
     why: "있는 것을 지우거나 멈출 수 있는 경로" },
+  { category: "COST", label: "비용",
+    why: "청구액을 늘릴 수 있는 경로. 침해가 아니므로 마지막에 두고, 등급도 침해와 같은 자리에 "
+      + "놓지 않는다 — 상한은 이 정책이 아니라 서비스 할당량이 정한다" },
 ];
 
 const GRADE_LABEL: Record<Grade, string> = {

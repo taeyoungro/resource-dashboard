@@ -630,7 +630,16 @@ export interface ImpactCoverage {
 export type Grade = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "NONE";
 export type AssetGrade = Grade | "UNDETERMINED";
 export type FindingStatus = "CONFIRMED" | "UNVERIFIED" | "NOT_ASSESSABLE";
-export type FindingCategory = "ESCALATION" | "EXPOSURE" | "RECON" | "DESTRUCTIVE";
+/**
+ * EVASION and COST joined the four the design shipped with.
+ *
+ * EVASION is turning a control or a record off. It reaches nothing itself, which is exactly why it
+ * needed its own section: it is the reason something else succeeds, or the reason nobody sees that
+ * it did. COST is a bill rather than a breach, kept apart so it never sits in a section an approver
+ * is reading for compromise.
+ */
+export type FindingCategory =
+  "ESCALATION" | "EXPOSURE" | "EVASION" | "RECON" | "DESTRUCTIVE" | "COST";
 
 /** How the pipeline recognised one of its own resources. Only the first two may move a grade. */
 export type ControlPlaneBasis = "configured" | "declared" | "prefix";

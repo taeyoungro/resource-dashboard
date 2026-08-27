@@ -511,13 +511,30 @@ test('a capability term returns every action that satisfied it, not the first', 
   // An approver writing a restriction needs all of them, and T-7 says a trigger list is never
   // abbreviated. anyOf short-circuits on the first branch that hits; a capability branch is one
   // branch that can hit many actions at once.
-  const acts = ['acme:RebindOne', 'acme:RebindTwo'];
+  const acts = ['ec2:ReplaceRouteTableAssociation', 'ec2:ReplaceNetworkAclAssociation'];
   const ref = reference({
-    'acme:RebindOne': { types: ['thing'], refuse: 'deref:AssociationId' },
-    'acme:RebindTwo': { types: ['thing'], refuse: 'deref:AttachmentId' },
+    'ec2:ReplaceRouteTableAssociation': { types: ['route-table'], refuse: 'deref:AssociationId' },
+    'ec2:ReplaceNetworkAclAssociation': { types: ['network-acl'], refuse: 'deref:AssociationId' },
   });
   const [found] = only(findings(digest([grant('X', acts, [])]), undefined, ref), 'X-4', 'action');
   assert.deepEqual(found.triggerActions.sort(), acts.slice().sort());
+});
+
+test('a deref that is not a re-pointing does not become one', () => {
+  // Measured against the shipped table: 18 ec2 actions carry `deref:` and only three re-point a
+  // binding. Eight REMOVE one, and the rest merely take an attachment id as an input -
+  // ec2:CreateTransitGatewayMeteringPolicy names MiddleboxAttachmentIds and re-points nothing.
+  // All eighteen are correctly unsafe for allow_only, which is what the flag was computed for.
+  const acts = ['ec2:CreateTransitGatewayMeteringPolicy', 'ec2:DisassociateRouteTable',
+                'ec2:DetachNetworkInterface'];
+  const ref = reference({
+    'ec2:CreateTransitGatewayMeteringPolicy': { types: ['transit-gateway'],
+                                                refuse: 'deref:MiddleboxAttachmentIds' },
+    'ec2:DisassociateRouteTable': { types: ['route-table'], refuse: 'deref:AssociationId' },
+    'ec2:DetachNetworkInterface': { types: ['network-interface'], refuse: 'deref:AttachmentId' },
+  });
+  assert.deepEqual(only(findings(digest([grant('X', acts, [])]), undefined, ref), 'X-4', 'action'),
+                   [], 'the rebinding rule fires on actions that rebind nothing');
 });
 
 test('X-2 keeps its named actions and gains the ones nobody named', () => {

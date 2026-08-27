@@ -28,7 +28,11 @@ export class RuleError extends Error {}
 const GRADES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'NONE'];
 const ASSET_GRADES = [...GRADES, 'UNDETERMINED'];
 const STATUSES = ['CONFIRMED', 'UNVERIFIED', 'NOT_ASSESSABLE'];
-const CATEGORIES = ['ESCALATION', 'EXPOSURE', 'RECON', 'DESTRUCTIVE'];
+// EVASION and COST joined the four the design shipped with. Evasion is turning a control or a
+// record off - it reaches nothing itself and is why something else succeeds - and cost is a
+// bill rather than a breach, kept apart so it never sits in a section an approver reads for
+// compromise.
+const CATEGORIES = ['ESCALATION', 'EXPOSURE', 'EVASION', 'RECON', 'DESTRUCTIVE', 'COST'];
 const SCOPES = ['policyActionUnion', 'resourceActionSet', 'policyNonRestrictable'];
 /** The closed capability vocabulary a predicate may name. Anything else is a typo, not a category. */
 const CAPABILITIES = new Set(Object.values(CAP));

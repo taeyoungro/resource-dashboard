@@ -11,13 +11,23 @@
       "evaluatedOn": "policyActionUnion",
       "predicate": {
         "allOf": [
-          { "action": "iam:PassRole" },
-          { "action": "lambda:CreateFunction" },
+          {
+            "action": "iam:PassRole"
+          },
+          {
+            "action": "lambda:CreateFunction"
+          },
           {
             "anyOf": [
-              { "action": "lambda:InvokeFunction" },
-              { "action": "lambda:InvokeFunctionUrl" },
-              { "action": "lambda:AddPermission" }
+              {
+                "action": "lambda:InvokeFunction"
+              },
+              {
+                "action": "lambda:InvokeFunctionUrl"
+              },
+              {
+                "action": "lambda:AddPermission"
+              }
             ]
           }
         ]
@@ -38,8 +48,12 @@
       "evaluatedOn": "resourceActionSet",
       "predicate": {
         "anyOf": [
-          { "action": "lambda:CreateFunctionUrlConfig" },
-          { "action": "lambda:AddPermission" }
+          {
+            "action": "lambda:CreateFunctionUrlConfig"
+          },
+          {
+            "action": "lambda:AddPermission"
+          }
         ]
       },
       "narrative": "함수 URL을 인증 없이 생성하거나 외부 주체에 호출 권한을 부여하면, 함수의 실행 역할이 외부에서 트리거 가능한 상태가 된다."
@@ -53,13 +67,23 @@
       "evaluatedOn": "resourceActionSet",
       "predicate": {
         "anyOf": [
-          { "action": "lambda:UpdateFunctionCode" },
-          { "action": "ec2:ReplaceIamInstanceProfileAssociation" },
+          {
+            "action": "lambda:UpdateFunctionCode"
+          },
+          {
+            "action": "ec2:ReplaceIamInstanceProfileAssociation"
+          },
           {
             "allOf": [
-              { "action": "ec2:StopInstances" },
-              { "action": "ec2:ModifyInstanceAttribute" },
-              { "action": "ec2:StartInstances" }
+              {
+                "action": "ec2:StopInstances"
+              },
+              {
+                "action": "ec2:ModifyInstanceAttribute"
+              },
+              {
+                "action": "ec2:StartInstances"
+              }
             ]
           }
         ]
@@ -76,9 +100,15 @@
       "evaluatedOn": "resourceActionSet",
       "predicate": {
         "anyOf": [
-          { "action": "dynamodb:PutResourcePolicy" },
-          { "action": "dynamodb:ExportTableToPointInTime" },
-          { "action": "dynamodb:GetRecords" }
+          {
+            "action": "dynamodb:PutResourcePolicy"
+          },
+          {
+            "action": "dynamodb:ExportTableToPointInTime"
+          },
+          {
+            "action": "dynamodb:GetRecords"
+          }
         ]
       },
       "narrative": "자원 기반 정책으로 외부 주체에 접근을 열거나, 전량을 외부 저장소로 내보내거나, 이후 변경을 스트림으로 계속 읽을 수 있다."
@@ -92,12 +122,24 @@
       "evaluatedOn": "resourceActionSet",
       "predicate": {
         "anyOf": [
-          { "action": "ec2:CreateRoute" },
-          { "action": "ec2:ReplaceRoute" },
-          { "action": "ec2:AttachInternetGateway" },
-          { "action": "ec2:AuthorizeSecurityGroupIngress" },
-          { "capability": "network-route" },
-          { "capability": "network-ingress" }
+          {
+            "action": "ec2:CreateRoute"
+          },
+          {
+            "action": "ec2:ReplaceRoute"
+          },
+          {
+            "action": "ec2:AttachInternetGateway"
+          },
+          {
+            "action": "ec2:AuthorizeSecurityGroupIngress"
+          },
+          {
+            "capability": "network-route"
+          },
+          {
+            "capability": "network-ingress"
+          }
         ]
       },
       "narrative": "라우트 테이블에 기본 경로를 추가하거나 보안 그룹에 인그레스를 추가해 외부 통신 경로를 만들 수 있다.",
@@ -110,7 +152,9 @@
       "escalationGrade": "HIGH",
       "assetImpactGrade": "UNDETERMINED",
       "evaluatedOn": "resourceActionSet",
-      "predicate": { "capability": "rebind" },
+      "predicate": {
+        "capability": "rebind"
+      },
       "narrative": "이미 맺어진 결합을 다른 대상으로 재지정할 수 있다. 아무것도 만들지 않고, 결합된 자원 자체를 바꾸지도 않으며, 무엇이 바뀌었는지 이름으로 드러나는 동작도 없다. 새 대상이 허용하는 것이 그 자원의 성질이 된다.",
       "notes": "이 규칙은 동작 이름이 아니라 요청이 결합 식별자를 지목하고 상대편을 그것으로 해석한다는 사실에서 발화한다. ec2:ReplaceRouteTableAssociation이 그 예다 — 프라이빗 서브넷에 기본 경로가 인터넷 게이트웨이로 향하는 라우팅 테이블을 재지정하면 서브넷이 퍼블릭이 되지만, X-2가 이름으로 아는 네 동작은 하나도 호출되지 않는다. 상대편에 무엇이 있는지는 이 산출물로 알 수 없으므로 서술에 적지 않는다."
     },
@@ -123,8 +167,12 @@
       "evaluatedOn": "resourceActionSet",
       "predicate": {
         "anyOf": [
-          { "action": "ec2:GetConsoleOutput" },
-          { "action": "ec2:GetConsoleScreenshot" }
+          {
+            "action": "ec2:GetConsoleOutput"
+          },
+          {
+            "action": "ec2:GetConsoleScreenshot"
+          }
         ]
       },
       "narrative": "인스턴스의 부팅 출력 전문을 받는다. 확실히 들어 있는 것은 사설 주소와 서브넷 구성, MAC 주소, 호스트명, 운영체제 이미지와 커널 판, 그리고 에이전트가 남긴 계정 번호와 구성 실패다. 자격 증명은 부팅 때 무언가가 그것을 출력한 경우에만 들어 있으므로, 무엇이 남는지는 이 산출물로 알 수 없다.",
@@ -137,7 +185,9 @@
       "escalationGrade": "MEDIUM",
       "assetImpactGrade": "UNDETERMINED",
       "evaluatedOn": "resourceActionSet",
-      "predicate": { "action": "ec2:GetPasswordData" },
+      "predicate": {
+        "action": "ec2:GetPasswordData"
+      },
       "narrative": "Windows 인스턴스의 관리자 암호 자료를 받는다. 복호에는 인스턴스를 기동할 때 쓴 키 쌍의 개인 키가 필요하므로, 이 동작 하나로 암호가 나오지는 않는다."
     },
     {
@@ -149,11 +199,17 @@
       "evaluatedOn": "resourceActionSet",
       "predicate": {
         "anyOf": [
-          { "action": "ec2:CreateSnapshot" },
-          { "action": "ec2:CreateImage" }
+          {
+            "action": "ec2:CreateSnapshot"
+          },
+          {
+            "action": "ec2:CreateImage"
+          }
         ]
       },
-      "relatedTo": ["X-6"],
+      "relatedTo": [
+        "X-6"
+      ],
       "narrative": "볼륨의 사본을 만든다. 디스크에 있는 것이 전부 사본에 들어가고, 사본은 원본과 별개의 자원이므로 원본에 걸린 제한을 따라가지 않는다.",
       "notes": "만들어지는 사본의 ARN은 아직 없다. 자원을 지목하는 제한으로는 사본 생성 자체를 막을 수 없고, 동작 자체 거부만 통한다."
     },
@@ -166,11 +222,17 @@
       "evaluatedOn": "resourceActionSet",
       "predicate": {
         "anyOf": [
-          { "action": "ec2:ModifySnapshotAttribute" },
-          { "action": "ec2:ModifyImageAttribute" }
+          {
+            "action": "ec2:ModifySnapshotAttribute"
+          },
+          {
+            "action": "ec2:ModifyImageAttribute"
+          }
         ]
       },
-      "relatedTo": ["X-5"],
+      "relatedTo": [
+        "X-5"
+      ],
       "narrative": "스냅샷이나 이미지를 다른 계정에 공유하거나 공개로 바꾼다. 이것은 계정 경계 밖으로 나가는 단계이고 되돌릴 수 없다 — 공유를 거둬들여도 받는 쪽이 이미 복사한 사본은 회수되지 않는다.",
       "notes": "사본을 만드는 권한과 함께 있으면 임의의 볼륨을 복제해 밖으로 내보내는 경로가 된다. 두 규칙이 같은 정책에서 함께 발화했는지는 카드의 연결 항목이 말한다."
     },
@@ -183,14 +245,24 @@
       "evaluatedOn": "policyNonRestrictable",
       "predicate": {
         "anyOf": [
-          { "action": "iam:GetRole" },
-          { "action": "iam:GetPolicyVersion" },
-          { "action": "iam:ListAttachedRolePolicies" },
-          { "action": "iam:ListRoles" }
+          {
+            "action": "iam:GetRole"
+          },
+          {
+            "action": "iam:GetPolicyVersion"
+          },
+          {
+            "action": "iam:ListAttachedRolePolicies"
+          },
+          {
+            "action": "iam:ListRoles"
+          }
         ]
       },
       "forceRestrictable": false,
-      "relatedTo": ["E-1"],
+      "relatedTo": [
+        "E-1"
+      ],
       "narrative": "역할과 정책의 본문을 읽을 수 있고, 이 동작들은 선언 경로로 표기되어 정책 축소로 차단할 수 없다.",
       "notes": "동일 정책에서 E-1이 발화한 경우 두 Finding을 연결해 표시한다. 정찰과 상승이 한 정책 안에서 연결된다는 사실이 승인자에게 보여야 한다."
     },
@@ -201,7 +273,9 @@
       "escalationGrade": "LOW",
       "assetImpactGrade": "UNDETERMINED",
       "evaluatedOn": "resourceActionSet",
-      "predicate": { "action": "dynamodb:DeleteTable" },
+      "predicate": {
+        "action": "dynamodb:DeleteTable"
+      },
       "narrative": "테이블을 삭제할 수 있다. 백업 구성 여부는 이 산출물로 알 수 없다."
     },
     {
@@ -211,7 +285,9 @@
       "escalationGrade": "LOW",
       "assetImpactGrade": "UNDETERMINED",
       "evaluatedOn": "resourceActionSet",
-      "predicate": { "action": "dynamodb:UpdateTimeToLive" },
+      "predicate": {
+        "action": "dynamodb:UpdateTimeToLive"
+      },
       "narrative": "만료 설정을 켜면 항목이 오류 없이 소멸한다. 파괴 동작 중 인지 지연이 가장 길다."
     },
     {
@@ -221,7 +297,9 @@
       "escalationGrade": "LOW",
       "assetImpactGrade": "UNDETERMINED",
       "evaluatedOn": "resourceActionSet",
-      "predicate": { "action": "ec2:TerminateInstances" },
+      "predicate": {
+        "action": "ec2:TerminateInstances"
+      },
       "narrative": "인스턴스를 종료할 수 있다. 종료 보호 설정 여부는 이 산출물로 알 수 없다."
     },
     {
@@ -233,8 +311,12 @@
       "evaluatedOn": "resourceActionSet",
       "predicate": {
         "anyOf": [
-          { "action": "ec2:DeleteVpc" },
-          { "action": "ec2:DeleteSubnet" }
+          {
+            "action": "ec2:DeleteVpc"
+          },
+          {
+            "action": "ec2:DeleteSubnet"
+          }
         ]
       },
       "narrative": "네트워크 구성을 삭제할 수 있다. 의존 자원 때문에 부분 삭제 상태로 남을 수 있다."
@@ -246,15 +328,93 @@
       "escalationGrade": "LOW",
       "assetImpactGrade": "UNDETERMINED",
       "evaluatedOn": "resourceActionSet",
-      "predicate": { "action": "lambda:DeleteFunction" },
+      "predicate": {
+        "action": "lambda:DeleteFunction"
+      },
       "narrative": "함수를 삭제할 수 있다. 연결된 URL 구성과 호출 권한도 함께 소멸한다."
+    },
+    {
+      "id": "V-1",
+      "title": "감사 기록 제거",
+      "category": "EVASION",
+      "escalationGrade": "HIGH",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "capability": "tamper-audit"
+      },
+      "narrative": "무슨 일이 있었는지 남기는 기록을 멈추거나 지울 수 있다. 이 동작 자체는 아무것도 얻지 않으며, 다른 경로가 일어난 뒤 그것을 확인할 수단을 없앤다.",
+      "notes": "이 능력이 있는 부여에서는 나머지 판정의 사후 확인이 어렵다는 것을 함께 읽어야 한다."
+    },
+    {
+      "id": "V-2",
+      "title": "보호 설정 해제",
+      "category": "EVASION",
+      "escalationGrade": "HIGH",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "capability": "disable-guardrail"
+      },
+      "relatedTo": [
+        "X-6"
+      ],
+      "narrative": "거부를 담당하던 설정을 끌 수 있다. 이 동작만으로는 아무 자원에도 닿지 않는다 — 바꾸는 것은 다음 호출이 허용되는가이며, 그 설정이 덮던 범위 전체에 대해 한 번에 적용된다.",
+      "notes": "계정 또는 리전 단위 설정이므로 자원 열거에 나타나지 않는다. 자원을 지목하는 제한으로는 끊을 수 없고 동작 자체 거부만 통한다."
+    },
+    {
+      "id": "X-7",
+      "title": "통신 내용 가로채기",
+      "category": "EXPOSURE",
+      "escalationGrade": "HIGH",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "capability": "intercept"
+      },
+      "narrative": "인터페이스를 지나는 트래픽을 복제하거나 이름 해석을 다른 곳으로 돌릴 수 있다. 대상 워크로드는 그대로 동작하고 바뀐 것이 없으므로, 자원 상태를 보는 것으로는 드러나지 않는다.",
+      "notes": "미러링이 실제로 성립하려면 대상 인터페이스가 미러링을 지원하는 인스턴스에 붙어 있어야 하고, link-local 주소로 가는 요청은 복제되지 않는다. 그 조건은 이 산출물로 판정하지 않는다."
+    },
+    {
+      "id": "C-1",
+      "title": "비용 증폭",
+      "category": "COST",
+      "escalationGrade": "MEDIUM",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": {
+        "capability": "spend"
+      },
+      "narrative": "용량을 사거나 대량으로 띄워 청구액을 늘릴 수 있다. 침해가 아니라 청구이며, 상한은 이 정책이 아니라 서비스 할당량이 정한다.",
+      "notes": "역할을 전달하지 않고 인스턴스를 띄우면 iam:PassRole이 필요 없다 — 권한 상승 판정으로는 걸리지 않는 경로다."
     }
   ],
   "sort": {
-    "keys": ["escalationGrade:desc", "status:asc", "id:asc"],
-    "statusOrder": ["CONFIRMED", "UNVERIFIED", "NOT_ASSESSABLE"],
-    "forbiddenKeys": ["assetImpactGrade"]
+    "keys": [
+      "escalationGrade:desc",
+      "status:asc",
+      "id:asc"
+    ],
+    "statusOrder": [
+      "CONFIRMED",
+      "UNVERIFIED",
+      "NOT_ASSESSABLE"
+    ],
+    "forbiddenKeys": [
+      "assetImpactGrade"
+    ]
   },
-  "sectionOrder": ["ESCALATION", "EXPOSURE", "RECON", "DESTRUCTIVE"],
-  "forbiddenNarrativeSources": ["resourceName", "resourceTags", "stackName"]
+  "sectionOrder": [
+    "ESCALATION",
+    "EXPOSURE",
+    "EVASION",
+    "RECON",
+    "DESTRUCTIVE",
+    "COST"
+  ],
+  "forbiddenNarrativeSources": [
+    "resourceName",
+    "resourceTags",
+    "stackName"
+  ]
 }
