@@ -121,26 +121,49 @@ const GRADING_BASES = new Set(['configured', 'declared']);
  */
 function match(predicate, available, byCapability) {
   if ('action' in predicate) {
-    return available.has(predicate.action) ? [predicate.action] : null;
+    return available.has(predicate.action)
+      ? { actions: [predicate.action], atomic: true }
+      : null;
   }
   if ('capability' in predicate) {
     const hit = byCapability?.get(predicate.capability);
-    return hit && hit.length ? [...hit] : null;
+    // Every action carrying the capability satisfies the term BY ITSELF, so the term is atomic
+    // however many of them there are.
+    return hit && hit.length ? { actions: [...hit], atomic: true } : null;
   }
   if ('anyOf' in predicate) {
+    // Every branch that hit, not the first.
+    //
+    // It used to return the first and that was a defect on the decision path, not a cosmetic one.
+    // AmazonEC2FullAccess grants all five of X-3's actions; the card reported ec2:GetConsoleOutput
+    // alone, the 차단 dialog offered that alone, an approver denied it, and the card went green
+    // while ec2:CreateImage - a full copy of the disk - stayed granted. Seven of thirteen rules had
+    // the same hole: E-3 hid the instance-profile swap behind lambda:UpdateFunctionCode, X-2 hid
+    // AttachInternetGateway behind CreateRoute.
+    const actions = [];
+    let atomic = false;
     for (const sub of predicate.anyOf) {
       const hit = match(sub, available, byCapability);
-      if (hit) return hit;
+      if (!hit) continue;
+      actions.push(...hit.actions);
+      // The branches are ALTERNATIVES. One branch that needs no co-location is enough to establish
+      // the finding without it, whatever the others need.
+      atomic = atomic || hit.atomic;
     }
-    return null;
+    return actions.length ? { actions, atomic } : null;
   }
   const acc = [];
+  let only = null;
   for (const sub of predicate.allOf) {
     const hit = match(sub, available, byCapability);
     if (!hit) return null;
-    acc.push(...hit);
+    acc.push(...hit.actions);
+    only = hit;
   }
-  return acc;
+  // allOf needs its branches TOGETHER, so several actions here really do have to meet on one
+  // resource. A single-branch allOf is just that branch, and a conjunction that resolved to one
+  // action needs nothing to meet.
+  return { actions: acc, atomic: predicate.allOf.length === 1 ? only.atomic : acc.length < 2 };
 }
 
 /** capability -> the actions in this scope that carry it. */
@@ -357,8 +380,11 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
     try {
       for (const scope of scopeUnits(rule, grant, axis)) {
         const available = new Set(scope.actions);
-        const hits = match(rule.predicate, available, capabilityIndex(scope.actions, reference));
-        if (!hits) continue;
+        const found = match(rule.predicate, available, capabilityIndex(scope.actions, reference));
+        if (!found) continue;
+        // Deduplicated because a capability term and a literal can name the same action, and a card
+        // listing it twice reads as two reasons.
+        const hits = [...new Set(found.actions)];
 
         // Co-location, decided per hit and only on the action axis. One action needs no
         // co-location at all; several need the grant to put them on the same resource, and the
@@ -366,9 +392,14 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
         // Resource. E-3's anyOf reaches here both ways - a lone
         // ec2:ReplaceIamInstanceProfileAssociation is sound, the Stop/Modify/Start triple is not
         // unless all three are granted on '*'.
+        // Co-location doubt applies only where the rule actually needs several actions to meet on
+        // one resource. `atomic` says a single action satisfied it - E-3's
+        // ec2:ReplaceIamInstanceProfileAssociation branch does, its Stop/Modify/Start branch does
+        // not - and on either axis a finding that needs no co-location must not be downgraded for
+        // lacking it.
         const unit = axis === AXIS.ACTION
-          ? { ...scope, colocated: hits.length < 2 || hits.every((a) => unscoped.has(a)) }
-          : scope;
+          ? { ...scope, colocated: found.atomic || hits.every((a) => unscoped.has(a)) }
+          : { ...scope, colocated: scope.colocated || found.atomic };
 
         const contributing = unit.units.filter((u) =>
           unitActions(grant, u).some((a) => hits.includes(a)));
@@ -484,11 +515,25 @@ export function findings(digest, rules = RULES, reference = null) {
 function withTwins(list) {
   const key = (f) => `${f.id} ${f.policyId}`;
   const byAxis = new Map();
-  for (const finding of list) byAxis.set(`${finding.axis} ${key(finding)}`, true);
+  // Which rules actually fired on each policy, for relatedTo below.
+  const firedOn = new Map();
+  for (const finding of list) {
+    byAxis.set(`${finding.axis} ${key(finding)}`, true);
+    if (!firedOn.has(finding.policyId)) firedOn.set(finding.policyId, new Set());
+    firedOn.get(finding.policyId).add(finding.id);
+  }
   return list.map((finding) => ({
     ...finding,
     alsoOnOtherAxis: byAxis.has(
-      `${finding.axis === AXIS.ACTION ? AXIS.RESOURCE : AXIS.ACTION} ${key(finding)}`) ,
+      `${finding.axis === AXIS.ACTION ? AXIS.RESOURCE : AXIS.ACTION} ${key(finding)}`),
+    // The related rules that are ACTUALLY here, not the ones the rule file hoped for.
+    //
+    // The card said "E-1 과 같은 정책에서 함께 성립합니다" whenever relatedTo was non-empty, which
+    // is a claim about this account and was printed without checking it - R-1 says it on every
+    // policy carrying the four IAM reads, including ones where E-1 never fired. R-1's own note
+    // asks for the conditional ("동일 정책에서 E-1이 발화한 경우"); nothing was applying it.
+    relatedFired: (finding.relatedTo ?? []).filter(
+      (id) => firedOn.get(finding.policyId)?.has(id)),
   }));
 }
 
