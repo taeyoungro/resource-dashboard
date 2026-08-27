@@ -68,7 +68,16 @@ function digest(grants, over = {}) {
   };
 }
 
-const only = (list, id) => list.filter((f) => f.id === id);
+/**
+ * One rule's findings on ONE axis, defaulting to the resource axis.
+ *
+ * Every rule is now evaluated twice - once over the units (what this grant reaches in the account
+ * as it is) and once over the grant's own action list (what it lets somebody do, which needs no
+ * inventory). Most tests below are about the first, and asking for both would make each of them
+ * assert two things at once. The axis is named where the test is about the second.
+ */
+const only = (list, id, axis = 'resource') =>
+  list.filter((f) => f.id === id && f.axis === axis);
 
 // ---- the rule file --------------------------------------------------------------------------
 
@@ -183,8 +192,13 @@ test('R-1 is evaluated on the declaration path, and is not restrictable', () => 
   // would be promising an approver something the restriction cannot deliver.
   const nonRestrictable = ['iam:GetRole', 'iam:ListRoles', 'iam:ListAttachedRolePolicies'];
   const d = digest([grant('Recon', [], [], { non_restrictable: nonRestrictable })]);
-  const [found] = only(findings(d), 'R-1');
+  // The ACTION axis, and only that one. policyNonRestrictable attaches no units and never did -
+  // R-1's card has always said "대상 없음, 부여된 능력입니다" - so filing it under what the grant
+  // reaches was describing a capability as a reach. See axesFor.
+  const [found] = only(findings(d), 'R-1', 'action');
   assert.ok(found);
+  assert.deepEqual(only(findings(d), 'R-1', 'resource'), [],
+                   'a rule that attaches no resource is being reported as a resource finding');
   assert.equal(found.restrictable, false);
   assert.deepEqual(found.relatedTo, ['E-1']);
   // Nothing in the grant's own action list, so a policyActionUnion rule sees the declaration path
@@ -344,7 +358,11 @@ test('trigger actions are the names as written, and sections come out in the sta
 
   const counts = summary(list);
   assert.equal(counts.total, list.length);
-  assert.equal(counts.byGrade.HIGH, only(list, 'E-3').length);
+  // E-3 is the only HIGH rule here and it fires on both axes - once naming the lambda function it
+  // reaches, once saying the grant can rewrite the code of whatever comes to exist. The summary
+  // counts findings, so it counts both.
+  assert.equal(counts.byGrade.HIGH,
+               only(list, 'E-3').length + only(list, 'E-3', 'action').length);
 });
 
 test('the baseline is evaluated like any other grant, and marked', () => {
@@ -357,33 +375,88 @@ test('the baseline is evaluated like any other grant, and marked', () => {
   assert.equal(found.isBaseline, true);
 });
 
-// ---- the empty account: a rule that names a capability must still fire ------------------------
+// ---- the two axes ------------------------------------------------------------------------------
+//
+// A grant carries two risks and they were reported as one. 영향 자원 위험 is what it reaches in the
+// account as it is; Action 자체 위험 is what it lets somebody do, which needs no inventory. Only the
+// first existed, and eleven of thirteen rules are evaluated over units - so an account with nothing
+// in it had no units, no scopes, and no findings, which is the account a preventive control is
+// written for.
 
-test('E-2 falls back to policy scope when the account enumerated nothing', () => {
-  // On an account with resources, the unit pass is what makes the target list precise - E-2 fires
-  // on the lambda unit and names the functions. With nothing enumerated it produced no scopes at
-  // all and went silent, in exactly the account where "this grant can open an unauthenticated
-  // invoke path to whatever gets created" is the whole finding.
-  const empty = digest([grant('AWSLambda_FullAccess', ['lambda:CreateFunctionUrlConfig'], [])]);
-  const found = findings(empty).find((f) => f.id === 'E-2');
-  assert.ok(found, 'the rule is silent on an empty account');
-  assert.deepEqual(found.triggerActions, ['lambda:CreateFunctionUrlConfig']);
-  assert.deepEqual(found.targets, []);
-  // Nothing established that the target list is whole, so completeness is UNKNOWN - never false.
-  // Saying false would report a capability-only finding as a complete enumeration.
-  assert.equal(found.truncated, null);
-  assert.equal(summary(findings(empty)).enumerationIncomplete, 1);
+test('every rule is asked both questions, and the answers are marked', () => {
+  const actions = ['lambda:CreateFunctionUrlConfig'];
+  const full = digest([grant('AWSLambda_FullAccess', actions,
+                             [unit('lambda:function', actions, actions)])]);
+  const [reach] = only(findings(full), 'E-2');
+  const [capability] = only(findings(full), 'E-2', 'action');
+
+  assert.ok(reach, 'the enumerated answer is gone');
+  assert.equal(reach.targets.length, 1, 'the unit pass was replaced by the policy-scope one');
+  assert.deepEqual(reach.targets[0].sample.length > 0, true);
+  assert.equal(reach.truncated, false, 'a real enumeration was reported as unknown');
+
+  assert.ok(capability, 'the capability answer is missing on an account that HAS resources');
+  assert.deepEqual(capability.targets, [], 'the action axis attached ARNs');
+  // Nothing established that any target list is whole because no list was made. T-6: unknown is
+  // null, never false - a false here would report a capability as a complete enumeration.
+  assert.equal(capability.truncated, null);
+
+  // Each points at its twin, so two areas showing one rule does not read as two findings.
+  assert.equal(reach.alsoOnOtherAxis, true);
+  assert.equal(capability.alsoOnOtherAxis, true);
 });
 
-test('the fallback does not widen a finding on an account that has resources', () => {
-  // The regression this must not become: policy scope attaches every unit the grant touches,
-  // including resources of other services, which is a wider answer to a narrower question.
-  const actions = ['lambda:CreateFunctionUrlConfig'];
-  const riskActions = [...actions, 's3:GetObject'];
-  const full = digest([grant('AWSLambda_FullAccess', riskActions,
-                             [unit('lambda:function', actions, riskActions),
-                              unit('s3:bucket', ['s3:GetObject'], riskActions)])]);
-  const found = findings(full).find((f) => f.id === 'E-2');
-  assert.equal(found.targets.length, 1, 'the unit pass was replaced by the policy-scope one');
-  assert.equal(found.truncated, false, 'a real enumeration was reported as unknown');
+test('an empty account gets the whole action axis, not three rules of it', () => {
+  // The measured gap. Every one of these rules is evaluated over units, and an account with nothing
+  // in it has none - so this grant produced NO finding at all, and the page an approver saw for a
+  // brand new account was blank.
+  const actions = ['ec2:ReplaceIamInstanceProfileAssociation', 'ec2:CreateRoute',
+                   'ec2:CreateSnapshot', 'ec2:TerminateInstances', 'dynamodb:DeleteTable'];
+  const empty = digest([grant('AmazonEC2FullAccess', actions, [],
+                              { unscoped_actions: actions })]);
+  const list = findings(empty);
+  assert.deepEqual(list.map((f) => f.id).sort(), ['D-1', 'D-3', 'E-3', 'X-2', 'X-3']);
+  assert.ok(list.every((f) => f.axis === 'action'), 'a resource axis finding with no resources');
+  assert.ok(list.every((f) => f.targets.length === 0), 'the action axis attached ARNs');
+  // Nothing to point at: there is no resource-axis twin, and saying there is would send a reader
+  // to an area that does not hold it.
+  assert.ok(list.every((f) => f.alsoOnOtherAxis === false));
+});
+
+test('the action axis does not inherit the resource axis\'s co-location claim', () => {
+  // The error this must not become. E-3's allOf needs Stop, Modify and Start on ONE instance, and
+  // over a policy-wide action list nothing says they meet - that is exactly the union-of-statements
+  // false positive the unit scope exists to prevent, arriving through the other door.
+  const triple = ['ec2:StopInstances', 'ec2:ModifyInstanceAttribute', 'ec2:StartInstances'];
+  const [unproven] = only(findings(digest([grant('Split', triple, [])])), 'E-3', 'action');
+  assert.ok(unproven, 'E-3 is silent on an empty account');
+  assert.equal(unproven.status, 'UNVERIFIED');
+  assert.ok(unproven.blockedBy.some((r) => r.includes('granted on named ARNs')));
+
+  // Unscoped is what settles it, and it is a fact about the DOCUMENT rather than the inventory -
+  // which is why it can settle it in an account holding nothing. Actions granted on '*' are all
+  // available on every instance that comes to exist.
+  const [sound] = only(
+    findings(digest([grant('Wide', triple, [], { unscoped_actions: triple })])), 'E-3', 'action');
+  assert.equal(sound.status, 'CONFIRMED');
+
+  // A single-action hit needs no co-location at all and must not be dragged down with it.
+  const one = ['ec2:ReplaceIamInstanceProfileAssociation'];
+  const [lone] = only(findings(digest([grant('One', one, [])])), 'E-3', 'action');
+  assert.equal(lone.status, 'CONFIRMED');
+});
+
+test('a truncated enumeration is not a doubt about a capability', () => {
+  // The action axis makes no enumeration, so there is no list to be short. Carrying the resource
+  // axis's truncation reservation onto it would be inventing doubt about a claim it never made.
+  const actions = ['iam:PassRole', 'lambda:CreateFunction', 'lambda:InvokeFunction'];
+  const cut = unit('lambda:function', actions, actions, { truncated: true });
+  const d = digest([grant('Wide', actions, [cut], { unscoped_actions: actions })],
+                   { passrole_grants: [{ name: 'Wide', services: [], resources: ['*'],
+                                         unconditioned: true }] });
+  const [reach] = only(findings(d), 'E-1');
+  const [capability] = only(findings(d), 'E-1', 'action');
+  assert.ok(reach.blockedBy.some((r) => r.includes('truncated')));
+  assert.ok(!capability.blockedBy.some((r) => r.includes('truncated')),
+            'a capability was marked doubtful because a resource list it never used was short');
 });

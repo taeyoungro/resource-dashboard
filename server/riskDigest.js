@@ -216,6 +216,10 @@ export function condense(assessment, {
     const asWritten = policy.actions_granted ?? [];
     const offerable = policy.actions_offerable ?? [];
     const nonRestrictable = policy.actions_non_restrictable ?? [];
+    // Absent on a baseline or unreadable policy, and absent on an assessment written before the
+    // querier produced it. Empty then, which reads as "nothing is known to be unscoped" - the
+    // conservative direction, since every use of it below only ever RAISES confidence.
+    const unscoped = new Set(policy.actions_unscoped ?? []);
 
     // Capability, independent of what exists. This is the half that a groups-only digest loses:
     // a create action reaches nothing in an empty account and appears in no unit.
@@ -340,6 +344,17 @@ export function condense(assessment, {
       // the access level the reference already publishes and this file already reads to decide what
       // is passive. Empty when the assessment carries no reference to read levels from.
       tag_writes: risk.filter((a) => levelOf(a, levels) === 'Tagging'),
+      // Granted on an unscoped Resource, so they reach every resource of their type - including the
+      // ones that do not exist yet. Carried because it is the only fact that can distinguish a
+      // grant over the whole account from a grant over two named ARNs when the account holds
+      // nothing to enumerate, and the action axis needs exactly that distinction: several actions
+      // all granted on '*' really are available on one resource together, and several actions each
+      // granted on its own ARN may not be.
+      //
+      // Filtered to the risk list for the same reason every other action field is - the digest is
+      // what an approval is bound to, and a full expansion of ec2:* here would be the wildcard
+      // written out again.
+      unscoped_actions: risk.filter((a) => unscoped.has(a)),
       non_restrictable: nonRestrictable,
       units,
     });

@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
 import type {
-  AssetGrade, Finding, FindingCategory, FindingStatus, Grade, Impact as ImpactAssessment,
-  Restriction, RiskAnalysisAnswer, RiskAnalysisCitation,
+  AssetGrade, Finding, FindingAxis, FindingCategory, FindingStatus, Grade,
+  Impact as ImpactAssessment, Restriction, RiskAnalysisAnswer, RiskAnalysisCitation,
 } from "../types";
 import { BlockPath } from "./BlockPath";
 import { alreadyRestricted } from "../../server/blockPath.js";
@@ -78,6 +78,41 @@ const GRADE_ORDER: Record<Grade, number> = {
 const STATUS_ORDER: Record<FindingStatus, number> = {
   CONFIRMED: 0, UNVERIFIED: 1, NOT_ASSESSABLE: 2,
 };
+/**
+ * The two areas, in the order they are read.
+ *
+ * 영향 자원 위험 first because it is the one an approver can act on immediately: it names ARNs, and
+ * a restriction is validated against exactly those names. Action 자체 위험 second because it is the
+ * one that outlives the plan - it holds for resources nobody has created yet, and on a new account
+ * it is the ONLY area with anything in it.
+ *
+ * They are never merged. The same rule can appear in both and the pair carries a badge saying so;
+ * collapsing them would mean choosing which sentence to lose, and on an account midway between
+ * empty and full both are true and neither implies the other.
+ */
+const AREAS: { axis: FindingAxis; label: string; why: string; empty: string }[] = [
+  {
+    axis: "resource",
+    label: "영향 자원 위험",
+    why: "이 부여가 지금 계정에 있는 자원에 실제로 닿는 것. 자원을 지목하므로 제한을 걸어 끊을 수 있고, "
+      + "제한이 대조되는 울타리도 이 목록이다",
+    empty: "지금 계정에 이 부여가 닿는 자원이 없습니다. 자원이 없는 계정이라면 당연한 결과이며, "
+      + "아래 Action 자체 위험이 이 부여에 대한 판정 전부입니다.",
+  },
+  {
+    axis: "action",
+    label: "Action 자체 위험",
+    why: "자원이 있든 없든 이 부여가 할 수 있게 하는 것. 인벤토리를 보지 않으므로 아직 만들어지지 "
+      + "않은 자원에도 그대로 성립하고, 다음 배포 뒤에도 남는다",
+    empty: "이 부여의 동작만으로 성립하는 경로가 없습니다.",
+  },
+];
+
+const AREA_LABEL: Record<FindingAxis, string> = {
+  resource: "영향 자원 위험",
+  action: "Action 자체 위험",
+};
+
 const SECTIONS: { category: FindingCategory; label: string; why: string }[] = [
   { category: "ESCALATION", label: "권한 상승",
     why: "다른 권한을 얻는 경로. 자원이 무엇이든 동작 조합만으로 성립한다" },
@@ -161,10 +196,12 @@ function AssetGradeBadge({ grade, evidence }: { grade: AssetGrade; evidence: Fin
 
 function Targets({ finding }: { finding: Finding }) {
   if (finding.targets.length === 0) {
+    // Only ever an action-axis card: a resource-axis finding that reaches nothing is dropped, since
+    // it says exactly what the action-axis one says under a heading promising ARNs.
     return (
       <div className="finding-row muted">
-        대상 없음 — 존재하는 자원에 닿는 경로가 아니라 <strong>부여된 능력</strong>입니다. 해당
-        유형의 자원이 아직 없어도 성립합니다.
+        지목한 자원 없음 — 이것은 <strong>부여 자체의 능력</strong>이고, 대상 유형의 자원이 생기는
+        즉시 그 자원에 적용됩니다. 특정 ARN을 지목하는 제한으로는 끊을 수 없습니다.
       </div>
     );
   }
@@ -280,7 +317,7 @@ function Containment({ finding }: { finding: Finding }) {
  * and the keyboard both work on it, and a card cannot get stuck open in a state nothing resets when
  * the plan changes.
  */
-function Card({ finding, block }: {
+function Card({ finding, block, showAxis = false }: {
   finding: Finding;
   /**
    * The path-cut control, when this finding can have one: the dialog opener and the actions of
@@ -288,6 +325,8 @@ function Card({ finding, block }: {
    * whose policy the assessment cannot restrict, or a decision already closed.
    */
   block: { open: () => void; applied: string[] } | null;
+  /** Name the area outright, for cards shown outside one - the 평가 불가 group spans both. */
+  showAxis?: boolean;
 }) {
   const model = finding.source === "model";
   return (
@@ -302,6 +341,22 @@ function Card({ finding, block }: {
           <span className={model ? "badge badge-svc" : "badge"}>
             {model ? "모델 판정" : "규칙"}
           </span>
+          {showAxis && <span className="badge">{AREA_LABEL[finding.axis]}</span>}
+          {/* 같은 규칙이 두 영역에 다 있다는 사실. 이것이 없으면 두 영역의 건수를 더한 값이 서로
+              다른 경로의 수로 읽히고, 승인자는 같은 규칙의 두 판정을 조정하려 든다 — 다른 것은
+              답이 아니라 질문이다. */}
+          {finding.alsoOnOtherAxis && (
+            <span
+              className="badge badge-twin"
+              title={
+                finding.axis === "action"
+                  ? "같은 규칙이 지금 있는 자원에도 닿습니다. 영향 자원 위험에서 그 자원을 봅니다."
+                  : "같은 규칙이 부여 자체의 능력으로도 성립합니다. 자원을 지목하는 제한만으로는 남습니다."
+              }
+            >
+              ↔ {AREA_LABEL[finding.axis === "action" ? "resource" : "action"]}에도 있음
+            </span>
+          )}
           {!finding.restrictable && (
             <span
               className="badge badge-danger"
@@ -412,7 +467,10 @@ function Card({ finding, block }: {
         </div>
       )}
 
-      {finding.truncated !== false && (
+      {/* 열거에 대한 경고이므로 열거를 한 카드에만 붙는다. Action 자체 위험은 자원 목록을 만들지
+          않으므로 짧을 목록 자체가 없고, 여기에 "미확인"을 띄우면 하지도 않은 주장에 대한 의심을
+          지어내는 것이 된다. */}
+      {finding.axis !== "action" && finding.truncated !== false && (
         <div className="finding-row warn-inline">
           {finding.truncated === true
             ? "자원 목록이 잘렸습니다 — 여기 보이는 것이 전부가 아닙니다."
@@ -791,22 +849,47 @@ export function RiskAnalysis({
             </div>
           )}
 
-          {SECTIONS.map(({ category, label, why }) => {
-            const items = assessable.filter((f) => f.category === category);
-            if (items.length === 0) return null;
+          {/* 두 영역. 합치지 않고 나란히 둔다 — 하나는 지금 있는 자원에 닿는 것이고 다른 하나는
+              자원이 생기면 성립하는 것이라, 같은 규칙이 양쪽에 나와도 두 문장은 다른 것을 말한다.
+              자원이 없는 계정에서는 아래쪽이 판정 전부이고, 그것이 이 분리의 이유다. */}
+          {assessable.length > 0 && AREAS.map(({ axis, label, why, empty }) => {
+            const mine = assessable.filter((f) => f.axis === axis);
+            const grades = (["CRITICAL", "HIGH", "MEDIUM", "LOW"] as Grade[])
+              .map((g) => ({ g, n: mine.filter((f) => f.escalationGrade === g).length }))
+              .filter(({ n }) => n > 0);
             return (
-              <div className="finding-section" key={category}>
-                <h4>
-                  {label} <span className="muted small">{items.length}건 — {why}</span>
+              <div className="finding-area" key={axis}>
+                <h4 className="area-head">
+                  {label}
+                  <span className="area-count">{mine.length}건</span>
+                  {grades.map(({ g, n }) => (
+                    <span className={GRADE_CLASS[g]} key={g}>{GRADE_LABEL[g]} {n}</span>
+                  ))}
                 </h4>
-                {items.map((f) => (
-                  <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
-                        block={blockProps(f)} />
-                ))}
+                <p className="muted small area-why">{why}</p>
+                {mine.length === 0 ? (
+                  <div className="empty">{empty}</div>
+                ) : SECTIONS.map(({ category, label: section, why: reason }) => {
+                  const items = mine.filter((f) => f.category === category);
+                  if (items.length === 0) return null;
+                  return (
+                    <div className="finding-section" key={category}>
+                      <h5>
+                        {section} <span className="muted small">{items.length}건 — {reason}</span>
+                      </h5>
+                      {items.map((f) => (
+                        <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
+                              block={blockProps(f)} />
+                      ))}
+                    </div>
+                  );
+                })}
               </div>
             );
           })}
 
+          {/* 두 영역에 걸친다. 근거가 판정을 확정하지 못했다는 것은 어느 질문을 물었는지와 무관한
+              사실이므로 영역 안에 나누어 넣지 않고, 카드마다 어느 영역의 것인지 붙인다. */}
           {unassessable.length > 0 && (
             <div className="finding-section">
               <h4>
@@ -816,7 +899,7 @@ export function RiskAnalysis({
               </h4>
               {unassessable.map((f) => (
                 <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
-                      block={blockProps(f)} />
+                      block={blockProps(f)} showAxis />
               ))}
             </div>
           )}

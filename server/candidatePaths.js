@@ -372,14 +372,19 @@ export function candidates(digest) {
       if (edge.needs && !edge.needs.every((cap) => policyCaps.has(cap))) continue;
       const hit = (edge.targetlessCaps ?? edge.any ?? []).filter((cap) => policyCaps.has(cap));
       if (hit.length === 0) continue;
-      // Only when no unit already carried it, so the same path is not proposed twice.
-      const already = out.some((c) => c.edge === edge.id && c.policy_id === grant.p);
-      if (already) continue;
+      // Proposed whether or not a unit already carried this edge.
+      //
+      // It used to be suppressed when one had, which made the capability visible only on an account
+      // with nothing in it - so the moment a single resource of the type appeared, "this grant can
+      // open a way into the network whatever gets created" stopped being asked and only "it reaches
+      // these two subnets" remained. Those are different claims with different lifetimes: the
+      // second is answered by a restriction naming ARNs, the first survives the next deployment.
+      // The pair is marked rather than collapsed - see the axis split in findings.js.
       push({
         edge: edge.id,
         outcome: edge.outcome,
-        why: `${edge.why} - and no resource of the relevant type exists yet, so this is a capability `
-          + 'of the grant rather than a reach over the current inventory',
+        why: `${edge.why} - asked here as a capability of the grant rather than as a reach over the `
+          + 'current inventory, so it holds for resources that do not exist yet',
         policy: grant.name,
         policy_id: grant.p,
         target: null,

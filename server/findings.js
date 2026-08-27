@@ -27,9 +27,48 @@
 // grade or a narrative because neither is computed from the input at all. Grades come from the rule
 // and from control-plane classification, which is a match against configured values; narratives are
 // copied. The tests assert it by renaming every resource in an input and diffing the findings.
+//
+// Two axes, and every rule is asked both questions
+// ------------------------------------------------
+// A grant carries two different risks and they were being reported as one:
+//
+//   영향 자원 위험   what this grant reaches in the account AS IT IS. Needs the inventory, names
+//                    ARNs, and is empty when the account is
+//   Action 자체 위험  what this grant LETS SOMEBODY DO. Needs nothing but the action list, names no
+//                    resource, and is as true on day one as it is on day four hundred
+//
+// Only the first existed. Every rule but E-1 and R-1 is evaluated over units, a unit is a group of
+// resources that were FOUND, and an account with nothing in it has no units - so ten of thirteen
+// rules could not fire at all, and the risk readout for a new account was three rules and a blank
+// page. That is the account a preventive control is written for, and it was the one the analysis
+// had least to say about.
+//
+// So each rule is evaluated on both axes and the findings carry which one they came from. The two
+// are not merged and not deduplicated: on an account that HAS instances, E-3 appears in both, once
+// naming the two instances it reaches today and once saying the grant replaces the execution
+// context of whatever comes to exist. Those are different sentences and an approver needs both -
+// the first is what a restriction can be validated against, the second is what survives the next
+// deployment. Each carries a badge pointing at its twin so the pair does not read as two findings.
+//
+// What the action axis may NOT do is inherit the resource axis's claims. It attaches no ARNs, and
+// where a rule needs several actions to land on ONE resource it says so unless the grant is
+// unscoped - see resolveStatus. An action axis that quietly asserted co-location would be the same
+// class of error as the union-of-statements one the unit scope exists to prevent, arriving through
+// the other door.
 
 import { RULES, SECTION_ORDER, SORT } from './rules.js';
 import { ROLES } from './controlPlane.js';
+
+/** The two questions. A finding answers exactly one of them and says which. */
+export const AXIS = { RESOURCE: 'resource', ACTION: 'action' };
+
+/**
+ * Scopes that already read the POLICY rather than the inventory.
+ *
+ * A rule evaluated on one of these was never asking about resources, so it needs no translation to
+ * be asked on the action axis - it asks the same question there, over the same list.
+ */
+const POLICY_SCOPES = new Set(['policyActionUnion', 'policyNonRestrictable']);
 
 const GRADE_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4 };
 const STATUS_ORDER = { CONFIRMED: 0, UNVERIFIED: 1, NOT_ASSESSABLE: 2 };
@@ -105,19 +144,26 @@ export function unitActions(grant, unit) {
  * resource. A single-action hit does not need co-location, but it does need the actions to have
  * been attributed to these resources at all - which attribution='service' says they were not.
  */
-function scopeUnits(rule, grant) {
-  // A resourceActionSet rule with a fallback, used ONLY when the grant enumerated nothing.
+function scopeUnits(rule, grant, axis) {
+  // The action axis reads the grant's own list and attaches nothing.
   //
-  // The reason it is a fallback and not a scope swap: on an account that HAS resources, the unit
-  // pass is what makes the target list precise - E-2 fires on the lambda unit and names the lambda
-  // functions. Evaluating it at policy scope there would attach every unit the grant touches,
-  // including resources of other services, which is a wider answer to a narrower question. But
-  // with nothing enumerated the unit pass produces no scopes at all, and the rule goes silent in
-  // exactly the account where the capability it names is least examined - a new one, where
-  // "this grant can open an unauthenticated invoke path to whatever gets created" is the whole
-  // finding. So: precise where precision is possible, capability-only where it is not.
-  if (rule.whenNoUnits && (grant.units ?? []).length === 0) {
-    return scopeUnits({ ...rule, evaluatedOn: rule.whenNoUnits, whenNoUnits: null }, grant);
+  // This replaced a per-rule `whenNoUnits` fallback that did the same swap for one rule (E-2) and
+  // only when the grant enumerated nothing. Two reasons it is an axis now rather than a fallback:
+  // it applies to every rule instead of the one whose author remembered to ask for it, and it is
+  // not conditional on the account being empty - the capability is worth stating on a full account
+  // too, which is the whole point of the second area.
+  if (axis === AXIS.ACTION) {
+    const scope = POLICY_SCOPES.has(rule.evaluatedOn) ? rule.evaluatedOn : 'policyActionUnion';
+    return scopeUnits({ ...rule, evaluatedOn: scope }, grant, AXIS.RESOURCE).map((unit) => ({
+      ...unit,
+      // No ARNs, ever. A capability statement that carried a resource list would be answering the
+      // other question, and the list would be the one thing about it that goes stale.
+      units: [],
+      // Resolved per HIT, not here: a single-action hit needs no co-location and a three-action one
+      // does. evaluateGrant sets it once it knows how many actions fired. See resolveStatus.
+      colocated: true,
+      attributed: true,
+    }));
   }
   switch (rule.evaluatedOn) {
     case 'resourceActionSet':
@@ -176,7 +222,7 @@ function boundResolvable(requires, digest) {
 }
 
 /** Reasons this finding is not CONFIRMED, and the status they imply. */
-function resolveStatus(rule, grant, digest, unit, truncated) {
+function resolveStatus(rule, grant, digest, unit, truncated, axis) {
   const blockedBy = [];
   let status = 'CONFIRMED';
 
@@ -192,13 +238,25 @@ function resolveStatus(rule, grant, digest, unit, truncated) {
       + 'so every resource of the service was attached and the target list may be wrong');
   }
   if (!unit.colocated) {
-    down('UNVERIFIED', 'the statement named resources, and the assessment unions the actions of '
-      + 'every statement into one group per resource type - these actions may be held on '
-      + 'different resources');
+    down('UNVERIFIED', axis === AXIS.ACTION
+      // The action axis's own version of the same doubt, and it has a different cause. Nothing was
+      // unioned here - the list is the grant's. What is unproven is that the actions meet on one
+      // resource, and the thing that would prove it is an unscoped Resource: actions granted on '*'
+      // are all available on every resource of their type, including the ones not created yet.
+      // Actions each granted on their own ARN may never meet.
+      ? 'this needs several actions to apply to the same resource, and at least one of them was '
+        + 'granted on named ARNs rather than on every resource of its type - so the grant may hold '
+        + 'them on different resources and this combination may not exist'
+      : 'the statement named resources, and the assessment unions the actions of '
+        + 'every statement into one group per resource type - these actions may be held on '
+        + 'different resources');
   }
 
   if (rule.upperBound) {
-    if (truncated === true) {
+    // Truncation is a property of an enumeration, and the action axis performed none - it attaches
+    // no resource list, so there is no list to be short. Reporting it here would be inventing a
+    // doubt about a claim this finding never made.
+    if (axis !== AXIS.ACTION && truncated === true) {
       down(rule.upperBound.onTruncatedResourceList, 'the resource list is truncated, so the reach '
         + 'of this finding cannot be bounded');
     }
@@ -268,22 +326,40 @@ function truncationOf(units) {
  */
 export function evaluateGrant(grant, digest, rules = RULES) {
   const out = [];
+  const unscoped = new Set(grant.unscoped_actions ?? []);
 
   for (const rule of rules) {
+   for (const axis of axesFor(rule)) {
     try {
-      for (const unit of scopeUnits(rule, grant)) {
-        const available = new Set(unit.actions);
+      for (const scope of scopeUnits(rule, grant, axis)) {
+        const available = new Set(scope.actions);
         const hits = match(rule.predicate, available);
         if (!hits) continue;
+
+        // Co-location, decided per hit and only on the action axis. One action needs no
+        // co-location at all; several need the grant to put them on the same resource, and the
+        // only thing in the digest that establishes that without an inventory is an unscoped
+        // Resource. E-3's anyOf reaches here both ways - a lone
+        // ec2:ReplaceIamInstanceProfileAssociation is sound, the Stop/Modify/Start triple is not
+        // unless all three are granted on '*'.
+        const unit = axis === AXIS.ACTION
+          ? { ...scope, colocated: hits.length < 2 || hits.every((a) => unscoped.has(a)) }
+          : scope;
 
         const contributing = unit.units.filter((u) =>
           unitActions(grant, u).some((a) => hits.includes(a)));
         const targets = contributing.length ? contributing : unit.units;
+        // A resource-axis finding that reaches nothing is not a resource finding. It says exactly
+        // what the action-axis one says - the predicate fired over a list of actions - and the
+        // action axis always fires where this did, because its list is a superset of any unit's.
+        // Keeping it would print the same sentence twice under a heading promising ARNs.
+        if (axis === AXIS.RESOURCE && targets.length === 0) continue;
         const truncated = truncationOf(targets);
-        const { status, blockedBy } = resolveStatus(rule, grant, digest, unit, truncated);
+        const { status, blockedBy } = resolveStatus(rule, grant, digest, unit, truncated, axis);
 
         out.push({
           id: rule.id,
+          axis,
           category: rule.category,
           title: rule.title,
           escalationGrade: rule.escalationGrade,
@@ -317,6 +393,7 @@ export function evaluateGrant(grant, digest, rules = RULES) {
     } catch (error) {
       out.push({
         id: rule.id,
+        axis,
         category: rule.category,
         title: rule.title,
         escalationGrade: rule.escalationGrade,
@@ -336,9 +413,23 @@ export function evaluateGrant(grant, digest, rules = RULES) {
         omittedCount: null,
       });
     }
+   }
   }
 
   return out;
+}
+
+/**
+ * Which axes a rule can answer for.
+ *
+ * policyNonRestrictable is the one that answers only one. It reads the actions a restriction may
+ * never take away and attaches no units at all - R-1's card has said "대상 없음 — 부여된 능력입니다"
+ * since it existed, which is the action axis in words. Filing it under the resource area was
+ * describing a capability as a reach.
+ */
+function axesFor(rule) {
+  if (rule.evaluatedOn === 'policyNonRestrictable') return [AXIS.ACTION];
+  return [AXIS.RESOURCE, AXIS.ACTION];
 }
 
 /**
@@ -355,7 +446,26 @@ export function findings(digest, rules = RULES) {
       out.push({ ...finding, isBaseline: grant.is_baseline === true });
     }
   }
-  return sortFindings(out);
+  return sortFindings(withTwins(out));
+}
+
+/**
+ * Mark the findings that appear on both axes.
+ *
+ * The pair is one rule firing on one policy, seen twice - once as what it reaches now and once as
+ * what it lets somebody do. Both areas show it deliberately, and without the mark the two areas
+ * would read as two independent findings: the counts would double and an approver comparing them
+ * would be trying to reconcile a difference that is only the question, not the answer.
+ */
+function withTwins(list) {
+  const key = (f) => `${f.id} ${f.policyId}`;
+  const byAxis = new Map();
+  for (const finding of list) byAxis.set(`${finding.axis} ${key(finding)}`, true);
+  return list.map((finding) => ({
+    ...finding,
+    alsoOnOtherAxis: byAxis.has(
+      `${finding.axis === AXIS.ACTION ? AXIS.RESOURCE : AXIS.ACTION} ${key(finding)}`) ,
+  }));
 }
 
 /** escalationGrade desc, then status, then id. assetImpactGrade is never a key (T-7). */

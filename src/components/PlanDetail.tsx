@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
-  AssessmentState, Impact as Assessment, PlanDetail as Detail, Restriction, RestrictionTemplate,
-  RiskAnalysisCitation,
+  AssessmentState, Impact as Assessment, PlanDetail as Detail, PlanRefusal, Restriction,
+  RestrictionTemplate, RiskAnalysisCitation,
 } from "../types";
 import { mergeTemplate, seedFromTemplate } from "../../server/templates.js";
 import { Impact } from "./Impact";
@@ -80,6 +80,18 @@ export function PlanDetail({
           계획 시각: {detail.planned_at ? clock(detail.planned_at) : "—"}
         </span>
       </div>
+
+      {/* First on the page and above everything, because it outranks everything: it says the last
+          thing that happened to this resource was a refusal, and until it existed that sentence
+          lived only in the container's log. */}
+      {detail.refusal && <RefusalNotice refusal={detail.refusal} planStored={detail.plan_stored} />}
+
+      {/* Nothing below this line applies to a resource that has never been planned. The assessment
+          notice, the empty change table, the plan pane and the decision form would each describe an
+          absent plan as if it were an unremarkable one - and the decision form would offer buttons
+          the server refuses. The reason above is the whole page. */}
+      {!detail.plan_stored && detail.refusal ? null : (
+      <>
 
       {/* The assessment, or what is happening instead of one.
           Approval is never blocked on this: a plan can be approved with no assessment at all, and
@@ -250,6 +262,61 @@ export function PlanDetail({
           않습니다.
         </div>
       </div>
+
+      </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Why the last inspection produced no plan.
+ *
+ * The observed silence this ends: a spec role carrying twelve managed policies was refused because
+ * a permission set may hold ten. The run had genuinely completed, so its marker was deleted, so the
+ * request left no row, no failure and no plan - the reason existed in the container's log and
+ * nowhere the administrator who made the edit would ever look. Their side of it was that they
+ * changed something and nothing happened.
+ *
+ * The reason is printed verbatim and never summarised into a category. "12 managed policies
+ * including the baseline, and the limit is 10" tells somebody to remove two; a category would tell
+ * them to go and read the log, which is where this started.
+ *
+ * Two shapes, because they ask for different things:
+ *
+ *   no plan stored     the first inspection of this resource refused. There is nothing to decide
+ *                      and nothing else on the page
+ *   plan stored        a plan is here and this refusal is NEWER than it. The plan is real and
+ *                      approvable and describes an EARLIER version of the resource, which is the
+ *                      part nothing said before
+ */
+function RefusalNotice({ refusal, planStored }: { refusal: PlanRefusal; planStored: boolean }) {
+  return (
+    <div className="refusal">
+      <strong>
+        {planStored
+          ? "마지막 검사가 거부되어 이 계획은 최신이 아닙니다."
+          : "이 자원의 검사가 거부되어 계획이 만들어지지 않았습니다."}
+      </strong>
+      {/* The sentence the container wrote, unchanged. */}
+      <pre className="plan">{refusal.reason}</pre>
+      <div className="meta small">
+        <span>거부 시각: {refusal.refused_at ? clock(refusal.refused_at) : "—"}</span>
+        <span>요청: {refusal.request_id ?? "—"}</span>
+        {refusal.kind && <span>유형: {refusal.kind}</span>}
+      </div>
+      {planStored ? (
+        <p>
+          아래 계획은 그 이전 검사가 만든 것이고 지금의 자원을 설명하지 않습니다. 그대로 승인할 수는
+          있으나, 승인하면 거부된 검사 이전의 spec이 적용됩니다. 위 사유가 가리키는 것을 고치고 자원을
+          다시 변경하면 검사가 다시 돌아가고, 그때 만들어지는 계획이 이 계획을 덮습니다.
+        </p>
+      ) : (
+        <p>
+          결정할 것이 없습니다 — 승인하거나 거부할 계획 자체가 없습니다. 위 사유가 가리키는 것을
+          고치고 자원을 다시 변경하십시오. 다음 검사가 계획을 만들면 이 자리에 나타납니다.
+        </p>
+      )}
     </div>
   );
 }

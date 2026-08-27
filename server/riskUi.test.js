@@ -1076,3 +1076,67 @@ test('a template is a pre-filled form and enters through the decision path', () 
   assert.match(templates, /condition_operator: row\.condition_operator \?\? 'StringNotEquals'/,
                'a template defaults to the open form');
 });
+
+test('the two risk areas are separate, and the action one claims no resources', () => {
+  // The gap: eleven of thirteen rules are evaluated over UNITS, a unit is a group of resources that
+  // were found, and a new account has none - so the risk page for the account a preventive control
+  // is written for was three rules and a blank space. Both areas are shown always, because on an
+  // account midway between empty and full both are true and neither implies the other.
+  const ui = readFileSync(new URL('../src/components/RiskAnalysis.tsx', import.meta.url), 'utf8');
+  assert.ok(ui.includes('영향 자원 위험') && ui.includes('Action 자체 위험'),
+            'the analysis is still one merged list');
+  assert.match(ui, /assessable\.filter\(\(f\) => f\.axis === axis\)/,
+               'the areas are headings over one list rather than a split');
+  // The cross-reference, or the two areas read as two independent findings and the counts double.
+  assert.match(ui, /finding\.alsoOnOtherAxis && \(/, 'a rule in both areas is not marked as one');
+  // An enumeration warning belongs to a card that made an enumeration.
+  assert.match(ui, /finding\.axis !== "action" && finding\.truncated !== false/,
+               'a capability is marked doubtful over a resource list it never had');
+
+  const engine = readFileSync(new URL('./findings.js', import.meta.url), 'utf8');
+  // The action axis attaches nothing, and that is structural rather than a convention the renderer
+  // keeps: a capability carrying ARNs would be answering the other question with a list that goes
+  // stale.
+  assert.match(engine, /units: \[\],/, 'the action axis can carry a resource list');
+  assert.match(engine, /hits\.length < 2 \|\| hits\.every\(\(a\) => unscoped\.has\(a\)\)/,
+               'the action axis asserts co-location it cannot show - the same false positive the '
+               + 'unit scope exists to prevent, through the other door');
+  // A resource-axis finding that reaches nothing is the action-axis one wearing the wrong heading.
+  assert.match(engine, /axis === AXIS\.RESOURCE && targets\.length === 0\) continue/);
+
+  // And the fact that settles co-location is a property of the DOCUMENT, so it survives an account
+  // with nothing to enumerate. That is the whole reason it is carried separately from unit.scope.
+  const digest = readFileSync(new URL('./riskDigest.js', import.meta.url), 'utf8');
+  assert.match(digest, /unscoped_actions: risk\.filter\(\(a\) => unscoped\.has\(a\)\)/);
+  const paths = readFileSync(new URL('./candidatePaths.js', import.meta.url), 'utf8');
+  assert.ok(!/const already = out\.some/.test(paths),
+            'the capability candidate is suppressed as soon as one resource of the type exists');
+});
+
+test('a refused inspection is read on the panel, ahead of the plan it explains', () => {
+  // The silence: a refusal is a COMPLETED run, so its marker is deleted, so the request left no
+  // row - the reason reached CloudWatch and nobody. Twelve managed policies against a limit of ten
+  // produced no plan, no failure and no row, and the administrator's side of it was that they
+  // changed something and nothing happened.
+  assert.ok(PLAN.includes('<RefusalNotice'), 'the panel never shows why an inspection refused');
+  // Ahead of the gate, or a resource that has NEVER been planned renders an empty page: the one
+  // case where the reason is the only thing there is to show.
+  const notice = PLAN.indexOf('<RefusalNotice');
+  const gate = PLAN.indexOf('{!detail.plan_stored && detail.refusal ? null : (');
+  assert.ok(notice > 0 && gate > notice,
+            'the refusal is inside the block that is hidden when there is no plan');
+  // The sentence, not a category. What makes it actionable is "12 ... and the limit is 10" saying
+  // remove two; a code would send somebody back to the log this exists to replace.
+  assert.match(PLAN, /<pre className="plan">\{refusal\.reason\}<\/pre>/,
+               'the reason is summarised rather than printed as it was written');
+  // And the two shapes are distinguished, because they ask for different things.
+  assert.ok(PLAN.includes('마지막 검사가 거부되어 이 계획은 최신이 아닙니다'),
+            'a plan older than the last refusal is not said to be older');
+  assert.ok(PLAN.includes('결정할 것이 없습니다'),
+            'a resource with no plan is offered a decision anyway');
+  // The detail reads the prefix rather than taking the sweep's copy: the sweep runs on an interval
+  // and this page is opened seconds after the edit that was refused.
+  const sweep = readFileSync(new URL('./sweep.js', import.meta.url), 'utf8');
+  assert.match(sweep, /plan_stored: Boolean\(planObject\)/,
+               'the panel cannot tell "never planned" from "read failed"');
+});
