@@ -667,3 +667,36 @@ test('sharing a disk copy out of the account is its own rule, linked to making o
   assert.deepEqual(at('X-6').relatedFired, ['X-5']);
   assert.deepEqual(at('X-5').relatedFired, ['X-6'], 'the link is one-directional');
 });
+
+test('replacing the root volume succeeds to the role without stopping anything', () => {
+  // ec2:CreateReplaceRootVolumeTask. The instance keeps its id, addresses, interfaces, role and
+  // elastic IP while the whole operating system is swapped, so it is E-3's own narrative reached by
+  // one call - not the Stop/Modify/Start triple, and not a lambda code push.
+  //
+  // Verified against the current request model rather than taken on trust: it accepts VolumeId,
+  // documented as "the ID of the volume to use as the replacement root volume", constrained only to
+  // the same availability zone, the available state, and matching encryption. The catalogue that
+  // named this path asserted arbitrary volume injection was impossible; AWS widened the API since.
+  const action = 'ec2:CreateReplaceRootVolumeTask';
+  const [found] = only(findings(digest([grant('AmazonEC2FullAccess', [action], [])])),
+                       'E-3', 'action');
+  assert.ok(found, 'root volume replacement fires no escalation rule');
+  assert.equal(found.escalationGrade, 'HIGH');
+  assert.deepEqual(found.triggerActions, [action]);
+  // A single-action branch, so no co-location doubt is imposed on it.
+  assert.equal(found.status, 'CONFIRMED');
+});
+
+test('severing a shared network path is graded above deleting one resource', () => {
+  // Removing a gateway, an attachment or a route table cuts everything behind it. The rule named
+  // only DeleteVpc and DeleteSubnet, at LOW, so an approver reading it was told the widest
+  // availability action in the service was the mildest kind of finding.
+  const severing = ['ec2:DetachInternetGateway', 'ec2:DeleteNatGateway',
+                    'ec2:DeleteTransitGatewayVpcAttachment'];
+  const [found] = only(findings(digest([grant('AmazonEC2FullAccess', severing, [])])),
+                       'D-4', 'action');
+  assert.ok(found, 'cutting a shared path fires nothing');
+  assert.equal(found.escalationGrade, 'MEDIUM');
+  assert.deepEqual(found.triggerActions.sort(), severing.slice().sort(),
+                   'the trigger list is short, so the block dialog will not offer them all');
+});
