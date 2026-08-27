@@ -62,6 +62,19 @@ interface Props {
   restrictDisabled: boolean;
 }
 
+/** What one scope's analysis needs on top of the shared props. */
+interface ScopeProps extends Props {
+  /**
+   * The attached policy this area is about, or null for the whole plan.
+   *
+   * Nothing in either half is computed across policies - every finding and every candidate belongs
+   * to exactly one grant - so a scoped run is a filter rather than a different analysis. What it
+   * saves is the model half: five attached policies is five policies' worth of candidates, and an
+   * approver who only wants to know about AmazonEC2FullAccess should not pay for the other four.
+   */
+  policy: string | null;
+}
+
 /**
  * Which half or halves of the analysis are on screen right now.
  *
@@ -120,11 +133,17 @@ const SECTIONS: { category: FindingCategory; label: string; why: string }[] = [
     why: "다른 권한을 얻는 경로. 자원이 무엇이든 동작 조합만으로 성립한다" },
   { category: "EXPOSURE", label: "노출",
     why: "내용이 밖으로 나가거나 외부에서 닿을 수 있게 되는 경로" },
+  { category: "EVASION", label: "통제 무력화",
+    why: "거부를 담당하던 설정이나 무슨 일이 있었는지 남기는 기록을 끄는 경로. 그 자체로는 아무것도 "
+      + "얻지 않고, 다른 경로가 성립하거나 드러나지 않게 만든다" },
   { category: "RECON", label: "정찰",
     why: "무엇이 있는지 읽을 수 있는 경로. 그 자체로 접근을 주지는 않으며, 일부는 선언 경로에 "
       + "있어 정책 축소로 막을 수 없다 — 어느 쪽인지는 카드의 차단 불가 표시가 말한다" },
   { category: "DESTRUCTIVE", label: "파괴",
     why: "있는 것을 지우거나 멈출 수 있는 경로" },
+  { category: "COST", label: "비용",
+    why: "청구액을 늘릴 수 있는 경로. 침해가 아니므로 마지막에 두고, 등급도 침해와 같은 자리에 "
+      + "놓지 않는다 — 상한은 이 정책이 아니라 서비스 할당량이 정한다" },
 ];
 
 const GRADE_LABEL: Record<Grade, string> = {
@@ -621,9 +640,17 @@ function Summary({ answer, findings, view }: {
 /** How often the page asks how the model half is going. */
 const POLL_MS = 3000;
 
-export function RiskAnalysis({
-  planId, ready, onAnalysis, assessment, restrictions, onRestrictions, restrictDisabled,
-}: Props) {
+/**
+ * One scope's analysis: its two buttons, its own run, and its own findings.
+ *
+ * The whole component was already scoped to a plan and did everything a scope needs, so making it
+ * take a policy was a smaller change than growing a second copy of the polling, the citation and
+ * the block dialog. The exported RiskAnalysis below renders one of these per attached policy plus
+ * one for the plan as a whole.
+ */
+function RiskScope({
+  planId, policy, onAnalysis, assessment, restrictions, onRestrictions, restrictDisabled,
+}: ScopeProps) {
   const [answer, setAnswer] = useState<RiskAnalysisAnswer | null>(null);
   // Independent toggles, one per button, and never unset by the other - "both pressed" is a state
   // this pair can BE, not an action a click on either one takes. See the View type above.
@@ -656,7 +683,7 @@ export function RiskAnalysis({
     setBusyAi(false);
     setBlocking(null);
     return stopPolling;
-  }, [planId]);
+  }, [planId, policy]);
 
   /**
    * The citation the decision will carry.
@@ -688,7 +715,7 @@ export function RiskAnalysis({
     polling.current.timer = window.setTimeout(async () => {
       if (polling.current.stopped) return;
       try {
-        const next = await api.analysisRun(planId);
+        const next = await api.analysisRun(planId, policy);
         if (polling.current.stopped) return;
         if (next.run?.state === "running") {
           // Only the progress moved. Merged rather than replaced so the rule findings the POST
@@ -740,7 +767,7 @@ export function RiskAnalysis({
       setWantAi(true);
       setBusyAi(true);
       try {
-        const next = await api.analyse(planId, "ai");
+        const next = await api.analyse(planId, "ai", policy);
         if (polling.current.stopped) return;
         // The rules are finished before this returns, so they go up now rather than after the
         // model. On a real assessment that is the difference between reading twelve findings
@@ -765,7 +792,7 @@ export function RiskAnalysis({
     setWantRules(true);
     setBusyRules(true);
     try {
-      const next = await api.analyse(planId, "rules");
+      const next = await api.analyse(planId, "rules", policy);
       setAnswer((prev) => (prev
         ? { ...next, analysis: prev.analysis, analysis_error: prev.analysis_error, run: prev.run }
         : next));
@@ -775,14 +802,6 @@ export function RiskAnalysis({
       setError((e as Error).message);
     }
   };
-
-  if (!ready) {
-    return (
-      <div className="notice">
-        위험 분석은 영향도 평가를 입력으로 씁니다. 평가가 없으면 분석할 것이 없습니다.
-      </div>
-    );
-  }
 
   // Which half or halves are on screen. "both" is deliberately not distinguished below from what
   // the single old button rendered - see the module comment above the exported component.
@@ -835,20 +854,26 @@ export function RiskAnalysis({
     containmentState(finding, restrictions, assessment?.protected_actions ?? []);
 
   return (
-    <section className="impact">
-      <h3>위험 및 공격 경로</h3>
-      <div className="row">
+    <div className={policy ? "scope scope-policy" : "scope scope-all"}>
+      <div className="row scope-head">
         <button onClick={() => run("rules")} disabled={busyRules}>
           {busyRules ? "분석 중…" : wantRules ? "정책 기반 분석 다시 실행" : "정책 기반 분석"}
         </button>
         <button onClick={() => run("ai")} disabled={busyAi}>
           {busyAi ? "분석 중…" : wantAi ? "AI 분석 다시 실행" : "AI 분석"}
         </button>
-        <span className="muted small">
-          정책 기반 분석은 결정론이고 비용 없이 언제나 같은 답을 냅니다. AI 분석은 정책 기반 분석이
-          제안한 후보 경로만 판정하며, 경로를 새로 만들지 않고 호출마다 비용이 듭니다. 둘 다 실행하면
-          한 화면에 합쳐서 보여줍니다.
-        </span>
+        {policy ? (
+          <span className="muted small">
+            이 권한 하나만 판정합니다. AI 분석은 이 권한의 후보만 모델에 묻으므로, 전체를 돌리는 것보다
+            싸고 다른 권한에 대해서는 아무 말도 하지 않습니다.
+          </span>
+        ) : (
+          <span className="muted small">
+            정책 기반 분석은 결정론이고 비용 없이 언제나 같은 답을 냅니다. AI 분석은 정책 기반 분석이
+            제안한 후보 경로만 판정하며, 경로를 새로 만들지 않고 호출마다 비용이 듭니다. 둘 다 실행하면
+            한 화면에 합쳐서 보여줍니다.
+          </span>
+        )}
       </div>
 
       {error && <div className="error">{error}</div>}
@@ -1076,6 +1101,72 @@ export function RiskAnalysis({
           onChange={onRestrictions}
           onClose={() => setBlocking(null)}
         />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The analysis, whole and per attached policy.
+ *
+ * One area per policy with its own two buttons, because the two halves cost very different things
+ * and an approver's question is usually about one policy. Nothing in either half is computed across
+ * policies - every finding and every candidate belongs to exactly one grant - so a per-policy run is
+ * the same analysis with a filter, and it loses nothing.
+ *
+ * The whole-plan area stays first and is the only one that produces a CITATION. A decision records
+ * "taken while reading analysis X", and X has to describe the thing being decided; a per-policy run
+ * describes one fifth of it. Those areas are for reading, and the record stays honest by not
+ * pretending otherwise.
+ */
+export function RiskAnalysis(props: Props) {
+  const { assessment, ready } = props;
+
+  if (!ready) {
+    return (
+      <div className="notice">
+        위험 분석은 영향도 평가를 입력으로 씁니다. 평가가 없으면 분석할 것이 없습니다.
+      </div>
+    );
+  }
+
+  // The roster, from the assessment rather than from a call: the page already holds it, and the
+  // areas have to be drawable before anything has been run. The baseline is included - it is the
+  // widest policy in the account and the one nobody looks at - and marked.
+  const attached = assessment?.policies ?? [];
+
+  return (
+    <section className="impact">
+      <h3>위험 및 공격 경로</h3>
+      <RiskScope {...props} policy={null} />
+
+      {attached.length > 0 && (
+        <div className="scopes">
+          <h4>권한별 분석</h4>
+          <p className="muted small">
+            부여된 권한 {attached.length}개. 하나만 따로 판정할 수 있고, 그 결과는 위 전체 판정과
+            같은 규칙·같은 후보에서 나옵니다 — 범위만 다릅니다. 결정에 인용되는 것은 전체 판정뿐입니다.
+          </p>
+          {attached.map((p) => (
+            <details className="scope-policy-block" key={p.identifier}>
+              <summary>
+                <code>{policyName(p.identifier)}</code>
+                {p.is_baseline && (
+                  <span className="badge" title="요청 이전에 이미 붙어 있던 정책입니다.">기준선</span>
+                )}
+                {!p.restrictable && (
+                  <span className="badge badge-danger" title="이 정책에는 제한을 걸 수 없습니다.">
+                    제한 불가
+                  </span>
+                )}
+                {p.unreadable && (
+                  <span className="badge badge-warn" title={p.unreadable}>본문 못 읽음</span>
+                )}
+              </summary>
+              <RiskScope {...props} policy={p.identifier} onAnalysis={() => {}} />
+            </details>
+          ))}
+        </div>
       )}
     </section>
   );

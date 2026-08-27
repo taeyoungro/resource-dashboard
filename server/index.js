@@ -173,7 +173,9 @@ async function main() {
         ? config.maxImpactBytes
         : (INGEST_ROUTES.has(spec) ? config.maxAnnouncementBytes : undefined);
       const body = req.method === 'POST' ? await readBody(req, limit) : {};
-      json(res, 200, await route.handler({ params: route.params, body }));
+      // The query string, for the routes that scope a GET. A poll for one policy's analysis has to
+      // say which policy, and it is a GET - there is no body to put it in.
+      json(res, 200, await route.handler({ params: route.params, body, query: url.searchParams }));
     } catch (err) {
       // An HttpError is a condition this code decided on - a bad request id, a plan that is not
       // there, a sweep that has not finished yet. It gets one line. A stack trace is for

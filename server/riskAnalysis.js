@@ -121,6 +121,15 @@ const CEILING = {
   // NETWORK_EXPOSURE because it defeats a boundary somebody chose without touching anything the
   // boundary is made of, which is what makes it hard to notice.
   [OUTCOME.CONTROL_REBIND]: 'HIGH',
+  // It reaches nothing by itself, so it cannot be CRITICAL - what it does is remove the reason
+  // another path would have failed, and that other path carries its own ceiling.
+  [OUTCOME.GUARDRAIL_OFF]: 'HIGH',
+  // In-transit data, taken without touching the workload it belongs to. The same ceiling as
+  // data-at-rest egress: what is on the wire is not obviously less than what is on the disk.
+  [OUTCOME.TRAFFIC_INTERCEPT]: 'HIGH',
+  // A bill is real and is not a compromise. Capped low deliberately: an approver who sees cost
+  // graded beside credential theft stops reading grades.
+  [OUTCOME.COST_AMPLIFY]: 'MEDIUM',
 };
 
 const GRADE_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4 };

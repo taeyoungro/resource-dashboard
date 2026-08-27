@@ -81,19 +81,38 @@ export const api = {
    *            explicitly rather than left as the default so a reader of a network trace can tell
    *            which button asked, and so the default staying permissive is not load-bearing.
    */
-  analyse: async (planId: string, engine: "rules" | "ai" = "ai"): Promise<RiskAnalysisAnswer> =>
+  analyse: async (
+    planId: string,
+    engine: "rules" | "ai" = "ai",
+    /**
+     * One attached policy, or null for the whole plan.
+     *
+     * Nothing in either half is computed across policies - every finding and every candidate
+     * belongs to exactly one grant - so this is a filter rather than a different analysis. What it
+     * saves is the model half: five attached policies is five policies' worth of candidates, and an
+     * approver who only wants to know about AmazonEC2FullAccess should not pay for the other four.
+     */
+    policy: string | null = null,
+  ): Promise<RiskAnalysisAnswer> =>
     handle(
       await fetch(`${BASE}/plans/${encodeURIComponent(planId)}/analysis`, {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ engine }),
+        body: JSON.stringify(policy ? { engine, policy } : { engine }),
       }),
     ),
 
-  /** How the model half is going, and the whole answer once it is done. Milliseconds per call. */
-  analysisRun: async (planId: string): Promise<RiskAnalysisAnswer> =>
+  /** How the model half is going, and the whole answer once it is done. Milliseconds per call.
+   *
+   * `policy` has to travel: two policies analysed separately are two runs under one plan, and a
+   * poll without it would be handed whichever one happened to be there. */
+  analysisRun: async (planId: string, policy: string | null = null): Promise<RiskAnalysisAnswer> =>
     handle(
-      await fetch(`${BASE}/plans/${encodeURIComponent(planId)}/analysis`, { headers: headers() }),
+      await fetch(
+        `${BASE}/plans/${encodeURIComponent(planId)}/analysis`
+          + (policy ? `?policy=${encodeURIComponent(policy)}` : ""),
+        { headers: headers() },
+      ),
     ),
 
   decide: async (planId: string, payload: DecisionPayload): Promise<DecisionResult> =>

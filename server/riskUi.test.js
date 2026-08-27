@@ -119,8 +119,8 @@ test('rejected candidates and dropped verdicts are on the page, not only in the 
 test('the analysis is not run by opening a plan', () => {
   // It costs money and takes seconds. The panel exposes two buttons - 정책 기반 분석 and AI 분석 -
   // and no effect that fires on mount for either.
-  assert.ok(PANEL.includes('api.analyse(planId, "ai")'));
-  assert.ok(PANEL.includes('api.analyse(planId, "rules")'));
+  assert.ok(PANEL.includes('api.analyse(planId, "ai", policy)'));
+  assert.ok(PANEL.includes('api.analyse(planId, "rules", policy)'));
   assert.ok(!/useEffect\([^)]*api\.analyse/s.test(PANEL),
             'the analysis is being run from an effect, so opening a plan bills for one');
 });
@@ -169,8 +169,8 @@ test('the rules are shown as soon as they arrive, and the model half is polled f
 test('the poll stops when the reviewer opens another plan', () => {
   // Otherwise the answer for the plan they just left arrives and overwrites the one in front of
   // them - with a grade, a card list and a citation that belong to a different grant.
-  assert.match(PANEL, /useEffect\(\(\) => \{[\s\S]{0,240}return stopPolling;\s*\}, \[planId\]\)/,
-               'the poll is no longer abandoned when the plan changes');
+  assert.match(PANEL, /useEffect\(\(\) => \{[\s\S]{0,240}return stopPolling;\s*\}, \[planId, policy\]\)/,
+               'the poll is no longer abandoned when the plan or the scope changes');
   assert.ok(PANEL.includes('polling.current.stopped'),
             'a poll in flight has no way to find out it was abandoned');
 });
@@ -211,21 +211,23 @@ test('정책 기반 분석 never starts or stops the model poll', () => {
   // The entire reason two buttons exist rather than one relabelled: pressing the free one must not
   // touch the paid one's lifecycle, whether that means starting it or - the easier mistake to make -
   // silently killing an AI 분석 poll that was already running.
-  const run = PANEL.slice(PANEL.indexOf('const run = async'), PANEL.indexOf('if (!ready)'));
+  const run = PANEL.slice(PANEL.indexOf('const run = async'),
+                          PANEL.indexOf('// Which half or halves are on screen'));
   const rulesBranch = run.slice(run.indexOf('setWantRules(true);'));
   assert.ok(!rulesBranch.includes('stopPolling()'), '정책 기반 분석 stops the AI poll');
   assert.ok(!rulesBranch.includes('poll()'), '정책 기반 분석 starts its own poll');
   assert.ok(!rulesBranch.includes('onAnalysis('),
             '정책 기반 분석 touches the citation - only a model answer has anything new to cite');
   // It reads the request body's engine field so the server knows not to bill the model.
-  assert.ok(PANEL.includes('api.analyse(planId, "rules")'));
+  assert.ok(PANEL.includes('api.analyse(planId, "rules", policy)'));
 });
 
 test('a rules-only response cannot regress an AI run that is already in flight', () => {
   // If it simply replaced `answer`, a rules click landing while the model is being polled would
   // overwrite analysis/run with the rules-only response's null versions and the page would show
   // "not running" under a run that is very much still running.
-  const run = PANEL.slice(PANEL.indexOf('const run = async'), PANEL.indexOf('if (!ready)'));
+  const run = PANEL.slice(PANEL.indexOf('const run = async'),
+                          PANEL.indexOf('// Which half or halves are on screen'));
   const rulesBranch = run.slice(run.indexOf('setWantRules(true);'));
   assert.match(rulesBranch,
                /analysis: prev\.analysis, analysis_error: prev\.analysis_error, run: prev\.run/,
@@ -1243,4 +1245,34 @@ test('a refused inspection is read on the panel, ahead of the plan it explains',
   const sweep = readFileSync(new URL('./sweep.js', import.meta.url), 'utf8');
   assert.match(sweep, /plan_stored: Boolean\(planObject\)/,
                'the panel cannot tell "never planned" from "read failed"');
+});
+
+test('each attached policy gets its own area and its own two buttons', () => {
+  // Five attached policies is five policies' worth of candidates and the model half is billed per
+  // candidate, so an approver whose question is about AmazonEC2FullAccess should be able to ask
+  // about AmazonEC2FullAccess. Nothing in either half is computed across policies, so a scoped run
+  // is the same analysis with a filter.
+  const ui = readFileSync(new URL('../src/components/RiskAnalysis.tsx', import.meta.url), 'utf8');
+  assert.ok(ui.includes('권한별 분석'), 'the page offers no per-policy analysis');
+  assert.match(ui, /<RiskScope \{\.\.\.props\} policy=\{null\} \/>/, 'the whole-plan area is gone');
+  assert.match(ui, /<RiskScope \{\.\.\.props\} policy=\{p\.identifier\}/,
+               'the per-policy areas do not carry a scope, so every button asks about everything');
+  // The roster comes from the assessment the page already holds - the areas have to be drawable
+  // before anything has been run, and a call to draw a heading is a call for nothing.
+  assert.match(ui, /const attached = assessment\?\.policies \?\? \[\]/);
+
+  // Only the whole-plan area cites. A decision records "taken while reading analysis X" and X has
+  // to describe the thing being decided; a per-policy run describes one fifth of it.
+  assert.match(ui, /policy=\{p\.identifier\} onAnalysis=\{\(\) => \{\}\}/,
+               'a per-policy run can become the citation on a whole-plan decision');
+
+  // The scope travels on the poll too. Two policies analysed separately are two runs under one
+  // plan id, and a poll without it is handed whichever happened to be there.
+  const api = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+  assert.match(api, /\?policy=\$\{encodeURIComponent\(policy\)\}/);
+  const routes = readFileSync(new URL('./api.js', import.meta.url), 'utf8');
+  assert.match(routes, /const runId = scope \? `\$\{id\}::\$\{scope\}` : id;/,
+               'a scoped run shares an id with the whole-plan one');
+  assert.match(routes, /is not an attached policy of this plan/,
+               'a policy that is not attached falls through to analysing all of them');
 });
