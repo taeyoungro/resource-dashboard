@@ -21,6 +21,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { CAP } from './capabilities.js';
+
 export class RuleError extends Error {}
 
 const GRADES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'NONE'];
@@ -28,11 +30,31 @@ const ASSET_GRADES = [...GRADES, 'UNDETERMINED'];
 const STATUSES = ['CONFIRMED', 'UNVERIFIED', 'NOT_ASSESSABLE'];
 const CATEGORIES = ['ESCALATION', 'EXPOSURE', 'RECON', 'DESTRUCTIVE'];
 const SCOPES = ['policyActionUnion', 'resourceActionSet', 'policyNonRestrictable'];
+/** The closed capability vocabulary a predicate may name. Anything else is a typo, not a category. */
+const CAPABILITIES = new Set(Object.values(CAP));
 
 /** Every action name a predicate mentions, in the order it mentions them. */
 function predicateActions(predicate, where, out) {
   if (!predicate || typeof predicate !== 'object') {
     throw new RuleError(`${where}: predicate must be an object`);
+  }
+  if ('capability' in predicate) {
+    // A term that fires on what an action DOES rather than on what it is called.
+    //
+    // The rules named 33 action names against 12,328 mutating actions, and a name is only there if
+    // somebody wrote it down - which is why X-2 knew ec2:CreateRoute and not
+    // ec2:ReplaceRouteTableAssociation, though the second reaches the same place without any of the
+    // four actions X-2 names. A capability term covers the ones nobody has written down yet.
+    //
+    // It contributes NO name to RULE_ACTIONS, and that matters: RULE_ACTIONS is what survives the
+    // digest's complete-service fold. The fold keeps anything the reference classifies for exactly
+    // this reason - see riskDigest - so a capability term still has actions to match on inside a
+    // wholly granted service.
+    if (!CAPABILITIES.has(predicate.capability)) {
+      throw new RuleError(`${where}: capability ${JSON.stringify(predicate.capability)} is not one `
+        + `of ${[...CAPABILITIES].sort().join(', ')}`);
+    }
+    return out;
   }
   if ('action' in predicate) {
     const action = predicate.action;
@@ -49,7 +71,9 @@ function predicateActions(predicate, where, out) {
     return out;
   }
   const branch = 'anyOf' in predicate ? 'anyOf' : 'allOf' in predicate ? 'allOf' : null;
-  if (!branch) throw new RuleError(`${where}: predicate needs one of action, anyOf, allOf`);
+  if (!branch) {
+    throw new RuleError(`${where}: predicate needs one of action, capability, anyOf, allOf`);
+  }
   const subs = predicate[branch];
   if (!Array.isArray(subs) || subs.length === 0) {
     throw new RuleError(`${where}: ${branch} must be a non-empty array`);

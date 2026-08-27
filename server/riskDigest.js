@@ -43,7 +43,7 @@
 // few.
 
 import { parseArn } from './arn.js';
-import { CURATED } from './capabilities.js';
+import { CURATED, capabilitiesOf, derivedCapabilities, referenceIndex } from './capabilities.js';
 
 export const DIGEST_VERSION = 1;
 
@@ -207,6 +207,9 @@ export function condense(assessment, {
   controlPlane, ruleActions = new Set(), rulesSha256 = null, impactSha256 = null,
 } = {}) {
   const levels = levelsOf(assessment);
+  // Everything the reference establishes about an action, not just its level. levelsOf stays
+  // because tag_writes and isRiskAction read the level alone and neither needs the rest.
+  const reference = referenceIndex(assessment);
   const dropped = [];
 
   const grants = [];
@@ -253,6 +256,12 @@ export function condense(assessment, {
       // action set is what a same-resource chain is proposed from, so an action missing here is a
       // chain that cannot be proposed at all.
       if (CURATED[action]) return true;
+      // The reference classifies it. Same reason as the clause above and the one that made it
+      // necessary: a wholly-granted service is where the interesting actions hide, and an action
+      // dropped here is one no rule and no candidate can ever mention. Measured on the shipped
+      // table this keeps 40 more ec2 names, 37 s3, 31 iam - among them
+      // ec2:ReplaceRouteTableAssociation, which is the whole reason this clause exists.
+      if (derivedCapabilities(reference.get(action)).length) return true;
       folded.set(service, (folded.get(service) ?? 0) + 1);
       return false;
     });
@@ -369,6 +378,14 @@ export function condense(assessment, {
     unconditioned: g.unconditioned === true,
   }));
 
+  // Across every grant, the mutating actions the capability layer could not place. Computed over
+  // the grants rather than over the assessment so it counts what actually reached the graph, and
+  // deduplicated because the same action is granted by several policies constantly.
+  const unclassified = [...new Set(
+    grants.flatMap((g) => g.risk_actions ?? [])
+      .filter((a) => capabilitiesOf(a, reference).source === 'unmapped'),
+  )].sort();
+
   const coverage = assessment.coverage ?? {};
   const enumerated = coverage.services_enumerated ?? {};
   const interesting = {};
@@ -452,6 +469,17 @@ export function condense(assessment, {
       // units: an account-level action reaches nothing in any index and appears in no unit, and
       // one of them (iam:ListRoles) is named by a rule.
       actions_account_level: (coverage.actions_account_level ?? []).length,
+      // Mutating actions nothing could classify: not in the curated table, not classified by the
+      // reference, and no recognised verb. They reach NO attack-path edge, so no candidate names
+      // them and the model is never asked about them - and until this counted them, that was
+      // indistinguishable on screen from there being nothing to ask.
+      //
+      // A count and a sample rather than the whole list: it is the same shape as
+      // actions_account_level above, and the number is what says how much of the grant the graph
+      // could not see. "We could not classify 31 mutating actions" is a fact an approver has to be
+      // given; which 31 is a follow-up, and the sample starts it.
+      actions_unclassified: unclassified.length,
+      actions_unclassified_sample: unclassified.slice(0, 12),
       reference: coverage.reference ?? null,
       services_enumerated: interesting,
       services_enumerated_clean: clean,

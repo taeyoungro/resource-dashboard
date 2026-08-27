@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CAP, capabilitiesOf } from './capabilities.js';
+import { CAP, capabilitiesOf, referenceIndex } from './capabilities.js';
 import { OUTCOME, candidates, citedActions } from './candidatePaths.js';
 import { condense } from './riskDigest.js';
 import { controlPlane } from './controlPlane.js';
@@ -431,4 +431,121 @@ test('a grant with no tag write proposes no retag path', () => {
                units: [] }],
   });
   assert.ok(!older.some((c) => c.edge === 'retag'));
+});
+
+// ---- what an action DOES, when nobody wrote it down ---------------------------------------------
+//
+// The curated table is 136 entries against 12,328 mutating actions and the verb fallback carries
+// the rest by reading the first word. Measured over the shipped table, that put 46% of them in a
+// bucket no edge consumes - 55% within ec2 - so they produced no candidate and the model, which
+// only ever judges candidates, was never asked about them. Not "the model missed it": not asked.
+
+/** A reference lookup of the shape the assessment carries, for the actions a test names. */
+const ref = (rows) => referenceIndex({
+  action_reference: {
+    services: Object.fromEntries(Object.entries(rows).map(([action, row]) => {
+      const [service, name] = action.split(':');
+      return [service, { [name]: row.level ? [row.level, row.types ?? []] : ['Write', row.types ?? []] }];
+    }).reduce((acc, [service, block]) => {
+      acc.set(service, { ...(acc.get(service) ?? {}), ...block });
+      return acc;
+    }, new Map())),
+    allow_only: Object.fromEntries([...Object.entries(rows)
+      .filter(([, row]) => row.refuse)
+      .reduce((acc, [action, row]) => {
+        const [service, name] = action.split(':');
+        acc.set(service, { ...(acc.get(service) ?? {}), [name]: { refuse: row.refuse } });
+        return acc;
+      }, new Map())]),
+  },
+});
+
+test('re-pointing an existing association is its own path, and the table already knew', () => {
+  // ec2:ReplaceRouteTableAssociation. A subnet is private because the route table it is associated
+  // with has no default route to an internet gateway; re-associate it with one that does and the
+  // subnet is public - without creating a route, touching a gateway, or calling any of the four
+  // actions X-2 names. The verb table has no 'Replace', so it was UNMAPPED and reached no edge.
+  //
+  // Nothing new is looked up to find it. projection 6 already marks the action deref:AssociationId
+  // - the request names an association id and the object at the other end is resolved from it -
+  // which is the same fact that makes allow_only unsafe for it. It was computed for the restriction
+  // composer and the risk analysis never read it.
+  const reference = ref({
+    'ec2:ReplaceRouteTableAssociation': { types: ['route-table', 'subnet'],
+                                          refuse: 'deref:AssociationId' },
+  });
+  const found = candidates(EMPTY(['ec2:ReplaceRouteTableAssociation']), reference);
+  assert.equal(found.length, 1, 'the action still produces no candidate at all');
+  assert.equal(found[0].edge, 'rebind');
+  assert.equal(found[0].outcome, OUTCOME.CONTROL_REBIND);
+  assert.deepEqual(found[0].steps[0].actions, ['ec2:ReplaceRouteTableAssociation']);
+
+  // Without the reference it is invisible, which is what this fixes and what a regression looks like.
+  assert.deepEqual(candidates(EMPTY(['ec2:ReplaceRouteTableAssociation'])), []);
+});
+
+test('a permissions write is found from the access level, not from a curated entry', () => {
+  // The same move that fixed the tag-tamper path, applied to the level AWS publishes beside it.
+  // 415 actions are labelled Permissions management and 67% of them reached no edge - among them
+  // sts:AssumeRoleWithSAML, which mints a credential.
+  const onPrincipal = ref({ 'acme:PutRolePolicy': { level: 'Permissions management',
+                                                    types: ['role'] } });
+  const [grant] = candidates(EMPTY(['acme:PutRolePolicy']), onPrincipal);
+  assert.equal(grant.edge, 'grant-self', 'a permissions write onto a principal is not an escalation');
+
+  // On a resource rather than a principal it is the other path: admitting somebody else, not
+  // writing permissions onto yourself. The level cannot separate those; the resource types can.
+  const onResource = ref({ 'acme:PutVaultPolicy': { level: 'Permissions management',
+                                                    types: ['vault'] } });
+  const [share] = candidates(EMPTY(['acme:PutVaultPolicy']), onResource);
+  assert.equal(share.edge, 'exfiltrate');
+  assert.equal(share.outcome, OUTCOME.DATA_EGRESS);
+});
+
+test('a curated entry is not widened by the reference', () => {
+  // The 136 curated entries are the ones a person decided BECAUSE the published facts do not show
+  // them, so a derivation must not change them as a side effect of widening the other 12,192.
+  const action = 'ec2:ReplaceIamInstanceProfileAssociation';
+  const reference = ref({ [action]: { types: ['instance'], refuse: 'deref:AssociationId' } });
+  // Curated as replace-identity, and ALSO marked deref: by the table. If the two were unioned it
+  // would produce a second card saying the same thing under a different heading.
+  assert.deepEqual(capabilitiesOf(action, reference).caps, [CAP.REPLACE_IDENTITY]);
+  assert.equal(capabilitiesOf(action, reference).source, 'curated');
+
+  // A unit, because takeover-identity is a reach over something that exists rather than a
+  // capability of the grant - an empty account proposes only the targetless edges.
+  const digest = {
+    account_id: ACCOUNT,
+    passrole_grants: [],
+    grants: [{ p: 'P1', name: 'X', risk_actions: [action], non_restrictable: [],
+               units: [{ t: 'ec2:instance', acts: [0], n: 1, sample: [arn('ec2', 'instance', 'i-0a')],
+                         truncated: false, colocation: 'sound', attribution: 'resource_type' }] }],
+  };
+  assert.deepEqual(candidates(digest, reference).map((c) => c.edge), ['takeover-identity'],
+                   'the curated answer was joined by a derived one, doubling the card');
+});
+
+test('reconfiguring the pipeline\'s own resources is a path; reconfiguring anything else is not', () => {
+  // modify-config is the verb fallback's largest bucket - 3,434 mutating actions - so an
+  // unrestricted edge would put a candidate on nearly every grant and cost more attention than it
+  // returns. On a resource this deployment was CONFIGURED with, what gets changed is what decides
+  // approvals, and that is a different sentence.
+  const digest = {
+    account_id: ACCOUNT,
+    passrole_grants: [],
+    grants: [{
+      p: 'P1', name: 'X', risk_actions: ['sqs:SetQueueAttributes2'], non_restrictable: [],
+      units: [{ t: 'sqs:queue', acts: [0], n: 1, sample: ['arn:aws:sqs:us-east-1:1:q'],
+                truncated: false, colocation: 'sound', attribution: 'resource_type',
+                cp: [{ arn: 'arn:aws:sqs:us-east-1:1:q', role: 'event_queue', basis: 'configured' }] }],
+    }],
+  };
+  const [found] = candidates(digest).filter((c) => c.edge === 'reconfigure-control-plane');
+  assert.ok(found, 'changing the configuration of the pipeline\'s own queue proposes nothing');
+  assert.equal(found.outcome, OUTCOME.CONTROL_PLANE_WRITE);
+
+  // The same action on an ordinary resource does not, or every grant grows a card.
+  const ordinary = structuredClone(digest);
+  ordinary.grants[0].units[0].cp = [];
+  assert.ok(!candidates(ordinary).some((c) => c.edge === 'reconfigure-control-plane'));
 });
