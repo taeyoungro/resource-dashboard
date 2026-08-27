@@ -406,3 +406,35 @@ test('the digest is far smaller than the assessment and is deterministic', () =>
   assert.equal(JSON.stringify(a), JSON.stringify(b), 'two runs differ');
   assert.ok(digestBytes(a) < Buffer.byteLength(JSON.stringify(doc), 'utf8') / 2);
 });
+
+test('the fold keeps an action the reference classifies, and counts what nothing could', () => {
+  // The fold drops action names for a wholly granted service, keeping rule-named actions, sensitive
+  // reads and curated entries. ec2:ReplaceRouteTableAssociation is none of those, so on ec2:* it
+  // was deleted before any rule or candidate could mention it - and that is exactly where the
+  // interesting actions live. Measured on the shipped table this clause keeps 40 more ec2 names.
+  const acts = ['ec2:ReplaceRouteTableAssociation', 'ec2:WhoKnowsWhat'];
+  const reference = {
+    services: { ec2: { ReplaceRouteTableAssociation: ['Write', ['route-table', 'subnet']],
+                       WhoKnowsWhat: ['Write', ['thing']] } },
+    allow_only: { ec2: { ReplaceRouteTableAssociation: { refuse: 'deref:AssociationId' } } },
+  };
+  const folded = build(assessment([policy('AmazonEC2FullAccess', {
+    actions_granted: ['ec2:*'], actions_offerable: acts, affected: [],
+  })], { action_reference: reference }));
+  assert.ok(folded.grants[0].risk_actions.includes('ec2:ReplaceRouteTableAssociation'),
+            'the fold deleted the action before anything could see it');
+  // The one nothing could place is still folded away, and the fold already reports it in `dropped`
+  // with the wildcard that covers it. Counting it again here would say the graph could not see an
+  // action that is not in the graph's input at all.
+  assert.equal(folded.coverage.actions_unclassified, 0);
+
+  // Not a complete service, so nothing is folded and every mutating action reaches the graph. The
+  // one nothing could place is COUNTED rather than dropped in silence: it reaches no edge, so no
+  // candidate names it and the model is never asked - which without this is indistinguishable on
+  // screen from there being nothing to ask.
+  const named = build(assessment([policy('Custom', {
+    actions_granted: acts, actions_offerable: acts, affected: [],
+  })], { action_reference: reference }));
+  assert.equal(named.coverage.actions_unclassified, 1);
+  assert.deepEqual(named.coverage.actions_unclassified_sample, ['ec2:WhoKnowsWhat']);
+});

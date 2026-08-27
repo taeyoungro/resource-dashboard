@@ -949,6 +949,32 @@ export function RiskAnalysis({
                   </ul>
                 </div>
               )}
+              {(answer.actions_unclassified ?? 0) > 0 && (
+                <div className="row-warn">
+                  <strong>
+                    변경 동작 {answer.actions_unclassified}개를 분류하지 못했습니다.
+                  </strong>
+                  <p className="small">
+                    선별표에도 없고, 평가서의 참조표도 무엇인지 말하지 못하고, 알려진 동사로도
+                    읽히지 않는 동작입니다. 어떤 공격 경로 간선에도 닿지 않으므로 <strong>후보가
+                    만들어지지 않고 모델에게 질문되지도 않았습니다.</strong> 위험하지 않다는 뜻이
+                    아니라 판정 대상에 들지 못했다는 뜻입니다.
+                  </p>
+                  {(answer.actions_unclassified_sample ?? []).length > 0 && (
+                    <ul className="finding-list">
+                      {answer.actions_unclassified_sample!.map((a) => (
+                        <li key={a}><code>{a}</code></li>
+                      ))}
+                      {answer.actions_unclassified! > answer.actions_unclassified_sample!.length && (
+                        <li className="muted">
+                          표본입니다 — {answer.actions_unclassified}개 중{" "}
+                          {answer.actions_unclassified_sample!.length}개만 표시합니다.
+                        </li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              )}
               {Object.keys(answer.types_unknown ?? {}).length > 0 && (
                 <div className="row-warn">
                   <strong>

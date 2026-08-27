@@ -1113,6 +1113,52 @@ test('the two risk areas are separate, and the action one claims no resources', 
             'the capability candidate is suppressed as soon as one resource of the type exists');
 });
 
+test('an action is classified from what AWS publishes, not only from a hand-written table', () => {
+  // The measured gap: the curated table is 136 entries against 12,328 mutating actions, the verb
+  // fallback carries the rest by reading the first word, and 46% of them land in a bucket no edge
+  // consumes - 55% within ec2. Those produce no candidate, and the model only ever judges
+  // candidates, so it is never asked about them.
+  const caps = readFileSync(new URL('./capabilities.js', import.meta.url), 'utf8');
+  assert.match(caps, /export function derivedCapabilities/, 'nothing reads the published facts');
+  // The level AWS itself publishes. The proof this is the right source rather than a longer verb
+  // list is Tagging: the tag-tamper path was unreachable for exactly this reason, it was fixed by
+  // reading the level, and Tagging now sits at 6% unreached against Write's 48%.
+  assert.match(caps, /fact\.level === 'Permissions management'/);
+  assert.match(caps, /fact\.refuse\.startsWith\('deref:'\)/,
+               'the rebinding class the table already records is still unread');
+  // Curated wins outright. Those 136 were decided BECAUSE the published facts do not show them, and
+  // unioning a derivation into them would change 136 reasoned answers as a side effect.
+  assert.match(caps, /if \(curated\) return \{ caps: curated, source: 'curated' \}/);
+
+  // The fold is upstream of all of it: an action deleted there can be classified perfectly and
+  // still never reach a rule or a candidate.
+  const digest = readFileSync(new URL('./riskDigest.js', import.meta.url), 'utf8');
+  assert.match(digest, /if \(derivedCapabilities\(reference\.get\(action\)\)\.length\) return true;/,
+               'ec2:* folds away the very actions this increment exists to catch');
+  // And what nothing could place is counted rather than dropped in silence.
+  assert.match(digest, /actions_unclassified: unclassified\.length/);
+  const ui = readFileSync(new URL('../src/components/RiskAnalysis.tsx', import.meta.url), 'utf8');
+  assert.ok(ui.includes('분류하지 못했습니다'), 'unclassified actions are invisible on the page');
+  assert.ok(ui.includes('모델에게 질문되지도 않았습니다'),
+            'the page does not say the model was never asked');
+
+  // A rule may fire on what an action DOES. Without it the deterministic half stays at 33 names.
+  const rules = readFileSync(new URL('./rules.js', import.meta.url), 'utf8');
+  assert.match(rules, /if \('capability' in predicate\)/, 'rules match names only');
+  assert.match(rules, /CAPABILITIES\.has\(predicate\.capability\)/,
+               'a mistyped capability would match nothing, silently, forever');
+  const doc = JSON.parse(readFileSync(new URL('./finding-rules.json', import.meta.url), 'utf8'));
+  const x4 = doc.rules.find((r) => r.id === 'X-4');
+  assert.ok(x4, 'no rule fires on a rebinding');
+  assert.deepEqual(x4.predicate, { capability: 'rebind' });
+  // X-2 keeps its literals BESIDE the capability terms - a service whose action list the reference
+  // budget dropped would otherwise stop firing a rule that used to fire on a name.
+  const x2 = doc.rules.find((r) => r.id === 'X-2');
+  const terms = x2.predicate.anyOf;
+  assert.ok(terms.some((t) => t.action === 'ec2:CreateRoute'));
+  assert.ok(terms.some((t) => t.capability === 'network-route'));
+});
+
 test('a refused inspection is read on the panel, ahead of the plan it explains', () => {
   // The silence: a refusal is a COMPLETED run, so its marker is deleted, so the request left no
   // row - the reason reached CloudWatch and nobody. Twelve managed policies against a limit of ten

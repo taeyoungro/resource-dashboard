@@ -22,6 +22,7 @@ import { condense, digestBytes } from './riskDigest.js';
 import { candidates as proposeCandidates } from './candidatePaths.js';
 import { loadTemplates } from './templates.js';
 import { findings as ruleFindings, sections, summary } from './findings.js';
+import { referenceIndex } from './capabilities.js';
 import { overlapCount, withOverlap } from './overlap.js';
 import { RULES_SHA256, RULE_ACTIONS } from './rules.js';
 import { AnalysisError, PROMPT_VERSION, analyse, bedrockClient } from './riskAnalysis.js';
@@ -540,11 +541,17 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         rulesSha256: RULES_SHA256,
         impactSha256: key,
       });
-      const rules = ruleFindings(digest);
+      // What the assessment already knows about each action - its access level, the types it names,
+      // whether it creates them, and the allow_only verdict whose `deref:` form identifies a
+      // rebinding. Passed to both halves rather than folded into the digest: every consumer is on
+      // this side of the wire, so threading it costs no digest bytes, and the digest is what an
+      // approval is bound to.
+      const reference = referenceIndex(stored.document);
+      const rules = ruleFindings(digest, undefined, reference);
       // The candidates, each told which rules already cover it. Both halves run over the same
       // digest and reach the same places by different routes; without this the approver reads
       // twelve paths twice, in two cases at two different grades.
-      const candidates = withOverlap(proposeCandidates(digest), rules);
+      const candidates = withOverlap(proposeCandidates(digest, reference), rules);
 
       const answer = {
         plan_id: id,
@@ -558,6 +565,11 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // findings because it bounds them: resources of these types are in no unit, so no rule and
         // no candidate could have fired on one.
         types_unknown: digest.coverage?.types_unknown ?? {},
+        // Mutating actions nothing could classify. Beside the findings for the same reason
+        // types_unknown is: it bounds them. An action here reaches no edge, so no candidate names
+        // it and no rule capability term matches it - the graph could not see it at all.
+        actions_unclassified: digest.coverage?.actions_unclassified ?? 0,
+        actions_unclassified_sample: digest.coverage?.actions_unclassified_sample ?? [],
         rule_findings: rules,
         rule_sections: sections(rules),
         rule_summary: summary(rules),

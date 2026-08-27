@@ -806,6 +806,16 @@ export interface RiskAnalysisAnswer {
    * of each were dropped. Not a condenser loss - these never reached the assessment at all.
    */
   types_unknown?: Record<string, number>;
+  /**
+   * Mutating actions no layer could classify - not curated, not classified by the assessment's
+   * action reference, and no recognised verb.
+   *
+   * They reach no attack-path edge, so no candidate names them and no capability rule term matches
+   * them: the model was never asked about them. Reported because until it was counted, that was
+   * indistinguishable on screen from there being nothing to ask.
+   */
+  actions_unclassified?: number;
+  actions_unclassified_sample?: string[];
   rule_findings: Finding[];
   rule_sections: { category: FindingCategory; findings: Finding[] }[];
   rule_summary: {

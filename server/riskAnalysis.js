@@ -115,6 +115,12 @@ const CEILING = {
   // of the control. MEDIUM rather than higher because on its own it grants nothing: it matters
   // exactly when a tag_condition restriction is in play, and the editor says so at that moment.
   [OUTCOME.TAG_TAMPER]: 'MEDIUM',
+  // What it reaches depends on what sits at the other end of the binding, and that varies by
+  // resource type - a route table is network exposure, an instance profile is credentials. HIGH
+  // rather than CRITICAL because on its own it mints nothing and runs nothing; higher than
+  // NETWORK_EXPOSURE because it defeats a boundary somebody chose without touching anything the
+  // boundary is made of, which is what makes it hard to notice.
+  [OUTCOME.CONTROL_REBIND]: 'HIGH',
 };
 
 const GRADE_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4 };

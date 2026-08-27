@@ -55,6 +55,16 @@ export const OUTCOME = {
   // can write the tag chooses which side of the condition a resource falls on: under the closed
   // form they label a resource into the allowed set, under the open form they strip the label off.
   TAG_TAMPER: 'tag_tamper',
+  /**
+   * A control attached to a resource is swapped for a different one.
+   *
+   * Its own outcome because the consequence is not a property of the ACTION - it is a property of
+   * whatever sits at the other end of the binding, and that varies. Re-associating a subnet's route
+   * table is network exposure; re-associating an instance profile is credentials. So the code
+   * proposes the structural fact, which it can establish, and the model judges the consequence for
+   * the resource type in front of it, which is what a model is for.
+   */
+  CONTROL_REBIND: 'control_rebind',
 };
 
 /**
@@ -167,6 +177,31 @@ const EDGES = [
       + 'the label an open form denies on',
   },
   {
+    id: 'rebind',
+    any: [CAP.REBIND],
+    outcome: OUTCOME.CONTROL_REBIND,
+    // True on day one. The binding is between two resources of types the grant reaches, and
+    // re-pointing it needs neither of them to exist yet - which is also why this belongs to the
+    // action axis first and to the inventory second.
+    targetless: true,
+    why: 'an existing association can be re-pointed at a different object, and the new object\'s '
+      + 'properties become the bound resource\'s properties at once - without creating anything, '
+      + 'without touching the bound resource, and without any action that names what changed',
+  },
+  {
+    id: 'reconfigure-control-plane',
+    any: [CAP.MODIFY_CONFIG],
+    outcome: OUTCOME.CONTROL_PLANE_WRITE,
+    // Only on the pipeline's own resources, and that restraint is the point. modify-config is the
+    // verb fallback's largest bucket - 3,434 mutating actions - so an unrestricted edge here would
+    // put a candidate on very nearly every grant and cost an approver more attention than it
+    // returns. On a resource this deployment was CONFIGURED with, "the configuration can be
+    // changed" is a different sentence: what gets changed is what decides approvals.
+    controlPlaneOnly: true,
+    why: 'the configuration of a resource this pipeline runs on can be changed, and what that '
+      + 'resource does is what decides or applies approvals',
+  },
+  {
     id: 'blind',
     any: [CAP.TAMPER_AUDIT],
     outcome: OUTCOME.AUDIT_BLIND,
@@ -223,12 +258,12 @@ function reservations(grant, unit, digest) {
 }
 
 /** The actions of a unit, resolved back to names, with their capabilities. */
-function unitActions(grant, unit) {
+function unitActions(grant, unit, reference) {
   const out = [];
   for (const i of unit.acts ?? []) {
     const action = grant.risk_actions[i];
     if (!action) continue;
-    const { caps, source } = capabilitiesOf(action);
+    const { caps, source } = capabilitiesOf(action, reference);
     out.push({ action, caps, source });
   }
   return out;
@@ -238,10 +273,10 @@ function unitActions(grant, unit) {
  * Capabilities the whole POLICY has, wherever they sit. The other scope - passing a role and
  * creating the thing to pass it to are two actions on two resource types.
  */
-function grantCapabilities(grant) {
+function grantCapabilities(grant, reference) {
   const out = new Map();
   for (const action of grant.risk_actions) {
-    for (const cap of capabilitiesOf(action).caps) {
+    for (const cap of capabilitiesOf(action, reference).caps) {
       if (!out.has(cap)) out.set(cap, []);
       out.get(cap).push(action);
     }
@@ -289,7 +324,7 @@ const CURATED_BY_SERVICE = (() => {
  * Deterministic and ordered, so the same digest always produces the same candidate ids - which is
  * what lets an answer be cached, compared across runs, and cited in an approval record.
  */
-export function candidates(digest) {
+export function candidates(digest, reference = null) {
   const out = [];
   const push = (candidate) => {
     out.push({ id: `C${out.length + 1}`, ...candidate });
@@ -297,10 +332,10 @@ export function candidates(digest) {
 
   for (const grant of digest.grants ?? []) {
     if (grant.is_baseline) continue;
-    const policyCaps = grantCapabilities(grant);
+    const policyCaps = grantCapabilities(grant, reference);
 
     for (const unit of grant.units ?? []) {
-      const actions = unitActions(grant, unit);
+      const actions = unitActions(grant, unit, reference);
       if (actions.length === 0 && (unit.folded ?? 0) === 0) continue;
       const present = new Map();
       for (const { action, caps } of actions) {

@@ -62,8 +62,29 @@ export const CAP = {
   // Buying time
   TAMPER_AUDIT: 'tamper-audit',
   TAG: 'tag',
+  /**
+   * Re-pointing an existing binding at a different object.
+   *
+   * Its own capability because it is neither create nor modify: nothing new appears and the
+   * resource's own configuration is untouched. What changes is WHICH object the resource is bound
+   * to, and the new object's properties become the resource's properties at once.
+   *
+   * ec2:ReplaceRouteTableAssociation is the case that named it. A subnet is private because the
+   * route table it is associated with has no default route to an internet gateway; re-associate it
+   * with one that does and the subnet is public, without creating a route, touching a gateway or
+   * modifying the subnet. Every action in the predicate of X-2 is absent from that sentence.
+   *
+   * Derived, never hand-listed: the table already marks these actions - the request names an
+   * association id and the object at the other end is resolved from it, which is the same fact that
+   * makes allow_only unsafe for them (projection 6, `deref:`). It was computed for the restriction
+   * composer and the risk analysis never read it.
+   */
+  REBIND: 'rebind',
   UNMAPPED: 'unmapped',
 };
+
+/** Reference type names that identify a principal, for splitting what a permissions write reaches. */
+const PRINCIPAL_TYPES = new Set(['role', 'user', 'group', 'instance-profile']);
 
 /**
  * The curated part. Every entry is an action that carries a path, and the value is the SET.
@@ -246,16 +267,89 @@ const VERBS = [
 ];
 
 /**
+ * A lookup over the facts the assessment already carries about each action.
+ *
+ * The reference is built by the querier from the action table and travels inside impact.json, which
+ * is how the dashboard learns an action's access level without holding the table. It was already
+ * read for one thing - which actions AWS calls Tagging - and this widens that to everything it
+ * knows: the level, the resource types, whether the action creates what it names, and the
+ * allow_only verdict, whose `deref:` form is what identifies a rebinding.
+ *
+ * Returns null for an action the reference does not cover. That is a real case rather than a bug:
+ * the reference is scoped to the services the assessment touched and is cut to a byte budget, so a
+ * service the budget dropped has no entries and the caller falls back to the verb.
+ */
+export function referenceIndex(assessment) {
+  const services = assessment?.action_reference?.services ?? {};
+  const verdicts = assessment?.action_reference?.allow_only ?? {};
+  return {
+    get(action) {
+      const colon = action.indexOf(':');
+      if (colon < 0) return null;
+      const service = action.slice(0, colon);
+      const name = action.slice(colon + 1);
+      const row = services[service]?.[name];
+      if (!row) return null;
+      return {
+        level: row[0] ?? null,
+        types: row[1] ?? [],
+        creates: row[2] === true,
+        refuse: verdicts[service]?.[name]?.refuse ?? null,
+      };
+    },
+  };
+}
+
+/**
+ * What the reference alone establishes about an action, or [] when it establishes nothing.
+ *
+ * This is the half that scales. The curated table is 136 entries against 12,328 mutating actions,
+ * and the verb fallback that carries the rest reads the first word - which puts 46% of them in a
+ * bucket no attack-path edge consumes. Measured over the shipped table: 67% of the 415 actions AWS
+ * itself labels Permissions management reach no edge, and sts:AssumeRoleWithSAML is one of them.
+ *
+ * The proof that this is the right source rather than a longer verb list is Tagging. The tag-tamper
+ * path was unreachable for exactly this reason, it was fixed by reading the access level instead of
+ * the verb, and Tagging now sits at 6% unreached against Write's 48%.
+ */
+export function derivedCapabilities(fact) {
+  if (!fact) return [];
+  const caps = [];
+  // The request names an association id and the object at the other end is resolved from it - so
+  // the call re-points an existing binding. See CAP.REBIND.
+  if (typeof fact.refuse === 'string' && fact.refuse.startsWith('deref:')) caps.push(CAP.REBIND);
+  if (fact.level === 'Permissions management') {
+    // Writing permissions ONTO a principal and opening a resource TO one are different paths with
+    // different edges, and the level does not separate them - the resource types do. iam:PutRolePolicy
+    // names a role; s3:PutBucketPolicy names a bucket and its effect is to admit somebody else.
+    caps.push(fact.types.some((t) => PRINCIPAL_TYPES.has(t))
+      ? CAP.WRITE_POLICY : CAP.SHARE_EXTERNAL);
+  }
+  if (fact.level === 'Tagging') caps.push(CAP.TAG);
+  if (fact.creates) caps.push(CAP.CREATE);
+  return caps;
+}
+
+/**
  * What this action lets you do. Always a set, never empty.
  *
- * Returns { caps, source } where source is 'curated', 'verb' or 'unmapped'. The source travels
- * because the three are worth very different amounts: a curated entry was decided, a verb match is
- * a guess that is wrong about one action in thirteen, and unmapped means nobody knows - which is
- * reported rather than absorbed into a bucket that looks like an answer.
+ * Returns { caps, source } where source is 'curated', 'reference', 'verb' or 'unmapped'. The source
+ * travels because the four are worth very different amounts: a curated entry was decided, a
+ * reference entry is AWS's own published classification, a verb match is a guess that is wrong
+ * about one action in thirteen, and unmapped means nobody knows - which is reported rather than
+ * absorbed into a bucket that looks like an answer.
+ *
+ * Curated wins outright rather than being unioned with the reference. The 136 entries are the ones
+ * a person decided BECAUSE the published facts do not show them - ec2:ModifyInstanceAttribute is
+ * modify-code for one sub-attribute and no level says so - and letting a derivation add to them
+ * would change 136 already-reasoned answers as a side effect of widening the other 12,192.
  */
-export function capabilitiesOf(action) {
+export function capabilitiesOf(action, reference = null) {
   const curated = CURATED[action];
   if (curated) return { caps: curated, source: 'curated' };
+
+  const derived = derivedCapabilities(reference?.get(action));
+  if (derived.length) return { caps: derived, source: 'reference' };
 
   const name = action.slice(action.indexOf(':') + 1);
   for (const [verb, cap] of VERBS) {

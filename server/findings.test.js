@@ -10,6 +10,7 @@ import { test } from 'node:test';
 
 import { RULES, RULES_SHA256, RULE_ACTIONS, RuleError, validate } from './rules.js';
 import { evaluateGrant, findings, sections, sortFindings, summary } from './findings.js';
+import { referenceIndex } from './capabilities.js';
 
 const ACCOUNT = '718100330247';
 const arn = (type, i) => `arn:aws:${type.split(':')[0]}:us-east-1:${ACCOUNT}:${type.split(':')[1]}/r${i}`;
@@ -459,4 +460,77 @@ test('a truncated enumeration is not a doubt about a capability', () => {
   assert.ok(reach.blockedBy.some((r) => r.includes('truncated')));
   assert.ok(!capability.blockedBy.some((r) => r.includes('truncated')),
             'a capability was marked doubtful because a resource list it never used was short');
+});
+
+// ---- a rule that fires on what an action DOES ---------------------------------------------------
+//
+// The rules named 33 action names against 12,328 mutating actions, and a name is only in a
+// predicate if somebody wrote it down. X-2 knew ec2:CreateRoute and not
+// ec2:ReplaceRouteTableAssociation - which reaches the same place, and calls none of X-2's four.
+
+const reference = (rows) => referenceIndex({
+  action_reference: {
+    services: Object.entries(rows).reduce((acc, [action, row]) => {
+      const [service, name] = action.split(':');
+      acc[service] = { ...(acc[service] ?? {}), [name]: [row.level ?? 'Write', row.types ?? []] };
+      return acc;
+    }, {}),
+    allow_only: Object.entries(rows).filter(([, r]) => r.refuse).reduce((acc, [action, row]) => {
+      const [service, name] = action.split(':');
+      acc[service] = { ...(acc[service] ?? {}), [name]: { refuse: row.refuse } };
+      return acc;
+    }, {}),
+  },
+});
+
+test('X-4 fires on a rebinding nobody named, and names the action in full', () => {
+  // The case that asked for this. Re-associating a subnet with a route table whose default route
+  // points at an internet gateway makes the subnet public, and no action in X-2's predicate is
+  // called. The rule fires on the structural fact instead: the request names an association id and
+  // the object at the other end is resolved from it, which projection 6 already recorded.
+  const action = 'ec2:ReplaceRouteTableAssociation';
+  const ref = reference({ [action]: { types: ['route-table', 'subnet'],
+                                      refuse: 'deref:AssociationId' } });
+  const d = digest([grant('AmazonEC2FullAccess', [action], [], { unscoped_actions: [action] })]);
+
+  const [found] = only(findings(d, undefined, ref), 'X-4', 'action');
+  assert.ok(found, 'the rebinding fires no rule at all');
+  assert.equal(found.escalationGrade, 'HIGH');
+  assert.deepEqual(found.triggerActions, [action], 'the trigger action is not shown in full');
+
+  // Without the reference nothing classifies it, and the rule is silent - which is the state this
+  // fixes, and what a regression looks like.
+  assert.deepEqual(only(findings(d), 'X-4', 'action'), []);
+});
+
+test('a capability term returns every action that satisfied it, not the first', () => {
+  // An approver writing a restriction needs all of them, and T-7 says a trigger list is never
+  // abbreviated. anyOf short-circuits on the first branch that hits; a capability branch is one
+  // branch that can hit many actions at once.
+  const acts = ['acme:RebindOne', 'acme:RebindTwo'];
+  const ref = reference({
+    'acme:RebindOne': { types: ['thing'], refuse: 'deref:AssociationId' },
+    'acme:RebindTwo': { types: ['thing'], refuse: 'deref:AttachmentId' },
+  });
+  const [found] = only(findings(digest([grant('X', acts, [])]), undefined, ref), 'X-4', 'action');
+  assert.deepEqual(found.triggerActions.sort(), acts.slice().sort());
+});
+
+test('X-2 keeps its named actions and gains the ones nobody named', () => {
+  // The capability terms are added BESIDE the four names rather than replacing them. Removing the
+  // names would make the rule depend entirely on a classification, and a service whose actions the
+  // reference budget dropped would silently stop firing a rule that used to fire on a literal.
+  const named = only(findings(digest([grant('X', ['ec2:CreateRoute'], [])])), 'X-2', 'action');
+  assert.equal(named.length, 1, 'a rule that fired on a literal stopped firing');
+  assert.deepEqual(named[0].triggerActions, ['ec2:CreateRoute']);
+});
+
+test('a rule may not name a capability that does not exist', () => {
+  // Same reason a wildcard action is refused: it would not throw at match time, it would quietly
+  // match nothing, forever.
+  const bad = {
+    schemaVersion: '0.1', sectionOrder: ['ESCALATION'], sort: {},
+    rules: [{ ...RULES[0], predicate: { capability: 'rebnid' } }],
+  };
+  assert.throws(() => validate(bad), (e) => e instanceof RuleError && /rebnid/.test(e.message));
 });

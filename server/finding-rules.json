@@ -95,11 +95,24 @@
           { "action": "ec2:CreateRoute" },
           { "action": "ec2:ReplaceRoute" },
           { "action": "ec2:AttachInternetGateway" },
-          { "action": "ec2:AuthorizeSecurityGroupIngress" }
+          { "action": "ec2:AuthorizeSecurityGroupIngress" },
+          { "capability": "network-route" },
+          { "capability": "network-ingress" }
         ]
       },
       "narrative": "라우트 테이블에 기본 경로를 추가하거나 보안 그룹에 인그레스를 추가해 외부 통신 경로를 만들 수 있다.",
       "notes": "서브넷을 '프라이빗'으로 기술하지 않는다. 공개 여부는 라우트 구성으로만 판정하며, 판정하지 않는 경우 서술에서 생략한다."
+    },
+    {
+      "id": "X-4",
+      "title": "기존 결합 재지정을 통한 경계 이동",
+      "category": "EXPOSURE",
+      "escalationGrade": "HIGH",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "resourceActionSet",
+      "predicate": { "capability": "rebind" },
+      "narrative": "이미 맺어진 결합을 다른 대상으로 재지정할 수 있다. 아무것도 만들지 않고, 결합된 자원 자체를 바꾸지도 않으며, 무엇이 바뀌었는지 이름으로 드러나는 동작도 없다. 새 대상이 허용하는 것이 그 자원의 성질이 된다.",
+      "notes": "이 규칙은 동작 이름이 아니라 요청이 결합 식별자를 지목하고 상대편을 그것으로 해석한다는 사실에서 발화한다. ec2:ReplaceRouteTableAssociation이 그 예다 — 프라이빗 서브넷에 기본 경로가 인터넷 게이트웨이로 향하는 라우팅 테이블을 재지정하면 서브넷이 퍼블릭이 되지만, X-2가 이름으로 아는 네 동작은 하나도 호출되지 않는다. 상대편에 무엇이 있는지는 이 산출물로 알 수 없으므로 서술에 적지 않는다."
     },
     {
       "id": "X-3",

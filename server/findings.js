@@ -58,6 +58,7 @@
 
 import { RULES, SECTION_ORDER, SORT } from './rules.js';
 import { ROLES } from './controlPlane.js';
+import { capabilitiesOf } from './capabilities.js';
 
 /** The two questions. A finding answers exactly one of them and says which. */
 export const AXIS = { RESOURCE: 'resource', ACTION: 'action' };
@@ -110,25 +111,48 @@ const ASSET_GRADE_BY_ROLE = {
  */
 const GRADING_BASES = new Set(['configured', 'declared']);
 
-/** Collect the actions that satisfied a predicate, or null if it is not satisfied. */
-function match(predicate, available) {
+/**
+ * Collect the actions that satisfied a predicate, or null if it is not satisfied.
+ *
+ * `byCapability` maps a capability to the available actions carrying it. A capability term fires on
+ * what an action DOES rather than on what it is called, and it returns EVERY action that satisfied
+ * it rather than the first - the card shows trigger actions in full, and an approver writing a
+ * restriction needs all of them.
+ */
+function match(predicate, available, byCapability) {
   if ('action' in predicate) {
     return available.has(predicate.action) ? [predicate.action] : null;
   }
+  if ('capability' in predicate) {
+    const hit = byCapability?.get(predicate.capability);
+    return hit && hit.length ? [...hit] : null;
+  }
   if ('anyOf' in predicate) {
     for (const sub of predicate.anyOf) {
-      const hit = match(sub, available);
+      const hit = match(sub, available, byCapability);
       if (hit) return hit;
     }
     return null;
   }
   const acc = [];
   for (const sub of predicate.allOf) {
-    const hit = match(sub, available);
+    const hit = match(sub, available, byCapability);
     if (!hit) return null;
     acc.push(...hit);
   }
   return acc;
+}
+
+/** capability -> the actions in this scope that carry it. */
+function capabilityIndex(actions, reference) {
+  const out = new Map();
+  for (const action of actions) {
+    for (const cap of capabilitiesOf(action, reference).caps) {
+      if (!out.has(cap)) out.set(cap, []);
+      out.get(cap).push(action);
+    }
+  }
+  return out;
 }
 
 /** The action names a unit holds, by name. Indices point into the grant's risk_actions. */
@@ -324,7 +348,7 @@ function truncationOf(units) {
  * the rest keep going (T-3). A rule engine that stops at the first exception reports fewer
  * findings than there are, and reports it as a clean result.
  */
-export function evaluateGrant(grant, digest, rules = RULES) {
+export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
   const out = [];
   const unscoped = new Set(grant.unscoped_actions ?? []);
 
@@ -333,7 +357,7 @@ export function evaluateGrant(grant, digest, rules = RULES) {
     try {
       for (const scope of scopeUnits(rule, grant, axis)) {
         const available = new Set(scope.actions);
-        const hits = match(rule.predicate, available);
+        const hits = match(rule.predicate, available, capabilityIndex(scope.actions, reference));
         if (!hits) continue;
 
         // Co-location, decided per hit and only on the action axis. One action needs no
@@ -439,10 +463,10 @@ function axesFor(rule) {
  * one nobody looks at, and "this was already true before the request" is a fact for the reader to
  * weigh - not a reason to hide it. It is marked, and the caller can group it.
  */
-export function findings(digest, rules = RULES) {
+export function findings(digest, rules = RULES, reference = null) {
   const out = [];
   for (const grant of digest.grants ?? []) {
-    for (const finding of evaluateGrant(grant, digest, rules)) {
+    for (const finding of evaluateGrant(grant, digest, rules, reference)) {
       out.push({ ...finding, isBaseline: grant.is_baseline === true });
     }
   }
@@ -458,13 +482,13 @@ export function findings(digest, rules = RULES) {
  * would be trying to reconcile a difference that is only the question, not the answer.
  */
 function withTwins(list) {
-  const key = (f) => `${f.id} ${f.policyId}`;
+  const key = (f) => `${f.id} ${f.policyId}`;
   const byAxis = new Map();
-  for (const finding of list) byAxis.set(`${finding.axis} ${key(finding)}`, true);
+  for (const finding of list) byAxis.set(`${finding.axis} ${key(finding)}`, true);
   return list.map((finding) => ({
     ...finding,
     alsoOnOtherAxis: byAxis.has(
-      `${finding.axis === AXIS.ACTION ? AXIS.RESOURCE : AXIS.ACTION} ${key(finding)}`) ,
+      `${finding.axis === AXIS.ACTION ? AXIS.RESOURCE : AXIS.ACTION} ${key(finding)}`) ,
   }));
 }
 
