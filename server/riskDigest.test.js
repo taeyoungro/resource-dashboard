@@ -162,6 +162,27 @@ test('AP-3: a create action survives even though no resource of its type exists'
   assert.deepEqual(d.passrole_grants[0].resources, ['*']);
 });
 
+test('which actions were granted on an unscoped Resource survives an empty inventory', () => {
+  // A fact about the DOCUMENT, and the only one that can tell a grant over the whole account from
+  // a grant over two named ARNs when there is nothing to enumerate. The same determination already
+  // drove group.scope, but a group exists only where a resource was found - so on a new account it
+  // was computed and thrown away, in exactly the account where it is the whole answer.
+  const acts = ['ec2:StopInstances', 'ec2:ModifyInstanceAttribute', 'ec2:StartInstances'];
+  const d = build(assessment([policy('AmazonEC2FullAccess', {
+    actions_granted: acts, actions_offerable: acts, actions_unscoped: acts, affected: [],
+  })]));
+  assert.equal(d.grants[0].units.length, 0, 'the fixture enumerated something');
+  // Filtered out of risk_actions, so it inherits that list's order rather than the statement's.
+  assert.deepEqual(d.grants[0].unscoped_actions, [...acts].sort());
+
+  // Absent on an assessment written before the querier produced it, and empty rather than assumed.
+  // Every use of it downstream only ever RAISES confidence, so empty is the conservative direction.
+  const old = build(assessment([policy('AmazonEC2FullAccess', {
+    actions_granted: acts, actions_offerable: acts, affected: [],
+  })]));
+  assert.deepEqual(old.grants[0].unscoped_actions, []);
+});
+
 test('AP-6: a unit whose actions are ALL passive is still emitted, because the count is the finding', () => {
   // Reconnaissance from names and counts: 108 roles, 44 policies, 15 stacks - and the reads cannot
   // be restricted. Dropping zero-risk units to save bytes is the natural optimisation that kills it.

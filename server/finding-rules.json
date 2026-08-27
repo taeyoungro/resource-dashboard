@@ -36,7 +36,6 @@
       "escalationGrade": "HIGH",
       "assetImpactGrade": "UNDETERMINED",
       "evaluatedOn": "resourceActionSet",
-      "whenNoUnits": "policyActionUnion",
       "predicate": {
         "anyOf": [
           { "action": "lambda:CreateFunctionUrlConfig" },

@@ -673,8 +673,25 @@ export interface Containment {
   notRestrictable: string[];
 }
 
+/**
+ * Which of the two questions a finding answers.
+ *
+ * resource  what this grant reaches in the account AS IT IS. Names ARNs, needs the inventory, and
+ *           is what a restriction gets validated against
+ * action    what this grant LETS SOMEBODY DO. Names no resource, needs nothing but the action list,
+ *           and is as true on day one as on day four hundred
+ *
+ * They are shown as two areas and never merged. One rule can answer both - E-3 on an account with
+ * instances says "these two instances" and "the execution context of whatever comes to exist", and
+ * those are different sentences with different lifetimes.
+ */
+export type FindingAxis = "resource" | "action";
+
 export interface Finding {
   id: string;
+  axis: FindingAxis;
+  /** True when the same rule and policy also produced a finding on the other axis. */
+  alsoOnOtherAxis?: boolean;
   category: FindingCategory;
   title: string;
   escalationGrade: Grade;

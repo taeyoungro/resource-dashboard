@@ -172,10 +172,16 @@ test('AP-4: a route or an ingress rule is network exposure, and the small unit c
                      [arn('ec2', 'security-group', 'sg-a')])],
   })]);
   const found = candidates(d).filter((c) => c.outcome === OUTCOME.NETWORK_EXPOSURE);
-  assert.equal(found.length, 2);
-  const routes = found.find((c) => c.target.type === 'ec2:route-table');
+  const reaches = found.filter((c) => c.target);
+  assert.equal(reaches.length, 2);
+  const routes = reaches.find((c) => c.target.type === 'ec2:route-table');
   assert.equal(routes.target.count, 2);
   assert.equal(routes.target.sample_complete, true, 'the ARNs an approver needs were sampled out');
+  // And the capability, beside them rather than instead of them. ec2:* on this account reaches two
+  // route tables today; what it will reach is every route table the account ever has, and only the
+  // second of those two sentences is still true after the next subnet is created.
+  assert.equal(found.filter((c) => !c.target).length, 1,
+               'the capability half is missing on an account that has resources');
 });
 
 test('AP-6: reading roles and policies is egress, and the count travels with it', () => {
@@ -351,9 +357,15 @@ test('a way into the network, and a blinded audit, need no inventory either', ()
   assert.equal(audit[0].target, null);
 });
 
-test('an enumerated account still gets the precise unit answer, not the capability one', () => {
-  // The widening this must not become. Where resources exist, the unit pass names them, and the
-  // policy-scope pass is skipped for that edge so the same path is not proposed twice.
+test('an enumerated account gets BOTH answers: the bucket it reaches, and the capability', () => {
+  // Two questions about one grant, and they have different lifetimes. "It can publish this bucket"
+  // is answered by a restriction naming that ARN; "it can publish whatever bucket comes to exist"
+  // survives the next deployment and is what a preventive control is written for.
+  //
+  // The capability half used to be suppressed the moment a single resource of the type appeared,
+  // so it was askable only on an empty account - which made it look like a special case for new
+  // accounts rather than the second half of every answer. Both are proposed now and the pair is
+  // told apart by `target`, which is also what files each one into its area on the page.
   const bucket = `arn:aws:s3:::opt-solution-markers`;
   const digest = {
     account_id: ACCOUNT,
@@ -365,8 +377,16 @@ test('an enumerated account still gets the precise unit answer, not the capabili
     }],
   };
   const found = candidates(digest).filter((c) => c.edge === 'exfiltrate');
-  assert.equal(found.length, 1, 'the same path was proposed twice, or not at all');
-  assert.ok(found[0].target, 'an enumerated account fell back to the capability-only answer');
+  assert.equal(found.length, 2, 'one of the two questions is not being asked');
+  const [reach] = found.filter((c) => c.target);
+  const [capability] = found.filter((c) => !c.target);
+  assert.ok(reach, 'the enumerated answer is gone - a restriction has nothing to be validated against');
+  assert.deepEqual(reach.target.sample, [bucket]);
+  assert.ok(capability, 'the capability answer is suppressed as soon as one resource exists');
+  // And it claims nothing about the inventory, in either direction. The old sentence said "no
+  // resource of the relevant type exists yet", which is now false on exactly this account.
+  assert.ok(!/exists yet/.test(capability.why), 'the capability sentence asserts an empty account');
+  assert.match(capability.why, /do not exist yet/);
 });
 
 // ---- writing the tag a control reads ----------------------------------------------------------

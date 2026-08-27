@@ -1077,6 +1077,42 @@ test('a template is a pre-filled form and enters through the decision path', () 
                'a template defaults to the open form');
 });
 
+test('the two risk areas are separate, and the action one claims no resources', () => {
+  // The gap: eleven of thirteen rules are evaluated over UNITS, a unit is a group of resources that
+  // were found, and a new account has none - so the risk page for the account a preventive control
+  // is written for was three rules and a blank space. Both areas are shown always, because on an
+  // account midway between empty and full both are true and neither implies the other.
+  const ui = readFileSync(new URL('../src/components/RiskAnalysis.tsx', import.meta.url), 'utf8');
+  assert.ok(ui.includes('영향 자원 위험') && ui.includes('Action 자체 위험'),
+            'the analysis is still one merged list');
+  assert.match(ui, /assessable\.filter\(\(f\) => f\.axis === axis\)/,
+               'the areas are headings over one list rather than a split');
+  // The cross-reference, or the two areas read as two independent findings and the counts double.
+  assert.match(ui, /finding\.alsoOnOtherAxis && \(/, 'a rule in both areas is not marked as one');
+  // An enumeration warning belongs to a card that made an enumeration.
+  assert.match(ui, /finding\.axis !== "action" && finding\.truncated !== false/,
+               'a capability is marked doubtful over a resource list it never had');
+
+  const engine = readFileSync(new URL('./findings.js', import.meta.url), 'utf8');
+  // The action axis attaches nothing, and that is structural rather than a convention the renderer
+  // keeps: a capability carrying ARNs would be answering the other question with a list that goes
+  // stale.
+  assert.match(engine, /units: \[\],/, 'the action axis can carry a resource list');
+  assert.match(engine, /hits\.length < 2 \|\| hits\.every\(\(a\) => unscoped\.has\(a\)\)/,
+               'the action axis asserts co-location it cannot show - the same false positive the '
+               + 'unit scope exists to prevent, through the other door');
+  // A resource-axis finding that reaches nothing is the action-axis one wearing the wrong heading.
+  assert.match(engine, /axis === AXIS\.RESOURCE && targets\.length === 0\) continue/);
+
+  // And the fact that settles co-location is a property of the DOCUMENT, so it survives an account
+  // with nothing to enumerate. That is the whole reason it is carried separately from unit.scope.
+  const digest = readFileSync(new URL('./riskDigest.js', import.meta.url), 'utf8');
+  assert.match(digest, /unscoped_actions: risk\.filter\(\(a\) => unscoped\.has\(a\)\)/);
+  const paths = readFileSync(new URL('./candidatePaths.js', import.meta.url), 'utf8');
+  assert.ok(!/const already = out\.some/.test(paths),
+            'the capability candidate is suppressed as soon as one resource of the type exists');
+});
+
 test('a refused inspection is read on the panel, ahead of the plan it explains', () => {
   // The silence: a refusal is a COMPLETED run, so its marker is deleted, so the request left no
   // row - the reason reached CloudWatch and nobody. Twelve managed policies against a limit of ten

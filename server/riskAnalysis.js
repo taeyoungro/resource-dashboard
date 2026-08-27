@@ -608,6 +608,11 @@ function findingOf({ verdict, candidate, grant }, digest) {
   return {
     id: candidate.id,
     source: 'model',
+    // Which of the two questions this answers, decided by the candidate rather than by the verdict:
+    // a candidate carrying a target was proposed over the inventory, one without it was proposed
+    // over the grant's capabilities. The model is not asked - it judges whether a path is real, and
+    // which question produced it is not its to decide. Same vocabulary as findings.js's AXIS.
+    axis: candidate.target ? 'resource' : 'action',
     edge: candidate.edge,
     outcome: candidate.outcome,
     category: verdict.category,

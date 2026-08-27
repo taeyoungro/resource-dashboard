@@ -83,16 +83,15 @@ function checkRule(rule, index, seen) {
     throw new RuleError(`${at}: evaluatedOn must be one of ${SCOPES.join(', ')}`);
   }
   if (rule.whenNoUnits !== undefined) {
-    // The scope a resourceActionSet rule falls back to when the grant enumerated NOTHING, so the
-    // capability it names is still reported on an account with no resources yet. Refused on a rule
-    // that is already evaluated at policy scope: there is nothing to fall back from, and a rule
-    // carrying a fallback nobody reaches is a rule whose author expected something else.
-    if (!SCOPES.includes(rule.whenNoUnits)) {
-      throw new RuleError(`${at}: whenNoUnits must be one of ${SCOPES.join(', ')}`);
-    }
-    if (rule.evaluatedOn !== 'resourceActionSet') {
-      throw new RuleError(`${at}: whenNoUnits only means something for a resourceActionSet rule`);
-    }
+    // Retired, and refused rather than ignored. It named the scope a resourceActionSet rule fell
+    // back to when the grant enumerated nothing, so the capability it described was still reported
+    // on an empty account. findings.js now evaluates EVERY rule on the action axis as well as the
+    // resource one, unconditionally - so a rule carrying this would be asked its policy-scope
+    // question twice and would print the finding twice on an account with nothing in it. Silently
+    // ignoring the field would leave that duplicate for somebody to find on screen.
+    throw new RuleError(`${at}: whenNoUnits is retired - every rule is evaluated on the action `
+      + 'axis as well as the resource one, which is what this asked for and is no longer '
+      + 'conditional on the account being empty. Remove the field');
   }
   if (rule.forceRestrictable !== undefined && typeof rule.forceRestrictable !== 'boolean') {
     throw new RuleError(`${at}: forceRestrictable must be a boolean`);
