@@ -82,6 +82,18 @@ function checkRule(rule, index, seen) {
   if (!SCOPES.includes(rule.evaluatedOn)) {
     throw new RuleError(`${at}: evaluatedOn must be one of ${SCOPES.join(', ')}`);
   }
+  if (rule.whenNoUnits !== undefined) {
+    // The scope a resourceActionSet rule falls back to when the grant enumerated NOTHING, so the
+    // capability it names is still reported on an account with no resources yet. Refused on a rule
+    // that is already evaluated at policy scope: there is nothing to fall back from, and a rule
+    // carrying a fallback nobody reaches is a rule whose author expected something else.
+    if (!SCOPES.includes(rule.whenNoUnits)) {
+      throw new RuleError(`${at}: whenNoUnits must be one of ${SCOPES.join(', ')}`);
+    }
+    if (rule.evaluatedOn !== 'resourceActionSet') {
+      throw new RuleError(`${at}: whenNoUnits only means something for a resourceActionSet rule`);
+    }
+  }
   if (rule.forceRestrictable !== undefined && typeof rule.forceRestrictable !== 'boolean') {
     throw new RuleError(`${at}: forceRestrictable must be a boolean`);
   }

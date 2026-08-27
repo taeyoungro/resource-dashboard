@@ -49,6 +49,12 @@ export const OUTCOME = {
   NETWORK_EXPOSURE: 'network_exposure',
   AVAILABILITY_DENIAL: 'availability_denial',
   AUDIT_BLIND: 'audit_blind',
+  // Rewriting the label a control reads. Its own outcome rather than a kind of modify-config,
+  // because what it reaches is not the resource - it is every tag_condition restriction on this
+  // permission set, at once. A Deny that selects by tag is only as strong as the tag, and whoever
+  // can write the tag chooses which side of the condition a resource falls on: under the closed
+  // form they label a resource into the allowed set, under the open form they strip the label off.
+  TAG_TAMPER: 'tag_tamper',
 };
 
 /**
@@ -117,12 +123,27 @@ const EDGES = [
     id: 'exfiltrate',
     any: [CAP.READ_DATA, CAP.READ_SECRET, CAP.SHARE_EXTERNAL, CAP.SNAPSHOT],
     outcome: OUTCOME.DATA_EGRESS,
+    targetless: true,
+    // Only the half that is real with nothing enumerated, which is why the field exists at all.
+    // Reading a table, a secret or a snapshot needs the table, the secret or the volume to be
+    // there - proposing those on an empty account is noise an approver has to clear. OPENING
+    // something to the outside is a property of the grant: s3:PutBucketPolicy, kms:PutKeyPolicy
+    // and lambda:CreateFunctionUrlConfig say "whatever comes to exist can be published", and that
+    // is true on day one. It was also the blind spot measured: the whole DATA_EGRESS outcome was
+    // unreachable on a new account, so the very action a preventive control is most often asked
+    // for produced no finding at all.
+    targetlessCaps: [CAP.SHARE_EXTERNAL],
     why: 'contents can be read, copied, or opened to a principal outside this account',
   },
   {
     id: 'open-network',
     any: [CAP.NETWORK_ROUTE, CAP.NETWORK_INGRESS],
     outcome: OUTCOME.NETWORK_EXPOSURE,
+    // Whole edge. Every action here BRINGS the path into being - CreateInternetGateway,
+    // CreateRoute, AuthorizeSecurityGroupIngress, CreateLoadBalancer - so "this grant can open a
+    // way into the network" needs no inventory to be true, and an account with nothing in it yet
+    // is exactly where that grant goes unexamined.
+    targetless: true,
     why: 'a path into or out of the network can be created',
   },
   {
@@ -132,9 +153,29 @@ const EDGES = [
     why: 'the resource can be removed or disabled',
   },
   {
+    id: 'retag',
+    any: [CAP.TAG],
+    outcome: OUTCOME.TAG_TAMPER,
+    // Targetless, and not because tagging is create-shaped - because what this reaches is not a
+    // resource at all. A tag-based Deny selects by label rather than by name, so the resources it
+    // covers are whichever ones carry the tag at evaluation time, and the ability to write tags is
+    // the ability to move a resource across that line. That is true of resources not yet created,
+    // which is exactly the population a tag condition exists to cover.
+    targetless: true,
+    why: 'the tags a Deny condition selects on can be written, so a resource can be moved to the '
+      + 'other side of the condition - relabelled into what a closed form allows, or stripped of '
+      + 'the label an open form denies on',
+  },
+  {
     id: 'blind',
     any: [CAP.TAMPER_AUDIT],
     outcome: OUTCOME.AUDIT_BLIND,
+    // Whole edge, and this one was never really a unit finding. What it acts on is account-level
+    // audit machinery - the trail, the Config recorder, the GuardDuty detector - which an index of
+    // workload resources does not report, so the capability was invisible whether the account was
+    // new or full. It is also the outcome an approver most needs to see before granting, because
+    // it is the one that makes the others unobservable afterwards.
+    targetless: true,
     why: 'the record of what happened can be shortened, stopped or deleted',
   },
 ];
@@ -204,6 +245,16 @@ function grantCapabilities(grant) {
       if (!out.has(cap)) out.set(cap, []);
       out.get(cap).push(action);
     }
+  }
+  // Tag writes come from the ACCESS LEVEL, not from the name. The verb fallback reads the first
+  // word and a tag write rarely starts with one: ec2:CreateTags is create, s3:PutBucketTagging is
+  // modify-config, rds:AddTagsToResource is nothing. So CAP.TAG existed and was never assigned to
+  // the actions that matter, and the whole tag-tamper path was unreachable. riskDigest carries the
+  // names AWS itself calls Tagging; this adds them to whatever the fallback already guessed rather
+  // than replacing it, because ec2:CreateTags really does also create something.
+  for (const action of grant.tag_writes ?? []) {
+    if (!out.has(CAP.TAG)) out.set(CAP.TAG, []);
+    if (!out.get(CAP.TAG).includes(action)) out.get(CAP.TAG).push(action);
   }
   // A service granted whole carries every action of it, INCLUDING the ones the digest folded away
   // by name. Without this the fold would be a hole the graph cannot see through: 'ec2:*' would
@@ -308,13 +359,18 @@ export function candidates(digest) {
     // existing thing - rewriting code, stopping an instance, reading a table - says nothing when
     // there is no such thing, and proposing it would be noise an approver has to clear. An edge
     // that BRINGS SOMETHING INTO BEING - minting a credential, writing a policy onto a principal,
-    // passing a role to a service it then creates - is real on an empty account, and it is
-    // precisely what a groups-only view cannot see: a create action reaches nothing that exists,
-    // so it appears in no unit at all.
+    // passing a role to a service it then creates, publishing whatever comes to exist, opening a
+    // way into the network - is real on an empty account, and it is precisely what a groups-only
+    // view cannot see: a create action reaches nothing that exists, so it appears in no unit.
+    //
+    // The distinction is per CAPABILITY where an edge holds both kinds. `exfiltrate` is the one
+    // that does: reading a table needs the table, publishing a bucket policy does not, and marking
+    // the whole edge targetless would have proposed every s3:GetObject grant on an empty account.
+    // targetlessCaps names the half that survives; without it the edge's whole `any` list does.
     for (const edge of EDGES) {
       if (!edge.targetless) continue;
       if (edge.needs && !edge.needs.every((cap) => policyCaps.has(cap))) continue;
-      const hit = (edge.any ?? []).filter((cap) => policyCaps.has(cap));
+      const hit = (edge.targetlessCaps ?? edge.any ?? []).filter((cap) => policyCaps.has(cap));
       if (hit.length === 0) continue;
       // Only when no unit already carried it, so the same path is not proposed twice.
       const already = out.some((c) => c.edge === edge.id && c.policy_id === grant.p);

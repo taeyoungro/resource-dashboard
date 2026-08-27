@@ -927,6 +927,40 @@ dialog.picker button.commit {
   tab-size: 2;
 }
 
+/* The standard restrictions this deployment offers. Folded shut: an approver who already knows
+   what they are restricting should not have to scroll past three of them to reach the editor. */
+.templates { margin: 10px 0 14px; }
+.templates > summary { cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+.template-row {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.template-row .control-row { margin: 0; }
+.template-row p { margin: 4px 0 0; }
+
+/* Asking the document about a resource that does not exist yet. Folded shut by default: it is a
+   verification step, not part of reading the policy, and an approver who does not need it should
+   not have to scroll past four inputs to reach 닫기. */
+.virtual-test { margin: 10px 0; }
+.virtual-test > summary { cursor: pointer; font-size: 0.82rem; }
+.virtual-test fieldset { display: grid; gap: 6px; margin: 8px 0; }
+.virtual-test input { width: 100%; }
+
+/* The verdict. Two colours and three outcomes on purpose - DENIED is the one an approver is
+   checking FOR, and NOT_DENIED and UNKNOWN are both "not that", which is why neither is green. */
+.virtual-denied, .virtual-open {
+  margin: 6px 0 0;
+  padding: 6px 9px;
+  border-radius: 5px;
+  font-size: 0.8rem;
+  border: 1px solid var(--border);
+}
+.virtual-denied { border-color: var(--ok, var(--border)); }
+.virtual-open { background: var(--panel-2); }
+
 /* One row per statement the policy puts into the document: the Sid it will be WRITTEN under, then
    the actions. The Sid leads because it is what ties this row to a line in the document above - an
    approver reading both is matching on that string and nothing else. */

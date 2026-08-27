@@ -96,6 +96,24 @@ export function creationExemption(pattern, picked) {
 }
 
 /**
+ * What an absent condition operator MEANS, per intent. Mirrors restriction.DEFAULT_CONDITION_OPERATOR.
+ *
+ * The two answers differ, and it is about records rather than taste. key_condition was born closed,
+ * so absence normalises to the form the design chose. tag_condition was born OPEN - its branch
+ * hardcoded StringEquals until the operator existed - so an absent operator on one of those stored
+ * decisions is not "unspecified", it IS StringEquals, and reading it as the closed form would
+ * silently invert a control somebody already approved. The editor proposes the closed form for a
+ * NEW tag decision; that is a different thing from what an unmarked old record means.
+ */
+const DEFAULT_CONDITION_OPERATOR = {
+  key_condition: 'StringNotEquals',
+  tag_condition: 'StringEquals',
+};
+
+const conditionOperator = (restriction) =>
+  restriction.condition_operator ?? DEFAULT_CONDITION_OPERATOR[restriction.intent];
+
+/**
  * One action, one statement - before the fold. Mirrors restriction._statement.
  *
  * `createdFor` answers what generator/actions.Table.creation_exemptions answers on the writing
@@ -120,21 +138,18 @@ function statement(sid, restriction, action, nested, createdFor = () => []) {
       ...base,
       Resource: '*',
       Condition: {
-        StringEquals: {
+        [conditionOperator(restriction)]: {
           [`aws:ResourceTag/${restriction.tag_key ?? ''}`]: [...(restriction.tag_values ?? [])].sort(),
         },
       },
     };
   }
   if (restriction.intent === 'key_condition') {
-    // The operator default is applied HERE, not upstream, mirroring restriction.from_dict: a
-    // decision stored without condition_operator is a StringNotEquals decision, and both languages
-    // must read it as one or the preview and the writer compose different bytes from the same row.
     return {
       ...base,
       Resource: '*',
       Condition: {
-        [restriction.condition_operator ?? 'StringNotEquals']: {
+        [conditionOperator(restriction)]: {
           [restriction.condition_key ?? '']: [...(restriction.condition_values ?? [])].sort(),
         },
       },

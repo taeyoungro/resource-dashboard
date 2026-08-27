@@ -117,6 +117,18 @@ function levelsOf(assessment) {
  * action the table has not seen - an unknown action cannot be shown to be harmless, and dropping
  * it is the only direction of error this pipeline refuses everywhere else.
  */
+/**
+ * The access level the reference gives this action, or undefined when nothing says.
+ *
+ * Undefined and 'Read' are different answers and the callers treat them differently: isRiskAction
+ * carries an unknown action verbatim rather than calling it passive, and the tag list below leaves
+ * it out rather than calling it a tag write. Both directions are the closed one for their caller.
+ */
+function levelOf(action, levels) {
+  const cut = action.indexOf(':');
+  return levels.get(action.slice(0, cut))?.get(action.slice(cut + 1));
+}
+
 export function isRiskAction(action, { levels, ruleActions }) {
   if (ruleActions.has(action)) return true;
   if (SENSITIVE_READS.has(action)) return true;
@@ -320,6 +332,14 @@ export function condense(assessment, {
       // validator checking that a cited action exists must accept one on this basis.
       complete_services: complete,
       risk_actions: risk,
+      // The actions AWS itself calls Tagging, carried by NAME because the capability layer cannot
+      // work them out. Its verb fallback reads the first word, and the first word of a tag write is
+      // usually not "Tag": ec2:CreateTags reads as create, s3:PutBucketTagging as modify-config,
+      // ec2:DeleteTags as delete, rds:AddTagsToResource as nothing at all. That miss is the whole
+      // of why a tag-tamper path was invisible, and the answer is not a longer verb list - it is
+      // the access level the reference already publishes and this file already reads to decide what
+      // is passive. Empty when the assessment carries no reference to read levels from.
+      tag_writes: risk.filter((a) => levelOf(a, levels) === 'Tagging'),
       non_restrictable: nonRestrictable,
       units,
     });

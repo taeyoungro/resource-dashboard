@@ -906,6 +906,7 @@ test('조건으로 거부 - the key is declared, the default is closed, the rout
 });
 
 const API = readFileSync(new URL('./api.js', import.meta.url), 'utf8');
+const PREVIEW = readFileSync(new URL('./inlinePreview.js', import.meta.url), 'utf8');
 
 test('이 자원만 허용 offers only what was judged to hold it, and demands every type', () => {
   // The reported defect class: IAM authorises a multi-resource call against every resource in the
@@ -921,7 +922,7 @@ test('이 자원만 허용 offers only what was judged to hold it, and demands e
                'the offering shows actions whose statement would deny every call');
   assert.ok(IMPACT.includes('!o.account_level && !o.creates_target'),
             'the verdict filter replaced the flat-deny filter instead of composing with it');
-  assert.ok(IMPACT.includes('alsoKeptOut={intent === "allow_only" && unsafe > 0'),
+  assert.ok(IMPACT.includes('alsoKeptOut={unsafe > 0 && intent === "allow_only"'),
             'the judged-unsafe absences are folded into the flat-deny sentence or not said');
   assert.ok(PICKER.includes('{alsoKeptOut.lead} {alsoKeptOut.count}개는 여기에 없다'),
             'the second kept-out bucket has no sentence of its own');
@@ -939,6 +940,42 @@ test('이 자원만 허용 offers only what was judged to hold it, and demands e
   assert.ok(IMPACT.includes('유형마다 하나 이상'), 'the section does not state the rule');
   assert.match(IMPACT, /typeOfArn\.get\(arn\) === type/,
                'cover is checked by something other than the enumeration type of the picked ARN');
+});
+
+test('태그로 거부 - the operator is a decision, and the tag has to be one AWS reads', () => {
+  // The fix. The tag branch hardcoded StringEquals - the OPEN form - so every tag restriction this
+  // platform ever wrote let past exactly what an administrator asking for "production is off
+  // limits" meant to catch: a resource carrying no Environment tag at all does not match
+  // StringEquals, the Deny does not fire, and the untagged resource is allowed.
+  assert.match(PREVIEW, /\[conditionOperator\(restriction\)\]: \{\s*\[`aws:ResourceTag\/\$\{restriction\.tag_key \?\? ''\}`\]/,
+               'the preview hardcodes the tag operator again');
+  // The two condition intents' absences mean DIFFERENT things, and both languages say so in one
+  // place. key_condition was born closed; every stored tag decision composed StringEquals, so
+  // reading an unmarked one as closed would invert a control somebody already approved.
+  assert.match(PREVIEW, /DEFAULT_CONDITION_OPERATOR = \{\s*key_condition: 'StringNotEquals',\s*tag_condition: 'StringEquals',/,
+               'the per-intent default is gone, or the tag default flipped under stored records');
+  // The editor proposes the closed form for a NEW decision and preserves a stored one.
+  assert.match(IMPACT, /tagSeed \? tagSeed\.condition_operator \?\? "StringEquals" : "StringNotEquals"/,
+               'a new tag decision is proposed open, or a stored one is silently flipped');
+  assert.match(IMPACT, /setTagOperator\(tag \? tag\.condition_operator \?\? "StringEquals" : "StringNotEquals"\)/,
+               'the resync does not reseed the tag operator the same way it seeds it');
+  assert.ok(IMPACT.includes('condition_operator: fields.tagOperator'),
+            'the chosen tag operator never reaches the wire');
+  // Choosing the open form is allowed and says which way it rots - the same honesty the condition
+  // section already carries.
+  assert.ok(IMPACT.includes('그 태그가 붙지 않은 자원은 걸리지 않는다'),
+            'the open tag form is offered without saying what it lets past');
+  // And the coherence gate tag_condition was missing while key_condition had one.
+  assert.match(IMPACT, /scoped\.filter\(\(o\) => !untaggable\.has\(o\.action\)\)/,
+               'the tag section offers actions whose condition can never fire');
+  assert.match(IMPACT, /reference\?\.no_resource_tag/,
+               'the editor does not read the carried tag vocabulary');
+  assert.ok(IMPACT.includes('AWS가 aws:ResourceTag를 평가하지 않는 동작'),
+            'the actions kept out of the tag section are not said, or share the wrong sentence');
+  assert.match(API, /restriction\.intent === 'tag_condition' && referenceNoResourceTag/,
+               'the route does not mirror the tag coherence gate, or refuses on an old assessment');
+  assert.match(API, /CONDITION_INTENTS = new Set\(\['tag_condition', 'key_condition'\]\)/,
+               'the operator is accepted on an intent whose statement has no condition');
 });
 
 test('the decision route mirrors the verdict and holds the cover gate the writer cannot', () => {
@@ -968,4 +1005,74 @@ test('the block dialog drops judged-unsafe actions by name and holds 적용 for 
                'additions still writes rows for dropped actions');
   assert.match(BLOCK, /coverShort\.length > 0\s*\|\| tagMissing/,
                '적용 commits an under-covered allow_only decision the route will refuse');
+});
+
+const PLAN = readFileSync(new URL('../src/components/PlanDetail.tsx', import.meta.url), 'utf8');
+
+test('the virtual resource test says what it checked, and never says ALLOW', () => {
+  // The check a new account cannot otherwise get: reading a Condition block and working out what
+  // it does to an untagged resource created next month is the thing people get wrong, and
+  // describing that resource and asking is not.
+  assert.ok(IMPACT.includes('<VirtualResourceTest'),
+            'the preview offers no way to ask about a resource that does not exist');
+  assert.match(IMPACT, /아직 없는 자원으로 시험하기/, 'the control has no name');
+  // The one thing it must never claim. This document is Deny-only and an Allow comes from the
+  // attached managed policies, whose Resource and Condition clauses the assessment never carries.
+  assert.ok(!/["'>]\s*허용된다/.test(IMPACT), 'the test claims a call would be allowed');
+  assert.ok(IMPACT.includes('이 문서의 어떤 Deny도 걸리지 않는다'),
+            'NOT_DENIED is rendered as something other than what was checked');
+  // And NOT_DENIED distinguishes its two causes, or it is not readable.
+  assert.match(IMPACT, /answer\.considered\.length > 0/,
+               '"nothing matched" and "matched and did not fire" are shown as one answer');
+  // UNKNOWN names the key instead of guessing - the common case under a closed default.
+  assert.match(IMPACT, /answer\.outcome === UNKNOWN/, 'UNKNOWN is not rendered at all');
+  assert.ok(IMPACT.includes('판정할 수 없다'), 'an unanswerable probe is given a verdict anyway');
+  // The evaluator is pinned against the container's, like the composer beside it.
+  const evaluator = readFileSync(new URL('./virtualResource.js', import.meta.url), 'utf8');
+  assert.ok(evaluator.includes('virtual_resource.py'),
+            'nothing records which side is the authority');
+  assert.match(evaluator, /export const NOT_DENIED = 'NOT_DENIED'/);
+  assert.ok(!/ALLOW/.test(evaluator.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '')),
+            'an ALLOW verdict exists in the evaluator');
+});
+
+test('a tag control says it is only as strong as who can write the tag', () => {
+  // §11 in one line: a Deny that selects by tag is defeated by whoever can move the tag, and the
+  // grant that lets them do it can sit in any attached policy - so the warning is computed over
+  // the WHOLE permission set, not the policy the condition was written against.
+  assert.match(IMPACT, /const tagWriters = useMemo\(/, 'nothing computes who can write tags');
+  assert.match(IMPACT, /\?\.\[0\] === "Tagging"/,
+               'tag writers are found by verb or by name rather than by the AWS access level');
+  assert.ok(IMPACT.includes('이 권한 세트는 태그를 쓸 수 있다'),
+            'the tag section does not say the control can be walked around');
+  assert.ok(IMPACT.includes('동작 자체 거부'),
+            'the warning names no remedy');
+  // The engine half: the capability comes from the digest's level-derived list, and has an edge.
+  const paths = readFileSync(new URL('./candidatePaths.js', import.meta.url), 'utf8');
+  assert.match(paths, /for \(const action of grant\.tag_writes \?\? \[\]\)/,
+               'CAP.TAG is still assigned by the verb fallback alone');
+  assert.match(paths, /id: 'retag'/, 'no edge consumes the tag capability');
+  assert.match(paths, /TAG_TAMPER: 'tag_tamper'/, 'the outcome has no name');
+  const digest = readFileSync(new URL('./riskDigest.js', import.meta.url), 'utf8');
+  assert.match(digest, /tag_writes: risk\.filter\(\(a\) => levelOf\(a, levels\) === 'Tagging'\)/,
+               'the digest does not carry the tag writes, or finds them some other way');
+});
+
+test('a template is a pre-filled form and enters through the decision path', () => {
+  // Not a policy installed anywhere: there is nothing to attach to before a plan is approved, the
+  // writer replaces every AdminDeny statement wholesale, and a statement with no reviewer and no
+  // assessment digest is what the marker contract exists to make impossible.
+  assert.ok(PLAN.includes('<RestrictionTemplates'), 'templates are not offered on the plan');
+  assert.match(PLAN, /onApply=\{\(seeded\) => setRestrictions\(\(current\) => mergeTemplate\(current, seeded\)\)\}/,
+               'applying a template does something other than fill the editor in');
+  assert.match(PLAN, /승인은 여전히 이 계획에\s+대한 결정으로 나간다/,
+               'the page does not say a template still goes through the ordinary decision');
+  // What it drops is said BEFORE the button is pressed - a template that quietly shrank would
+  // read as a control that was fully applied.
+  assert.ok(PLAN.includes('이 계획에 걸 수 없어 빠진다'), 'dropped rows are silent');
+  const templates = readFileSync(new URL('./templates.js', import.meta.url), 'utf8');
+  assert.match(templates, /const INTENTS = new Set\(\['deny_action', 'tag_condition', 'key_condition'\]\)/,
+               'a template may carry an ARN, which is an account fact and not a template');
+  assert.match(templates, /condition_operator: row\.condition_operator \?\? 'StringNotEquals'/,
+               'a template defaults to the open form');
 });

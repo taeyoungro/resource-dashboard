@@ -314,12 +314,41 @@ export interface Restriction {
   /**
    * key_condition only. The key must be one the ACTION DECLARES (action_reference.condition_keys),
    * or the condition never evaluates - StringEquals then denies nothing, StringNotEquals denies
-   * every call, and either way the statement reads as the chosen control. The operator defaults to
-   * StringNotEquals, the closed form: a missing key or a value AWS adds later is denied.
+   * every call, and either way the statement reads as the chosen control.
    */
   condition_key?: string;
-  condition_operator?: "StringNotEquals" | "StringEquals";
   condition_values?: string[];
+  /**
+   * BOTH condition intents carry the operator. tag_condition's branch hardcoded StringEquals until
+   * the operator existed, so absence on a STORED tag decision means StringEquals - the open form,
+   * under which a resource carrying no such tag does not match and walks past the control. The
+   * editor proposes StringNotEquals for a new one; that is a different thing from what an unmarked
+   * old record means. key_condition was born closed and its absence means StringNotEquals.
+   */
+  condition_operator?: "StringNotEquals" | "StringEquals";
+}
+
+/**
+ * A decision an organisation made once, offered as a pre-filled form on every plan.
+ *
+ * Not a policy installed anywhere - see server/templates.js for why that shape was refused. It
+ * names ACTIONS and only the three intents that mean the same thing in every account; the binding
+ * to attached policies is resolved per plan against that plan's own assessment.
+ */
+export interface RestrictionTemplate {
+  id: string;
+  title: string;
+  /** The sentence an approver reads before agreeing - what the control does and what it costs. */
+  why: string;
+  restrictions: {
+    intent: "deny_action" | "tag_condition" | "key_condition";
+    actions: string[];
+    tag_key?: string;
+    tag_values?: string[];
+    condition_key?: string;
+    condition_values?: string[];
+    condition_operator?: "StringNotEquals" | "StringEquals";
+  }[];
 }
 
 export type RestrictionIntent =
@@ -433,6 +462,13 @@ export interface ImpactActionReference {
    * on assessments written before the reference carried it - the writer then judges alone.
    */
   allow_only?: Record<string, Record<string, { refuse?: string; cover?: string[] }>>;
+  /**
+   * The actions AWS evaluates no aws:ResourceTag for - every resource type they name lacks the
+   * key, or they name none at all. A tag condition on one of these never fires: under StringEquals
+   * it denies nothing, under StringNotEquals it denies every call, and both read as the chosen
+   * control. Fully-qualified names ("iam:AttachGroupPolicy"). Absent on older assessments.
+   */
+  no_resource_tag?: string[];
 }
 
 export type ImpactActionEntry =

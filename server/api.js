@@ -11,6 +11,7 @@
 // gap is between the two and is worth knowing about rather than being reassured out of.
 
 import { timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 import { NotificationError, parse as parseNotification } from './notifications.js';
 import { putJson } from './s3.js';
@@ -19,6 +20,7 @@ import { planPrefixFromId, readImpact, readPlan } from './sweep.js';
 import { controlPlane } from './controlPlane.js';
 import { condense, digestBytes } from './riskDigest.js';
 import { candidates as proposeCandidates } from './candidatePaths.js';
+import { loadTemplates } from './templates.js';
 import { findings as ruleFindings, sections, summary } from './findings.js';
 import { overlapCount, withOverlap } from './overlap.js';
 import { RULES_SHA256, RULE_ACTIONS } from './rules.js';
@@ -97,6 +99,16 @@ const RESTRICTION_INTENTS = new Set([
   'allow_only', 'deny_only', 'deny_action', 'tag_condition', 'key_condition',
 ]);
 const CONDITION_OPERATORS = new Set(['StringNotEquals', 'StringEquals']);
+// The two intents whose statement carries a Condition, and so the two that may carry an operator.
+// tag_condition joined them when its branch stopped hardcoding StringEquals - the open form, under
+// which a resource carrying no such tag at all does not match and walks past the control.
+const CONDITION_INTENTS = new Set(['tag_condition', 'key_condition']);
+
+// Deployment configuration, read once at first use. undefined means "not yet read"; [] with an
+// error set means the file is unusable and the page gets no template section - the closed
+// direction, because a template that half-loaded would seed a restriction nobody wrote.
+let templates;
+let templateError = null;
 
 export const INGEST_ROUTES = new Set([
   'POST /api/notifications',
@@ -301,6 +313,27 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // forced, back when the model call lived inside its own request.
       analysis_runs: runs.size(),
     }),
+
+    // The standard restrictions this deployment offers, for the page to pre-fill the editor with.
+    //
+    // Read once at first use and cached, like the rule file: it is deployment configuration, not
+    // account state. A malformed file makes the route report the reason and offer nothing - the
+    // page then simply has no template section, which is the closed direction: a template that
+    // half-loaded would seed a restriction nobody wrote.
+    'GET /api/templates': async () => {
+      if (templates === undefined) {
+        try {
+          templates = loadTemplates(JSON.parse(
+            readFileSync(new URL('./restriction-templates.json', import.meta.url), 'utf-8')));
+          templateError = null;
+        } catch (error) {
+          templates = [];
+          templateError = error instanceof Error ? error.message : String(error);
+          log.warn('restriction templates unusable', { reason: templateError });
+        }
+      }
+      return { templates, error: templateError };
+    },
 
     'GET /api/state': async () => {
       const state = store.get();
@@ -833,6 +866,11 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // of each. The writer refuses the first from its own table; the second it CANNOT check -
         // it receives a flat resource set with no types - so this route is where under-picking is
         // caught, from the assessment's own typed enumeration.
+        // The actions AWS evaluates no aws:ResourceTag for, carried by the assessment. Absent as a
+        // whole means an older assessment could not say - the gate then passes through and the
+        // writer judges, the same arrangement condition_keys and created_formats have.
+        const referenceNoResourceTag = stored.document.action_reference?.no_resource_tag;
+        const untaggableActions = new Set(referenceNoResourceTag ?? []);
         const referenceAllowOnly = stored.document.action_reference?.allow_only;
         const allowOnlyVerdicts = new Map();
         for (const [service, block] of Object.entries(referenceAllowOnly ?? {})) {
@@ -882,10 +920,11 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
             }
           }
           // The mirror of the writer's cross-intent gate: only key_condition composes a request-key
-          // condition, so these fields on any other intent would sit in the marker as part of the
-          // decision and never reach the statement - recorded-and-inert.
+          // condition, so the KEY and the VALUES on any other intent would sit in the marker as
+          // part of the decision and never reach the statement - recorded-and-inert. The OPERATOR
+          // is shared with tag_condition, whose key is aws:ResourceTag/<tag_key>.
           if (restriction.intent !== 'key_condition'
-              && (restriction.condition_key || restriction.condition_operator
+              && (restriction.condition_key
                   || (Array.isArray(restriction.condition_values)
                       && restriction.condition_values.length > 0))) {
             throw new HttpError(
@@ -894,6 +933,24 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
               + 'composes a request-key condition; anywhere else they would be recorded and never '
               + 'evaluated.',
             );
+          }
+          if (restriction.condition_operator != null) {
+            if (!CONDITION_INTENTS.has(restriction.intent)) {
+              throw new HttpError(
+                400,
+                `a ${restriction.intent} restriction carries a condition operator. Its statement `
+                + 'has no condition for the operator to apply to, so it would be recorded and '
+                + 'never evaluated.',
+              );
+            }
+            if (!CONDITION_OPERATORS.has(restriction.condition_operator)) {
+              throw new HttpError(
+                400,
+                `condition_operator must be one of ${[...CONDITION_OPERATORS].join(', ')}. `
+                + 'StringNotEquals is the closed form - a missing key, or a resource carrying no '
+                + 'such tag, is denied; StringEquals is the open form and lets both past.',
+              );
+            }
           }
           if (restriction.intent === 'key_condition') {
             const values = Array.isArray(restriction.condition_values)
@@ -905,16 +962,8 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
                 '"조건으로 거부" needs both a condition key and at least one value, as strings.',
               );
             }
-            // Absent is not an error - the writer parses it as StringNotEquals, the closed form.
-            if (restriction.condition_operator != null
-                && !CONDITION_OPERATORS.has(restriction.condition_operator)) {
-              throw new HttpError(
-                400,
-                `condition_operator must be one of ${[...CONDITION_OPERATORS].join(', ')}. `
-                + 'StringNotEquals is the closed form - a missing key or a value AWS adds later is '
-                + 'denied; StringEquals is the open form and says so.',
-              );
-            }
+            // The operator whitelist is checked above, for both condition intents. Absent is not
+            // an error either way - the writer fills the per-intent default at parse.
             if (Array.isArray(restriction.resources) && restriction.resources.length > 0) {
               throw new HttpError(
                 400,
@@ -983,6 +1032,25 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
                   + 'no resources, which denies it outright.',
                 );
               }
+            }
+          }
+          // The coherence gate tag_condition was missing while key_condition had one. AWS evaluates
+          // aws:ResourceTag only for the resource types that declare it; on the rest the key is
+          // absent from the request context and the condition never fires - under StringEquals the
+          // statement denies nothing, under StringNotEquals it denies every call, and both read on
+          // screen as the control that was chosen. Exact names only: a wildcard is judged on the
+          // whole statement by the writer, and an assessment written before the reference carried
+          // the list passes through for the writer to judge.
+          if (restriction.intent === 'tag_condition' && referenceNoResourceTag) {
+            for (const action of actions) {
+              if (action.includes('*')) continue;
+              if (!untaggableActions.has(action.trim())) continue;
+              throw new HttpError(
+                400,
+                `${action}이 지목하는 자원 유형에는 AWS가 aws:ResourceTag를 평가하지 않는다. 조건이 `
+                + '요청 문맥에 없어 문장이 기록만 되고 아무 때도 발화하지 않는다 — "동작 자체 거부"를 '
+                + '쓰거나, 그 동작이 선언한 요청 조건 키로 "조건으로 거부"를 쓴다.',
+              );
             }
           }
           const named = Array.isArray(restriction.resources) ? restriction.resources : [];

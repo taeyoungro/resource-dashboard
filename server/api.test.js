@@ -112,6 +112,7 @@ test('the release is read from the file the installer writes, not only from the 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { routes } from './api.js';
+import { seedFromTemplate } from './templates.js';
 
 const ACCOUNT = '644701781058';
 const REQUEST = `${ACCOUNT}-8f2c41d90b7e6a35`;
@@ -533,6 +534,95 @@ test('deny_action refuses what it would record and never evaluate', async () => 
     }),
     /unconditional by construction/,
   );
+});
+
+test('a tag condition carries an operator now, and only a valid one', async () => {
+  // The fix: the branch hardcoded StringEquals - the open form, under which a resource carrying no
+  // such tag at all does not match and walks past the control. Both spellings are now decisions.
+  const { route, s3 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ policy: restriction.policy, intent: 'tag_condition',
+                       actions: ['sqs:DeleteMessage'], tag_key: 'env', tag_values: ['prod'],
+                       condition_operator: 'StringNotEquals' }],
+      expected_impact_sha256: ASSESSMENT_SHA,
+    }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal(marker.restrictions[0].condition_operator, 'StringNotEquals');
+
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ policy: restriction.policy, intent: 'tag_condition',
+                         actions: ['sqs:DeleteMessage'], tag_key: 'env', tag_values: ['prod'],
+                         condition_operator: 'Null' }],
+        expected_impact_sha256: ASSESSMENT_SHA,
+      }),
+    }),
+    /must be one of/,
+  );
+  // And an intent whose statement has no Condition still cannot carry one.
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ ...restriction, intent: 'deny_action', resources: [],
+                         condition_operator: 'StringEquals' }],
+        expected_impact_sha256: ASSESSMENT_SHA,
+      }),
+    }),
+    /carries a condition operator/,
+  );
+});
+
+// An assessment whose reference names the actions AWS evaluates no aws:ResourceTag for.
+const UNTAGGABLE = {
+  ...ASSESSMENT,
+  action_reference: {
+    ...ASSESSMENT.action_reference,
+    services: {
+      ...ASSESSMENT.action_reference.services,
+      iam: { AttachGroupPolicy: ['Permissions management', ['group']] },
+    },
+    no_resource_tag: ['iam:AttachGroupPolicy', 'sqs:ListQueues'],
+  },
+};
+
+test('a tag condition on an action AWS reads no resource tag for is refused', async () => {
+  // The coherence gate tag_condition was missing while key_condition had one. `group` is one of
+  // seven iam types carrying no aws:ResourceTag, so the condition is absent from the request
+  // context and the statement never fires - it just reads as the control that was chosen.
+  const { route, impactSha256 } = harness({ assessment: UNTAGGABLE });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({
+        restrictions: [{ policy: restriction.policy, intent: 'tag_condition',
+                         actions: ['iam:AttachGroupPolicy'], tag_key: 'env',
+                         tag_values: ['prod'] }],
+        expected_impact_sha256: impactSha256,
+      }),
+    }),
+    /aws:ResourceTag를 평가하지 않는다/,
+  );
+});
+
+test('an assessment without the tag vocabulary passes the tag condition through', async () => {
+  // Same arrangement as condition_keys and created_formats: an older assessment cannot say, the
+  // route does not guess, and the writer judges from its own table.
+  const { route, s3 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({
+      restrictions: [{ policy: restriction.policy, intent: 'tag_condition',
+                       actions: ['sqs:DeleteMessage'], tag_key: 'env', tag_values: ['prod'] }],
+      expected_impact_sha256: ASSESSMENT_SHA,
+    }),
+  });
+  assert.ok(s3.puts.some((p) => p.key.startsWith('applier/')));
 });
 
 // An assessment whose reference carries the condition-key vocabulary, for the key_condition gates.
@@ -1196,4 +1286,57 @@ test('an approval with no analysis carries no citation', async () => {
   });
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.equal('risk_analysis' in marker, false);
+});
+
+test('the templates route serves what the deployment ships, validated', async () => {
+  const { route } = harness({ pushed: PUSHED });
+  const answer = await route['GET /api/templates']();
+  assert.equal(answer.error, null, 'the shipped template file is unusable');
+  assert.ok(answer.templates.length >= 3);
+  // Only the three intents that mean the same thing in every account - a template carrying an ARN
+  // would name a resource that does not exist in the account being approved.
+  for (const template of answer.templates) {
+    for (const row of template.restrictions) {
+      assert.ok(['deny_action', 'tag_condition', 'key_condition'].includes(row.intent),
+                `${template.id} carries ${row.intent}`);
+      assert.ok(!row.resources, `${template.id} names resources`);
+    }
+  }
+});
+
+test('a template seeds an ordinary decision that the route accepts unchanged', async () => {
+  // The property the whole shape rests on: what arrives at the route is indistinguishable from
+  // something an approver ticked, so every gate still runs on it.
+  const { route, s3, impactSha256 } = harness({ assessment: KEYED });
+  const template = (await route['GET /api/templates']()).templates
+    .find((t) => t.id === 'no-public-function-url');
+  const { restrictions, dropped } = seedFromTemplate(template, KEYED);
+  assert.equal(restrictions.length, 0, 'this assessment grants none of it');
+  assert.ok(dropped.every((d) => d.why === 'not_granted'));
+
+  // And with a policy that DOES grant it, the seeded row goes through the decision route as-is.
+  const granting = {
+    ...KEYED,
+    policies: [{
+      identifier: 'arn:aws:iam::aws:policy/AWSLambda_FullAccess',
+      source: 'aws_managed', default_version_id: 'v7', is_baseline: false, restrictable: true,
+      unreadable: null,
+      actions_granted: ['lambda:CreateFunctionUrlConfig'],
+      actions_offerable: ['lambda:CreateFunctionUrlConfig'],
+      actions_non_restrictable: [], affected: [],
+    }],
+  };
+  const seeded = seedFromTemplate(template, granting).restrictions;
+  assert.equal(seeded.length, 1);
+  assert.equal(seeded[0].condition_operator, 'StringNotEquals');
+  const withGrant = harness({ assessment: granting });
+  await withGrant.route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({ restrictions: seeded, expected_impact_sha256: withGrant.impactSha256 }),
+  });
+  const marker = JSON.parse(
+    withGrant.s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal(marker.restrictions[0].intent, 'key_condition');
+  assert.equal(marker.restrictions[0].condition_key, 'lambda:FunctionUrlAuthType');
+  assert.ok(s3 && impactSha256);
 });

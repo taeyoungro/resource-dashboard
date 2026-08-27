@@ -508,6 +508,38 @@ test('an absent condition operator composes as the default the writer parses', (
                'the absent operator and the explicit default compose different bytes');
 });
 
+test('a tag condition reads its operator, and an absent one keeps the OLD meaning', () => {
+  // The fix and its compatibility rule in one test. The branch hardcoded StringEquals, so every
+  // tag restriction ever written read as the open form - a resource with no Environment tag does
+  // not match StringEquals, the Deny does not fire, and the untagged resource walks past. The
+  // closed form denies exactly that resource. But an absent operator on a STORED decision is not
+  // "unspecified": it composed StringEquals when it was approved, and must keep doing so.
+  const row = (over) => ({ policy: 'p', intent: 'tag_condition', actions: ['s3:DeleteObject'],
+                           tag_key: 'Environment', tag_values: ['production'], ...over });
+  const conditionOf = (r) => composeInline([r], { accountId: '1' }).Statement[0].Condition;
+  assert.deepEqual(conditionOf(row({ condition_operator: 'StringNotEquals' })),
+                   { StringNotEquals: { 'aws:ResourceTag/Environment': ['production'] } });
+  assert.deepEqual(conditionOf(row({})),
+                   { StringEquals: { 'aws:ResourceTag/Environment': ['production'] } },
+                   'an absent operator flipped a stored tag decision to the closed form');
+  // The two condition intents' absences mean DIFFERENT things, and that asymmetry is the point.
+  assert.deepEqual(
+    composeInline([{ policy: 'p', intent: 'key_condition', actions: ['lambda:CreateFunctionUrlConfig'],
+                     condition_key: 'lambda:FunctionUrlAuthType', condition_values: ['AWS_IAM'] }],
+                  { accountId: '1' }).Statement[0].Condition,
+    { StringNotEquals: { 'lambda:FunctionUrlAuthType': ['AWS_IAM'] } },
+  );
+});
+
+test('the fixtures pin both tag spellings, including the absent one', () => {
+  const rows = FIXTURES.cases.flatMap((c) => c.restrictions ?? [])
+    .filter((r) => r.intent === 'tag_condition');
+  assert.ok(rows.some((r) => r.condition_operator === 'StringNotEquals'),
+            'no fixture covers the closed tag form the fix exists for');
+  assert.ok(rows.some((r) => !r.condition_operator),
+            'no fixture pins that an old tag decision keeps composing the open form');
+});
+
 test('the fixtures actually exercise the condition intent, default and chosen', () => {
   // Deleting the key_condition branch from statement() must fail the parity test, which it can only
   // do while the fixture set still carries the cases - and the default-absent one is the load-
