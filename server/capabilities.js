@@ -287,7 +287,24 @@ export const CURATED = {
   'ec2:CreateVpcBlockPublicAccessExclusion': [CAP.DISABLE_GUARDRAIL],
   // Re-enabling IMDSv1 or raising the hop limit. It steals nothing by itself; it restores the
   // condition under which an application-layer request forgery reaches the instance credential.
+  // Verified against the request model: HttpTokens, HttpPutResponseHopLimit, HttpEndpoint.
   'ec2:ModifyInstanceMetadataOptions': [CAP.DISABLE_GUARDRAIL],
+  // The same weakening set for every instance launched afterwards, at account scope.
+  'ec2:ModifyInstanceMetadataDefaults': [CAP.DISABLE_GUARDRAIL],
+  // The serial console. Opening it is a channel onto the instance that does not go through the
+  // network at all, so nothing in a security group or a route table sees it.
+  'ec2:EnableSerialConsoleAccess': [CAP.DISABLE_GUARDRAIL],
+  'ec2:DisableSerialConsoleAccess': [CAP.DISABLE_GUARDRAIL],
+  // The access control in front of an application, rewritten by the caller it is meant to gate.
+  'ec2:ModifyVerifiedAccessEndpointPolicy': [CAP.DISABLE_GUARDRAIL],
+  'ec2:ModifyVerifiedAccessGroupPolicy': [CAP.DISABLE_GUARDRAIL],
+  'ec2:ModifyVerifiedAccessTrustProvider': [CAP.DISABLE_GUARDRAIL],
+  // Encryption enforcement for a VPC.
+  'ec2:CreateVpcEncryptionControl': [CAP.DISABLE_GUARDRAIL],
+  'ec2:ModifyVpcEncryptionControl': [CAP.DISABLE_GUARDRAIL],
+  'ec2:DeleteVpcEncryptionControl': [CAP.DISABLE_GUARDRAIL],
+  'ec2:ModifyVpcBlockPublicAccessExclusion': [CAP.DISABLE_GUARDRAIL],
+  'ec2:DeleteVpcBlockPublicAccessExclusion': [CAP.DISABLE_GUARDRAIL],
 
   // The record rather than the control.
   'ec2:DeleteFlowLogs': [CAP.TAMPER_AUDIT],
@@ -326,9 +343,16 @@ export const CURATED = {
   'ec2:CreateCustomerGateway': [CAP.NETWORK_ROUTE],
   'ec2:CreateVpnConnection': [CAP.NETWORK_ROUTE],
   'ec2:EnableVgwRoutePropagation': [CAP.NETWORK_ROUTE],
-  // An interface in two places at once is a bridge between them.
+  // An interface in two places at once is a bridge between them. Verified: AttachNetworkInterface
+  // takes InstanceId and NetworkInterfaceId, so one instance can sit in two subnets.
   'ec2:CreateNetworkInterface': [CAP.NETWORK_ROUTE],
   'ec2:AttachNetworkInterface': [CAP.NETWORK_ROUTE],
+  // Dynamic routing, on-premises routing, and the Wavelength edge. Each changes where traffic goes
+  // without touching a route table entry by hand.
+  'ec2:CreateRouteServer': [CAP.NETWORK_ROUTE],
+  'ec2:EnableRouteServerPropagation': [CAP.NETWORK_ROUTE],
+  'ec2:CreateLocalGatewayRoute': [CAP.NETWORK_ROUTE],
+  'ec2:CreateCarrierGateway': [CAP.NETWORK_ROUTE],
   // Publishing an internal load balancer to other accounts through PrivateLink.
   'ec2:CreateVpcEndpointServiceConfiguration': [CAP.SHARE_EXTERNAL],
   'ec2:ModifyVpcEndpointServicePermissions': [CAP.SHARE_EXTERNAL],
@@ -341,7 +365,16 @@ export const CURATED = {
   'ec2:RestoreSnapshotFromRecycleBin': [CAP.SNAPSHOT],
   'ec2:RestoreSnapshotTier': [CAP.SNAPSHOT],
   // Replacing the operating system while the instance keeps its id, addresses, interfaces and role.
+  //
+  // Stronger than the catalogue that named it says. It corrected an earlier draft with "the restore
+  // source is limited to the original root snapshot or a matching AMI, so an arbitrary volume
+  // cannot be injected" - and the current request model takes VolumeId, documented as "the ID of
+  // the volume to use as the replacement root volume", constrained only to the same availability
+  // zone, available state, and matching encryption. AWS widened the API after that was written.
   'ec2:CreateReplaceRootVolumeTask': [CAP.MODIFY_CODE],
+  // A key pair is only injected into instances launched afterwards - it does not replace what an
+  // existing instance already trusts - so this is a foothold on future capacity, not on current.
+  'ec2:ImportKeyPair': [CAP.CREATE],
 
   // Removing what is running, or the connection to it, without terminating anything.
   'ec2:SendDiagnosticInterrupt': [CAP.DELETE],
@@ -370,6 +403,8 @@ export const CURATED = {
   'ec2:RequestSpotInstances': [CAP.CREATE, CAP.SPEND],
   'ec2:CreateCapacityReservation': [CAP.SPEND],
   'ec2:CreateCapacityReservationFleet': [CAP.SPEND],
+  'ec2:CreateCapacityReservationBySplitting': [CAP.SPEND],
+  'ec2:MoveCapacityReservationInstances': [CAP.SPEND],
   'ec2:PurchaseCapacityBlock': [CAP.SPEND],
   'ec2:PurchaseReservedInstancesOffering': [CAP.SPEND],
   'ec2:PurchaseScheduledInstances': [CAP.SPEND],
