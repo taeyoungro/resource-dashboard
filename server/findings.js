@@ -178,6 +178,32 @@ function capabilityIndex(actions, reference) {
   return out;
 }
 
+/**
+ * Which of a hit's actions the finding cannot survive without.
+ *
+ * A predicate is a tree and the card renders it as a flat list, so "how much of this path is cut"
+ * was being answered by counting names: deny all eight and it is closed, deny seven and it is not.
+ * That is wrong in both directions for a rule with an allOf at its root. E-1 is
+ * allOf[iam:PassRole, anyOf[...]] - remove iam:PassRole and NOTHING satisfies it, whatever else the
+ * grant still holds - while removing any single invoke action leaves four others that satisfy the
+ * same branch.
+ *
+ * Computed by asking the matcher, not by reading the shape: drop one action, re-run the predicate,
+ * and if it no longer matches then that action was load-bearing. The matcher is the authority on
+ * what satisfies a rule, and a second reading of the tree here would be a second implementation of
+ * it that could disagree.
+ */
+function requiredOf(predicate, actions, hits, reference) {
+  const required = [];
+  for (const candidate of hits) {
+    const without = actions.filter((a) => a !== candidate);
+    if (!match(predicate, new Set(without), capabilityIndex(without, reference))) {
+      required.push(candidate);
+    }
+  }
+  return required;
+}
+
 /** The action names a unit holds, by name. Indices point into the grant's risk_actions. */
 export function unitActions(grant, unit) {
   const names = grant.risk_actions ?? [];
@@ -422,7 +448,10 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
         if (axis === AXIS.RESOURCE && targets.length === 0) continue;
         const truncated = truncationOf(targets);
         const { status, blockedBy } = resolveStatus(rule, grant, digest, unit, truncated, axis);
-        matches.push({ hits, units: targets, status, blockedBy });
+        matches.push({
+          hits, units: targets, status, blockedBy,
+          required: requiredOf(rule.predicate, scope.actions, hits, reference),
+        });
       }
       if (matches.length === 0) continue;
 
@@ -433,6 +462,23 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
       // target. The card takes the worst of them, which is the only honest summary - a card saying
       // 확인 while one of its three types could not be verified would be claiming something no unit
       // established.
+      //
+      // THE MERGE STOPS AT THE POLICY, and that boundary is a safety property rather than a
+      // presentation choice. This function is called once per grant, so nothing here can cross it -
+      // the temptation is in the caller, where two policies firing the same rule look like two
+      // copies of one decision and merging them looks like the same tidying this loop just did.
+      //
+      // It is not. A finding is what the block dialog writes a Deny from, and a Deny justified by
+      // two grants outlives either of them:
+      //
+      //     AWSLambda_FullAccess + AmazonEC2FullAccess  ->  one Deny covering both
+      //     AWSLambda_FullAccess detached               ->  the Deny now reads as orphaned
+      //     the Deny removed                            ->  the EC2 path is open again
+      //
+      // Nobody in that sequence did anything visibly wrong, and the last step is the one the
+      // dashboard would have taught them. Keeping a finding inside one policy keeps the decision
+      // and the grant that made it necessary attached to each other, so detaching a grant retires
+      // exactly its own restrictions and no others.
       const hits = [];
       for (const match of matches) {
         for (const action of match.hits) if (!hits.includes(action)) hits.push(action);
@@ -456,6 +502,10 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
         policyId: grant.p,
         // The exact action names, as written. Never abbreviated, never replaced by a count.
         triggerActions: hits,
+        // The subset without which this finding does not exist. Intersected across the units,
+        // because the finding holds if ANY of them matched - an action that is load-bearing on one
+        // unit and not on another is not load-bearing for the card.
+        requiredActions: hits.filter((a) => matches.every((m) => m.required.includes(a))),
         // A resource TYPE group and how many of it, plus the ARNs the digest sampled. The count is
         // the honest unit here - the digest carries at most eight ARNs of a group of nine hundred.
         //
@@ -496,6 +546,7 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
         policyName: grant.name,
         policyId: grant.p,
         triggerActions: [],
+        requiredActions: [],
         targets: [],
         restrictable: rule.forceRestrictable ?? true,
         blockedBy: [`the rule could not be evaluated: ${error.message}`],

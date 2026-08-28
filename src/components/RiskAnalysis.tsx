@@ -16,13 +16,17 @@ import { actionDocUrl } from "../../server/actionDocs.js";
  * no page renders exactly as it did before. Opens in a new tab: an approver checking what an action
  * does must not lose a half-composed restriction to do it.
  */
-function ActionName({ action }: { action: string }) {
+function ActionName({ action, required = false }: { action: string; required?: boolean }) {
   const href = actionDocUrl(action);
-  if (!href) return <code>{action}</code>;
+  // 이 하나가 없으면 판정 자체가 성립하지 않는 동작. 여덟 중 일곱을 거부해도 아무것도 닫히지 않고
+  // 이 하나를 거부하면 전부 닫히므로, 어느 쪽인지가 보여야 승인자가 배지를 이해할 수 있다.
+  const cls = required ? "action-doc required" : "action-doc";
+  const why = required ? `${action} — 이 경로에 반드시 필요한 동작` : action;
+  if (!href) return <code className={required ? "required" : undefined} title={why}>{action}</code>;
   return (
-    <a className="action-doc" href={href} target="_blank" rel="noreferrer noopener"
-       title={`${action} — AWS 문서`}>
-      <code>{action}</code>
+    <a className={cls} href={href} target="_blank" rel="noreferrer noopener"
+       title={`${why} · AWS 문서`}>
+      <code className={required ? "required" : undefined}>{action}</code>
     </a>
   );
 }
@@ -104,7 +108,7 @@ interface ScopeProps extends Props {
  */
 type View = "rules" | "ai" | "both";
 /** 카드 배지가 말하는 세 상태. server/blockPath.js가 판정한다. */
-type ContainmentState = "full" | "partial" | "none";
+type ContainmentState = "full" | "fenced" | "partial" | "none";
 
 const GRADE_ORDER: Record<Grade, number> = {
   CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4,
@@ -405,6 +409,15 @@ const CONTAINMENT: Record<ContainmentState, { label: string; className: string; 
     why: "이 경로에 제한이 걸렸으나 전부를 무조건 막지는 않습니다. 자원을 지목하는 제한은 오늘 있는 "
       + "자원의 목록이고, 조건 제한은 태그나 요청 키의 값에 달려 있습니다.",
   },
+  fenced: {
+    label: "전달 울타리로 차단됨",
+    className: "badge-ok",
+    why: "이 경로가 성립하려면 반드시 있어야 하는 동작이 인라인 문서의 PassRole 울타리로 이미 "
+      + "거부되어 있습니다. 이 울타리는 아무도 작성하지 않아도 자동으로 쓰이며, 남겨 두는 자리 "
+      + "채움 역할은 이 파이프라인이 만들 수 없는 이름이라 실재하지 않습니다. 뒤에 승인된 미러 "
+      + "역할이 붙으면 그 목록이 이 경로로 도달 가능한 권한의 상한이 됩니다 — 위 대상 목록이 "
+      + "아니라.",
+  },
   none: {
     label: "차단되지 않음",
     className: "badge-danger",
@@ -496,7 +509,8 @@ function Card({ finding, block, containment, showAxis = false }: {
         {/* 전량. 축약하지 않는다 (T-7). */}
         <span className="finding-actions">
           {finding.triggerActions.map((action) => (
-            <ActionName key={action} action={action} />
+            <ActionName key={action} action={action}
+                        required={finding.requiredActions.includes(action)} />
           ))}
         </span>
       </div>
@@ -900,7 +914,8 @@ function RiskScope({
    * 없다는 것이 막혀 있다는 뜻으로 읽히면 안 된다.
    */
   const containmentOf = (finding: Finding): ContainmentState =>
-    containmentState(finding, restrictions, assessment?.protected_actions ?? []);
+    containmentState(finding, restrictions, assessment?.protected_actions ?? [],
+                     assessment?.passrole_grants ?? null);
 
   return (
     <div className={policy ? "scope scope-policy" : "scope scope-all"}>
