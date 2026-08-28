@@ -378,6 +378,17 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
   for (const rule of rules) {
    for (const axis of axesFor(rule)) {
     try {
+      // Every unit this rule fires on, collected before anything is emitted.
+      //
+      // Matching stays per unit and has to: a predicate needing several actions on ONE resource is
+      // only satisfied inside a single unit's action set, and reading the union would manufacture
+      // exactly the co-location that scope exists to deny. What was wrong was EMITTING per unit.
+      // ec2:ReplaceRouteTableAssociation names three resource types, so one action under one policy
+      // printed three cards carrying the same rule, the same grade, the same sentence and the same
+      // block button - three copies of one decision, differing only in the 대상 row. An approver
+      // reading the third has learned nothing since the first, and the count of findings on the
+      // summary said three where there was one.
+      const matches = [];
       for (const scope of scopeUnits(rule, grant, axis)) {
         const available = new Set(scope.actions);
         const found = match(rule.predicate, available, capabilityIndex(scope.actions, reference));
@@ -411,40 +422,67 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
         if (axis === AXIS.RESOURCE && targets.length === 0) continue;
         const truncated = truncationOf(targets);
         const { status, blockedBy } = resolveStatus(rule, grant, digest, unit, truncated, axis);
-
-        out.push({
-          id: rule.id,
-          axis,
-          category: rule.category,
-          title: rule.title,
-          escalationGrade: rule.escalationGrade,
-          ...assetGrade(rule, targets),
-          status,
-          policyName: grant.name,
-          policyId: grant.p,
-          // The exact action names, as written. Never abbreviated, never replaced by a count.
-          triggerActions: [...new Set(hits)],
-          // A resource TYPE group and how many of it, plus the ARNs the digest sampled. The count is
-          // the honest unit here - the digest carries at most eight ARNs of a group of nine hundred.
-          targets: targets.map((u) => ({
-            type: u.t,
-            count: u.n,
-            scope: u.scope,
-            sample: u.sample ?? [],
-            sampleComplete: u.sample_complete !== false,
-            controlPlane: u.cp ?? [],
-          })),
-          restrictable: rule.forceRestrictable
-            ?? !hits.some((a) => (grant.non_restrictable ?? []).includes(a)),
-          blockedBy,
-          relatedTo: rule.relatedTo ?? [],
-          // Copied. Never composed, never interpolated - see T-4 and the header.
-          narrative: rule.narrative,
-          notes: rule.notes ?? null,
-          truncated,
-          omittedCount: null,
-        });
+        matches.push({ hits, units: targets, status, blockedBy });
       }
+      if (matches.length === 0) continue;
+
+      // One finding, out of every unit the rule fired on.
+      //
+      // Merged rather than recomputed: co-location, attribution and truncation are properties of a
+      // UNIT, so each one's status was decided where those are known and travels with its own
+      // target. The card takes the worst of them, which is the only honest summary - a card saying
+      // 확인 while one of its three types could not be verified would be claiming something no unit
+      // established.
+      const hits = [];
+      for (const match of matches) {
+        for (const action of match.hits) if (!hits.includes(action)) hits.push(action);
+      }
+      const units = matches.flatMap((m) => m.units);
+      const truncated = truncationOf(units);
+      const status = matches.reduce(
+        (worst, m) => (STATUS_ORDER[m.status] > STATUS_ORDER[worst] ? m.status : worst),
+        'CONFIRMED',
+      );
+
+      out.push({
+        id: rule.id,
+        axis,
+        category: rule.category,
+        title: rule.title,
+        escalationGrade: rule.escalationGrade,
+        ...assetGrade(rule, units),
+        status,
+        policyName: grant.name,
+        policyId: grant.p,
+        // The exact action names, as written. Never abbreviated, never replaced by a count.
+        triggerActions: hits,
+        // A resource TYPE group and how many of it, plus the ARNs the digest sampled. The count is
+        // the honest unit here - the digest carries at most eight ARNs of a group of nine hundred.
+        //
+        // Each carries the two things that were lost when these were separate cards: the actions
+        // that reached THIS type, which is not always all of them - ec2:ReplaceNetworkAclAssociation
+        // reaches subnets and neither of the other two types - and the status that type was decided
+        // at, so a card downgraded by one of its groups still says which one.
+        targets: matches.flatMap((match) => match.units.map((u) => ({
+          type: u.t,
+          count: u.n,
+          scope: u.scope,
+          sample: u.sample ?? [],
+          sampleComplete: u.sample_complete !== false,
+          controlPlane: u.cp ?? [],
+          actions: match.hits.filter((a) => unitActions(grant, u).includes(a)),
+          status: match.status,
+        }))),
+        restrictable: rule.forceRestrictable
+          ?? !hits.some((a) => (grant.non_restrictable ?? []).includes(a)),
+        blockedBy: [...new Set(matches.flatMap((m) => m.blockedBy))],
+        relatedTo: rule.relatedTo ?? [],
+        // Copied. Never composed, never interpolated - see T-4 and the header.
+        narrative: rule.narrative,
+        notes: rule.notes ?? null,
+        truncated,
+        omittedCount: null,
+      });
     } catch (error) {
       out.push({
         id: rule.id,

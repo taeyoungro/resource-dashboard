@@ -659,6 +659,17 @@ export interface FindingTarget {
   /** False means the ARNs shown are a sample of a larger group. */
   sampleComplete: boolean;
   controlPlane: ControlPlaneHit[];
+  /**
+   * Which of the finding's trigger actions reach THIS type - not always all of them. One card now
+   * carries every type a rule fired on, and ec2:ReplaceNetworkAclAssociation reaches subnets while
+   * ec2:ReplaceRouteTableAssociation reaches route tables and gateways too.
+   */
+  actions: string[];
+  /**
+   * The status this group was decided at. Co-location, attribution and truncation are properties of
+   * a group, so a card whose overall status is UNVERIFIED can say which of its groups made it so.
+   */
+  status: FindingStatus;
 }
 
 /**
