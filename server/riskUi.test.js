@@ -1282,3 +1282,27 @@ test('each attached policy gets its own area and its own two buttons', () => {
   assert.match(routes, /is not an attached policy of this plan/,
                'a policy that is not attached falls through to analysing all of them');
 });
+
+test('a resource is written the same way on both screens', () => {
+  // The same subnet used to be "arn:aws:ec2:us-east-1:644701781058:subnet/subnet-003d..." on a risk
+  // card and "리소스명: subnet-003d..., 계정: 644701781058, 리전: us-east-1" on the impact panel, so
+  // an approver moving between them did the parsing themselves to see it was one row.
+  //
+  // One component, imported by both. Copying it would have worked today and drifted on the parts
+  // that took the most deciding - which slot a KMS alias goes in, that the console link belongs on
+  // the group heading rather than the row, that tags go behind a button because one
+  // CloudFormation-managed resource carries two hundred characters of them.
+  const LINE = readFileSync(new URL('../src/components/ResourceLine.tsx', import.meta.url), 'utf8');
+  assert.ok(/export function LabeledResource/.test(LINE) && /export function TagButton/.test(LINE),
+            'the shared resource line no longer exports both renderers');
+  for (const [name, source] of [['RiskAnalysis.tsx', PANEL], ['Impact.tsx', IMPACT]]) {
+    assert.match(source, /from "\.\/ResourceLine"/,
+                 `${name} does not read the resource line from the shared module`);
+    assert.ok(!/^function (LabeledResource|TagButton)\(/m.test(source),
+              `${name} defines its own copy of the resource line`);
+  }
+  // And the risk card actually renders through it rather than falling back everywhere.
+  const targets = PANEL.slice(PANEL.indexOf('function Targets('), PANEL.indexOf('<Targets'));
+  assert.ok(/<LabeledResource /.test(targets) && /<TagButton /.test(targets),
+            'the risk card prints bare ARNs again');
+});

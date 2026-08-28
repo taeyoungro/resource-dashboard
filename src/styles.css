@@ -31,6 +31,9 @@ code { font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
 .topbar-key input { width: 220px; }
 .arn-list { list-style: none; padding: 0; margin: 0; }
 .arn-list li { padding: 4px 0; border-bottom: 1px solid var(--border); }
+/* 위험 카드의 대상 줄. 표기 자체는 영향도 패널과 같은 컴포넌트가 그리므로 여기서는 이름과 태그
+   단추가 한 줄에 놓이게만 맞춘다 — 두 화면에서 같은 자원이 다르게 보이지 않는 것이 요점이다. */
+.arn-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
 .app { display: grid; grid-template-columns: 360px 1fr; flex: 1; min-height: 0; }
 
 /* Folded, the left column narrows to a rail rather than disappearing. A column that vanishes takes
