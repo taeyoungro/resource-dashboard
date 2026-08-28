@@ -10,7 +10,7 @@ import { test } from 'node:test';
 
 import { RULES, RULES_SHA256, RULE_ACTIONS, RuleError, validate } from './rules.js';
 import { evaluateGrant, findings, sections, sortFindings, summary } from './findings.js';
-import { referenceIndex } from './capabilities.js';
+import { capabilitiesOf, referenceIndex } from './capabilities.js';
 import { blockOffer, containmentState } from './blockPath.js';
 
 const ACCOUNT = '718100330247';
@@ -736,4 +736,109 @@ test('the enumeration-incomplete count is about enumerations', () => {
   assert.ok(list.length > 0 && list.every((f) => f.axis === 'action'), 'fixture has a resource axis');
   assert.equal(summary(list).enumerationIncomplete, 0,
                'capability findings are counted as incomplete enumerations');
+});
+
+test('a function is taken over without passing any role', () => {
+  // The thing that makes Lambda different from EC2, and the reason a governance model built on the
+  // iam:PassRole edge alone misses it entirely. UpdateFunctionCode's request carries no role member
+  // at all - the target function's existing execution role is inherited - so nothing about this
+  // path involves passing anything. UpdateFunctionConfiguration is the same escalation by another
+  // door: leave the code alone and move the layers, handler or runtime.
+  for (const action of ['lambda:UpdateFunctionCode', 'lambda:UpdateFunctionConfiguration']) {
+    const d = digest([grant('AWSLambda_FullAccess', [action], [unit('lambda:function', [action], [action])])]);
+    const [found] = only(findings(d), 'E-3', 'resource');
+    assert.ok(found, `${action} reaches no takeover finding`);
+    assert.equal(found.escalationGrade, 'HIGH');
+  }
+});
+
+test('an event source mapping is a wake-up call, and starting a machine is both at once', () => {
+  // Both were silent. E-1 required one of four invoke-shaped actions beside CreateFunction, and a
+  // mapping is none of them - yet its poller calls the new function under the passed role by
+  // itself, repeatedly, with no invoke permission anywhere in the grant. RunMicrovm is the other
+  // shape: its request carries executionRoleArn AND starts the thing, so demanding a separate
+  // wake-up action would have excluded the most direct path of all.
+  const mapping = ['iam:PassRole', 'lambda:CreateFunction', 'lambda:CreateEventSourceMapping'];
+  assert.ok(only(findings(digest([grant('P', mapping, [unit('lambda:function', mapping, mapping)])])), 'E-1').length,
+            'passing a role to a function woken by a queue reaches no finding');
+  const microvm = ['iam:PassRole', 'lambda:RunMicrovm'];
+  assert.ok(only(findings(digest([grant('P', microvm, [unit('lambda:function', microvm, microvm)])])), 'E-1').length,
+            'passing a role into a started execution environment reaches no finding');
+});
+
+test('re-pointing an alias is a rebinding, not a code change', () => {
+  // It belongs to X-4 and not to E-3, and the distinction is not cosmetic: UpdateAlias replaces
+  // neither code nor boot configuration - it writes the alias's own version field - so E-3's
+  // sentence would be false on the card that printed it. The capability cannot be derived either;
+  // the request names the function and the alias rather than resolving an association id, so it
+  // fails the deref: test and only the curated entry reaches it.
+  const acts = ['lambda:UpdateAlias', 'lambda:UpdateEventSourceMapping'];
+  const d = digest([grant('P', acts, [unit('lambda:function', acts, acts)])]);
+  const [found] = only(findings(d), 'X-4', 'resource');
+  assert.ok(found, 'neither re-pointing reaches the rebinding finding');
+  assert.deepEqual(found.triggerActions, acts);
+  assert.deepEqual(only(findings(d), 'E-3'), [], 'a rebinding was reported as a code replacement');
+});
+
+test('a guardrail can be rewritten to pass instead of switched off', () => {
+  // Four names reach one control. Deleting the attachment is the obvious one; rewriting the config
+  // while it stays attached is the one a check that only asks "is signing enforced" never sees.
+  // The account-wide public-access switch is the same shape - it refuses nothing itself and is the
+  // reason a later AddPermission with a wildcard principal succeeds.
+  for (const action of ['lambda:DeleteFunctionCodeSigningConfig', 'lambda:UpdateCodeSigningConfig',
+    'lambda:PutFunctionCodeSigningConfig', 'lambda:PutPublicAccessBlockConfig']) {
+    const d = digest([grant('P', [action], [unit('lambda:function', [action], [action])])]);
+    assert.ok(only(findings(d), 'V-2').length, `${action} reaches no guardrail finding`);
+  }
+});
+
+test('stopping a function without deleting it is its own finding', () => {
+  // D-5 leaves evidence: the function is gone. These seven leave the function sitting there looking
+  // healthy while nothing arrives, which is why they are graded and worded apart from it.
+  const acts = ['lambda:RemovePermission', 'lambda:DeleteEventSourceMapping', 'lambda:DeleteAlias'];
+  const d = digest([grant('P', acts, [unit('lambda:function', acts, acts)])]);
+  const [found] = only(findings(d), 'D-6', 'resource');
+  assert.ok(found, 'severing every path into a function reaches no finding');
+  assert.deepEqual(only(findings(d), 'D-5'), [], 'D-5 fired without a delete action');
+});
+
+test('reading a function configuration is reading its secrets', () => {
+  // The response carries the environment variables in plaintext on every call, so this is X-3's
+  // shape - a read whose response IS the material - rather than R-2's, where the content is
+  // incidental. The list forms take no target and answer for every function at once.
+  const acts = ['lambda:ListFunctions'];
+  const d = digest([grant('P', acts, [unit('lambda:function', acts, acts)])]);
+  const [found] = only(findings(d), 'X-8', 'resource');
+  assert.ok(found, 'a targetless read of every environment variable reaches no finding');
+  assert.equal(found.escalationGrade, 'MEDIUM');
+});
+
+test('a session onto a running execution environment needs no role passed', () => {
+  // E-4's separation from E-3: nothing is replaced and nothing is configured. The token attaches to
+  // something already running, and if that thing carries an execution role the session carries it.
+  for (const action of ['lambda:CreateMicrovmAuthToken', 'lambda:CreateMicrovmShellAuthToken']) {
+    const d = digest([grant('P', [action], [unit('lambda:function', [action], [action])])]);
+    const [found] = only(findings(d), 'E-4', 'resource');
+    assert.ok(found, `${action} reaches no session finding`);
+    assert.equal(found.escalationGrade, 'HIGH');
+  }
+});
+
+test('revoking a policy is never offered as a way to share one', () => {
+  // A live false positive rather than a gap. The reference gives RemovePermission and
+  // DeleteResourcePolicy access level 'Permissions management' on a non-principal type, which
+  // derives share-external - so an action whose whole effect is to DELETE a policy was classified
+  // as one that opens contents to an outside principal, and candidatePaths lists share-external in
+  // the exfiltrate edge. The curated entries override the derivation in the right direction.
+  for (const action of ['lambda:RemovePermission', 'lambda:DeleteResourcePolicy',
+    'lambda:RemoveLayerVersionPermission']) {
+    const { caps, source } = capabilitiesOf(action);
+    assert.equal(source, 'curated', `${action} is left to the derivation`);
+    assert.deepEqual(caps, ['delete'], `${action} is classified as a share`);
+  }
+  // And the three that genuinely do open a resource keep saying so.
+  for (const action of ['lambda:AddPermission', 'lambda:PutResourcePolicy',
+    'lambda:AddLayerVersionPermission']) {
+    assert.ok(capabilitiesOf(action).caps.includes('share-external'), action);
+  }
 });
