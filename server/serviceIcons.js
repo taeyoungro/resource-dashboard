@@ -3,19 +3,35 @@
 // The impact assessment names services the way IAM actions do - lambda, ec2, s3, states - and the
 // icons extracted from the AWS Architecture Icons deck (tools/extract-aws-icons.mjs) are named the
 // way AWS brands services - AWS-Lambda, Amazon-EC2, Amazon-Simple-Storage-Service,
-// AWS-Step-Functions. Nothing derivable connects the two: s3 is Simple-Storage-Service, states is
-// Step-Functions, logs is CloudWatch. So this is a table, the third of its kind here beside the
-// console pages and for the same reason - there is no API to derive it from.
+// AWS-Step-Functions.
 //
-// An unmapped prefix gets NO icon, and that is the contract: the page renders nothing rather than
-// a broken image or a guessed one. serviceIcons.test.js walks this table against the extracted
-// files, so an entry pointing at an icon that does not exist fails the suite instead of a render.
+// This used to say nothing derivable connects the two, and be a hand table because of it. That was
+// wrong, and the cost was measured: 70 prefixes mapped against 455 that exist, so 232 of the 291
+// shipped icons (80%) reached nothing and every service outside the 70 rendered no icon at all -
+// silently, because an unmapped prefix is defined to render nothing.
 //
-// Only prefixes the governance pipeline can plausibly meet are mapped - the actions of the
-// policies it governs, the services its own stacks use, and the common neighbours those policies
-// reach through. Extending it is one line plus nothing else; the test checks the file exists.
+// botocore carries the bridge. Every service model has a serviceFullName, which is the brand the
+// icon files are named after, and an endpointPrefix and signingName, which are what IAM keys on:
+//
+//     ecr    -> "Amazon Elastic Container Registry"  -> Amazon-Elastic-Container-Registry.svg
+//     events -> "Amazon EventBridge"                 -> Amazon-EventBridge.svg
+//
+// tools/build-service-icons.py does that join and writes serviceIcons.generated.js. It never
+// guesses: a brand that does not match an icon FILE NAME produces no entry.
+//
+// What stays by hand is below, and it is now only what a generator cannot decide - a brand the
+// deck spells differently (Managed Streaming for Kafka against Managed Streaming for APACHE
+// Kafka), and the calls where one icon answers for several prefixes because they are one product
+// to a reader. The overrides win wherever both have an answer.
+//
+// An unmapped prefix still gets NO icon, and that is still the contract: the page renders nothing
+// rather than a broken image or a guessed one. serviceIcons.test.js walks the merged table against
+// the extracted files, so an entry pointing at an icon that does not exist fails the suite.
 
-export const SERVICE_ICONS = {
+import { GENERATED_SERVICE_ICONS } from './serviceIcons.generated.js';
+
+/** Decisions the join cannot make, and the spellings it cannot bridge. Wins over the generated. */
+export const SERVICE_ICON_OVERRIDES = {
   ec2: 'Amazon-EC2',
   s3: 'Amazon-Simple-Storage-Service',
   lambda: 'AWS-Lambda',
@@ -79,7 +95,23 @@ export const SERVICE_ICONS = {
   waf: 'AWS-WAF',
   wafv2: 'AWS-WAF',
   shield: 'AWS-Shield',
+  // The deck says "Apache Kafka" and botocore says "Kafka", and no normalisation should be asked
+  // to invent a missing word - so the one join that fails on a spelling is made here.
+  kafka: 'Amazon-Managed-Streaming-for-Apache-Kafka',
+  'kafka-cluster': 'Amazon-Managed-Streaming-for-Apache-Kafka',
+  // Aurora DSQL has no icon of its own in the deck. The family icon is the closest true answer:
+  // the product is branded "Amazon Aurora DSQL", and an approver reading it under the Aurora mark
+  // is being told something correct rather than nothing.
+  dsql: 'Amazon-Aurora',
 };
+
+/**
+ * The table the page reads: everything botocore could join, with the hand decisions on top.
+ *
+ * Merge order is the whole contract - an override exists precisely because the generated answer is
+ * absent or not the one a reader should see.
+ */
+export const SERVICE_ICONS = { ...GENERATED_SERVICE_ICONS, ...SERVICE_ICON_OVERRIDES };
 
 // Resource types whose PRODUCT is not the product their IAM prefix names.
 //

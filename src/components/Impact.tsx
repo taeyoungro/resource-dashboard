@@ -6,6 +6,7 @@ import type {
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
 import { localDate, localTime } from "../time";
+import { primaryService } from "../../server/primaryService.js";
 import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
@@ -60,64 +61,6 @@ interface Props {
   onChange: (restrictions: Restriction[]) => void;
   disabled: boolean;
 }
-
-/** Vendor prefix and access suffix AWS puts around the service name in a managed policy name. */
-const VENDOR = /^(aws|amazon)/;
-const SUFFIX = /(fullaccess|readonlyaccess|readonly|poweruser|administrator|access)$/;
-
-/**
- * Brand stems whose IAM action prefix shares no spelling with them.
- *
- * The stem of AmazonEventBridgeReadOnlyAccess is "eventbridge", and EventBridge's actions are
- * events:* - no prefix test, startsWith or containment connects the two, so the policy rendered
- * with no primary service at all ("2개 자원", no icon, no related fold). Same for Step Functions
- * (states:*), KMS (spelled out in policy names), ACM and Systems Manager. The alias is only
- * BELIEVED when the aliased prefix is among the services this policy actually names - the same
- * rule every other resolution path here follows.
- */
-const BRAND_STEM: Record<string, string> = {
-  eventbridge: "events",
-  stepfunctions: "states",
-  keymanagementservice: "kms",
-  certificatemanager: "acm",
-  systemsmanager: "ssm",
-};
-
-/**
- * Which service an AWS managed policy is ABOUT, or null when nothing says.
- *
- * AWSLambda_FullAccess is about lambda. It also reaches every CloudFormation stack and KMS key in the
- * account, because a Lambda function refers to those - but an approver who opened that policy came to
- * decide about functions, and 15 stacks above the 3 functions buries the thing they came for.
- *
- * Read off the name rather than from a table. The name is the only statement of what a policy is for,
- * and AWS writes it consistently: a vendor prefix, the service, an access suffix. Stripping those three
- * leaves the service, and it is only believed when it resolves to a service this policy actually names -
- * so a policy whose name does not decompose (AWSLambdaBasicExecutionRole) hides nothing.
- *
- * Customer managed policies are named by whoever wrote them. mirror-cmp-Reporting says nothing about a
- * service, so nothing is folded away and the panel behaves as it did.
- */
-function primaryService(identifier: string, candidates: string[]): string | null {
-  if (!identifier.startsWith("arn:aws:iam::aws:policy/")) return null;
-  const bare = identifier.slice(identifier.lastIndexOf("/") + 1).toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-  const stem = bare.replace(VENDOR, "").replace(SUFFIX, "");
-  if (!stem) return null;
-
-  // Longest first, so s3-object-lambda wins over s3 for a policy about the former.
-  const ordered = [...new Set(candidates)].sort((a, b) => b.length - a.length);
-  return (
-    ordered.find((service) => stem === service)
-    ?? ordered.find((service) => stem.startsWith(service))
-    // Loose containment only for a name long enough not to collide by accident. Two- and
-    // three-letter prefixes - es, s3, kms, sts - turn up inside unrelated words: "access" alone
-    // contains "es", which would make every policy in existence look like an Elasticsearch policy.
-    ?? ordered.find((service) => service.length >= 4 && bare.includes(service))
-    ?? (BRAND_STEM[stem] && ordered.includes(BRAND_STEM[stem]) ? BRAND_STEM[stem] : null)
-  );
-}
-
 
 /**
  * Whether an action operates BELOW the resource an index can hold - so the ARN picked for it is a
@@ -816,9 +759,11 @@ function PolicyBlock({
   );
   const blocked = policy.actions_granted.filter((a) => protectedActions.includes(a));
 
-  // Primary first, everything else behind one click. Derived from every service this policy mentions -
-  // its actions, not only its enumerated groups - so the primary service still resolves when the
-  // account happens to hold none of its resources.
+  // Primary first, everything else behind one click. The name is checked against every service this
+  // policy mentions - its actions, not only its enumerated groups - so the primary service still
+  // resolves when the account happens to hold none of its resources; the patterns AS WRITTEN go in
+  // separately, because "grants ecr in full" is a statement about the policy that the flattened
+  // list of service names can no longer make.
   const { primary, shown, related } = useMemo(() => {
     const mentioned = [
       ...policy.actions_granted,
@@ -826,6 +771,7 @@ function PolicyBlock({
     ].map((a) => a.split(":", 1)[0]).filter(Boolean);
     const found = primaryService(
       policy.identifier,
+      policy.actions_granted,
       [...mentioned, ...policy.affected.map((g) => g.service)],
     );
     if (!found) return { primary: null, shown: policy.affected, related: [] as ImpactGroup[] };
