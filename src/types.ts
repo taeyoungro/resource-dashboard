@@ -726,6 +726,15 @@ export interface Finding {
   isBaseline?: boolean;
   /** The exact action names that fired it. Shown in full - never abbreviated, never a count. */
   triggerActions: string[];
+  /**
+   * The subset of triggerActions the finding cannot exist without.
+   *
+   * A predicate is a tree and the card renders a flat list, so "is this path cut" cannot be answered
+   * by counting names. E-1 is allOf[iam:PassRole, anyOf[...]]: denying seven of its eight actions
+   * closes nothing and denying iam:PassRole alone closes all of it. Computed by the matcher - drop
+   * one action, re-run the predicate - so it never disagrees with what actually fires.
+   */
+  requiredActions: string[];
   targets: FindingTarget[];
   restrictable: boolean;
   /** What the RULE says this connects to. A statement about the rule file, not about this account. */

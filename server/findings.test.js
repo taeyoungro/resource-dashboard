@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { RULES, RULES_SHA256, RULE_ACTIONS, RuleError, validate } from './rules.js';
 import { evaluateGrant, findings, sections, sortFindings, summary } from './findings.js';
 import { capabilitiesOf, referenceIndex } from './capabilities.js';
-import { blockOffer, containmentState, mergeBlock } from './blockPath.js';
+import { blockOffer, containmentState, fencedActions, mergeBlock } from './blockPath.js';
 
 const ACCOUNT = '718100330247';
 const arn = (type, i) => `arn:aws:${type.split(':')[0]}:us-east-1:${ACCOUNT}:${type.split(':')[1]}/r${i}`;
@@ -963,4 +963,72 @@ test('two policies firing one rule stay two findings, and one block never reache
     [{ policy: first.policyName, actions: first.triggerActions, intent: 'deny_action' }]);
   assert.equal(after.length, 2);
   assert.deepEqual(after.filter((r) => r.policy === second.policyName), before);
+});
+
+test('the actions a finding cannot exist without are computed, not counted', () => {
+  // A predicate is a tree and the card renders a flat list, so "how much of this path is cut" was
+  // being answered by counting names. For E-1 - allOf[iam:PassRole, anyOf[...]] - that is wrong in
+  // both directions: seven of its eight actions are interchangeable and one is load-bearing.
+  const acts = ['iam:PassRole', 'lambda:CreateFunction', 'lambda:InvokeFunction',
+                'lambda:AddPermission', 'lambda:RunMicrovm'];
+  const d = digest([grant('AWSLambda_FullAccess', acts, [
+    unit('iam:role', ['iam:PassRole'], acts),
+    unit('lambda:function', acts.slice(1), acts),
+  ])], { passrole_grants: [{ name: 'AWSLambda_FullAccess', services: ['lambda.amazonaws.com'],
+                             resources: ['*'], unconditioned: false }] });
+  const [found] = only(findings(d), 'E-1');
+  assert.ok(found);
+  assert.deepEqual(found.requiredActions, ['iam:PassRole'],
+                   'the load-bearing conjunct was not identified');
+  // Every invoke-shaped action has an alternative, and RunMicrovm is a whole branch of its own.
+  for (const action of acts.slice(1)) {
+    assert.ok(!found.requiredActions.includes(action), `${action} is not load-bearing`);
+  }
+  // A rule with a single-action predicate is required by definition.
+  const solo = ['lambda:AddLayerVersionPermission'];
+  const [x9] = only(findings(digest([grant('P', solo, [unit('lambda:layer', solo, solo)])])), 'X-9');
+  assert.deepEqual(x9.requiredActions, solo);
+});
+
+test('the PassRole fence cuts the path it is required for, and says so as its own state', () => {
+  // The chain the fence closes: composeInline appends Deny iam:PassRole per service any attached
+  // policy's grant names, whether or not a restriction was drafted, and the NotResource placeholder
+  // is a role the pipeline cannot create and the organisation's SCP bars anyone else from creating.
+  // E-1 needs iam:PassRole, so the fence closes it before the screen opens - and the badge must not
+  // borrow 완전 차단됨, which claims the administrator's own outright deny did it.
+  const acts = ['iam:PassRole', 'lambda:CreateFunction', 'lambda:InvokeFunction'];
+  const conditioned = [{ name: 'AWSLambda_FullAccess', services: ['lambda.amazonaws.com'],
+                         resources: ['*'], unconditioned: false }];
+  const d = digest([grant('AWSLambda_FullAccess', acts, [
+    unit('iam:role', ['iam:PassRole'], acts),
+    unit('lambda:function', acts.slice(1), acts),
+  ])], { passrole_grants: conditioned });
+  const [found] = only(findings(d), 'E-1');
+
+  assert.equal(containmentState(found, [], [], conditioned), 'fenced');
+  // No fence recorded is the state it always was. Nothing here may turn an absent grant into a claim.
+  assert.equal(containmentState(found, [], [], null), 'none');
+  assert.equal(containmentState(found, [], [], []), 'none');
+  // One unconditioned grant disarms the lot: the writer refuses to derive a condition it cannot
+  // read, so NO fence statement is written for any service and the whole document is refused.
+  assert.equal(containmentState(found, [], [], [{ ...conditioned[0], unconditioned: true }]), 'none');
+  // A protected action cannot be denied, so the required-action shortcut must not claim a cut.
+  assert.equal(containmentState(found, [], ['iam:PassRole'], conditioned), 'partial');
+  // And the administrator's own outright deny of the load-bearing action is 'full', not 'fenced' -
+  // it is their decision, and it holds whether or not a fence exists.
+  const denied = [{ policy: found.policyName, actions: ['iam:PassRole'], intent: 'deny_action' }];
+  assert.equal(containmentState(found, denied, [], null), 'full');
+  assert.equal(containmentState(found, denied, [], conditioned), 'full');
+});
+
+test('the fence only speaks for iam:PassRole', () => {
+  // It is one statement about one action. A finding that does not need iam:PassRole is untouched by
+  // it, and reporting otherwise would say a path is closed because an unrelated control exists.
+  assert.deepEqual([...fencedActions([{ services: ['lambda.amazonaws.com'] }])], ['iam:PassRole']);
+  assert.deepEqual([...fencedActions(null)], []);
+  const acts = ['lambda:UpdateFunctionCode'];
+  const d = digest([grant('P', acts, [unit('lambda:function', acts, acts)])],
+                   { passrole_grants: [{ name: 'P', services: ['lambda.amazonaws.com'] }] });
+  const [e3] = only(findings(d), 'E-3');
+  assert.equal(containmentState(e3, [], [], [{ services: ['lambda.amazonaws.com'] }]), 'none');
 });

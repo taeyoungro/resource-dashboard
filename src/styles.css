@@ -836,6 +836,9 @@ dialog.picker button.commit {
 /* 유형 옆에 붙는 동작 이름. 발화 동작 목록의 칩보다 작고 조용해야 한다 - 그쪽이 판정의
    근거이고 이쪽은 어느 유형에 무엇이 닿았는지를 덧붙이는 것뿐이다. */
 code.target-action { font-size: 0.92em; opacity: 0.85; margin-right: 4px; }
+/* 판정이 성립하려면 반드시 있어야 하는 동작. 배지가 '차단됨'이라고 말할 때 무엇 하나가 그것을
+   해냈는지 알 수 있어야 하므로 표시하되, 나머지 동작을 덜 중요해 보이게 만들지는 않는다. */
+.finding-actions code.required { border-color: var(--accent); font-weight: 600; }
 .finding-actions a.action-doc:hover code,
 .finding-actions a.action-doc:focus-visible code {
   border-color: var(--accent);

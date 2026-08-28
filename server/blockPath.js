@@ -100,7 +100,8 @@ export function alreadyRestricted(finding, restrictions) {
  * administrator something the restriction cannot deliver. This is the same rule Containment renders
  * by, applied to the summary badge.
  */
-export function containmentState(finding, restrictions, protectedActions = []) {
+export function containmentState(finding, restrictions, protectedActions = [],
+                                 passroleGrants = null) {
   const offered = blockOffer(finding, protectedActions);
   if (offered.length === 0) return 'none';
 
@@ -109,7 +110,55 @@ export function containmentState(finding, restrictions, protectedActions = []) {
     mine.filter((r) => r.intent === 'deny_action').flatMap((r) => r.actions ?? []),
   );
   const touched = new Set(mine.flatMap((r) => r.actions ?? []));
+  const fenced = fencedActions(passroleGrants);
+
+  // A path whose load-bearing action is gone cannot hold, however much of the rest is still
+  // granted. Answering this by counting names - all eight denied or it is not closed - was wrong in
+  // both directions for a rule with an allOf at its root: E-1 needs iam:PassRole and four of its
+  // other seven actions are interchangeable, so denying seven of eight closed nothing and denying
+  // the one closed everything.
+  //
+  // `some`, and the asymmetry is the point: every member of requiredActions is INDIVIDUALLY
+  // necessary - it earned its place by making the predicate unsatisfiable when removed - so cutting
+  // any ONE of them is the whole cut. Asking for all of them would be asking to close the same door
+  // several times, and on a grant holding only the three actions E-1 names, all three are required
+  // and denying any one of them ends it.
+  const required = (finding?.requiredActions ?? []).filter(
+    (a) => !protectedActions?.includes?.(a),
+  );
+  if (required.some((a) => denied.has(a) || fenced.has(a))) {
+    // Which control did it decides which of the two answers this is. The administrator's own
+    // outright deny is 완전 차단됨; the fence is something else entirely and must not borrow that
+    // badge - nobody drafted it, it is there before the screen opens, and what it leaves standing
+    // is a list this artifact does not read.
+    return required.some((a) => fenced.has(a) && !denied.has(a)) ? 'fenced' : 'full';
+  }
 
   if (offered.every((o) => !o.protected && denied.has(o.action))) return 'full';
-  return offered.some((o) => touched.has(o.action)) ? 'partial' : 'none';
+  if (offered.some((o) => touched.has(o.action))) return 'partial';
+  return offered.some((o) => fenced.has(o.action)) ? 'partial' : 'none';
+}
+
+/**
+ * The actions the inline document already denies without anybody drafting anything.
+ *
+ * There is exactly one today and it is iam:PassRole. composeInline appends a fence statement per
+ * service any attached policy's PassRole grant names, whether or not a restriction was written -
+ * Deny iam:PassRole, NotResource [the placeholder], Condition iam:PassedToService = that service.
+ * The generator's own note is what makes this a cut rather than a narrowing: the placeholder role
+ * is doubly unreachable, since the pipeline only ever creates mirror-<service>-<name> and the
+ * organisation's SCP bars anyone else from the namespace, so the NotResource entry names no role
+ * that can exist. Approved mirror ARNs are appended beside it by the grant flow, and THAT list -
+ * not the account's roles - is the ceiling on what this path can still reach.
+ *
+ * A grant carrying no iam:PassedToService fences nothing, and the refusal is not this file's: the
+ * writer raises on `unconditioned` rather than guessing a condition, so no fence is written for any
+ * service and the whole document is refused. One such grant therefore disarms the lot, which is why
+ * this is `every` and not `some`.
+ */
+export function fencedActions(passroleGrants) {
+  const grants = passroleGrants ?? [];
+  const fenceable = grants.length > 0
+    && grants.every((g) => g?.unconditioned !== true && (g?.services ?? []).length > 0);
+  return new Set(fenceable ? ['iam:PassRole'] : []);
 }
