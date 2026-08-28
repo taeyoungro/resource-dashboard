@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
 import type {
   AssetGrade, Finding, FindingAxis, FindingCategory, FindingStatus, Grade,
-  Impact as ImpactAssessment, Restriction, RiskAnalysisAnswer, RiskAnalysisCitation,
+  Impact as ImpactAssessment, ImpactResource, Restriction, RiskAnalysisAnswer,
+  RiskAnalysisCitation,
 } from "../types";
 import { BlockPath } from "./BlockPath";
 import { alreadyRestricted, containmentState } from "../../server/blockPath.js";
 import { actionDocUrl } from "../../server/actionDocs.js";
+import { LabeledResource, TagButton } from "./ResourceLine";
 
 /**
  * An action name, linked to AWS's page for it when there is one.
@@ -239,7 +241,21 @@ function AssetGradeBadge({ grade, evidence }: { grade: AssetGrade; evidence: Fin
   );
 }
 
-function Targets({ finding }: { finding: Finding }) {
+/**
+ * An ARN to the resource the assessment described, or null.
+ *
+ * The digest carries ARNs and nothing else - deliberately, since it is what an approval is bound to
+ * and a region, an alias and a tag map per resource would multiply it for something only a reader
+ * uses. The assessment is on the same page and already holds all three, so the card reads the shape
+ * from there and the two screens render one resource one way.
+ */
+type ResourceLookup = (arn: string) => ImpactResource | null;
+
+function Targets({ finding, resourceOf, accountId }: {
+  finding: Finding;
+  resourceOf: ResourceLookup;
+  accountId: string;
+}) {
   if (finding.targets.length === 0) {
     // Only ever an action-axis card: a resource-axis finding that reaches nothing is dropped, since
     // it says exactly what the action-axis one says under a heading promising ARNs.
@@ -318,9 +334,22 @@ function Targets({ finding }: { finding: Finding }) {
             )}
             {target.sample.length > 0 && (
               <ul className="arn-list small">
-                {target.sample.map((arn) => (
-                  <li key={arn}><code>{arn}</code></li>
-                ))}
+                {target.sample.map((arn) => {
+                  // Absent when the assessment is not on this page - a stored digest opened on its
+                  // own - or when the ARN is one the enumeration never described. The bare ARN is
+                  // what this always printed, so falling back to it loses nothing.
+                  const resource = resourceOf(arn);
+                  return (
+                    <li key={arn}>
+                      {resource
+                        ? <>
+                            <LabeledResource resource={resource} accountId={accountId} />
+                            <TagButton tags={resource.tags} arn={arn} />
+                          </>
+                        : <code>{arn}</code>}
+                    </li>
+                  );
+                })}
                 {!target.sampleComplete && (
                   <li className="muted">
                     표본입니다 — {target.count}개 중 {target.sample.length}개만 표시합니다.
@@ -436,8 +465,12 @@ const CONTAINMENT: Record<ContainmentState, { label: string; className: string; 
   },
 };
 
-function Card({ finding, block, containment, showAxis = false }: {
+function Card({ finding, block, containment, resourceOf, accountId, showAxis = false }: {
   finding: Finding;
+  /** The assessment's own record for an ARN, so a target row reads as it does on the impact panel. */
+  resourceOf: ResourceLookup;
+  /** The governed account, for the ARNs that carry none of their own (S3). */
+  accountId: string;
   /** 이 경로가 지금 작성 중인 결정에서 얼마나 끊기는가. */
   containment: ContainmentState;
   /**
@@ -526,7 +559,7 @@ function Card({ finding, block, containment, showAxis = false }: {
         </span>
       </div>
 
-      <Targets finding={finding} />
+      <Targets finding={finding} resourceOf={resourceOf} accountId={accountId} />
 
       <div className="finding-row">
         <span className="finding-label">정책</span>
@@ -924,6 +957,27 @@ function RiskScope({
    * 없는 것, 결정이 이미 닫힌 것 — 에서도 "차단되지 않음"은 승인자가 알아야 하는 사실이고, 단추가
    * 없다는 것이 막혀 있다는 뜻으로 읽히면 안 된다.
    */
+  /**
+   * Every resource the assessment described, by ARN.
+   *
+   * Built once per assessment rather than per card: an enterprise assessment carries thousands of
+   * them and a card can hold eight. A plan opened without its assessment - a stored digest on its
+   * own - yields an empty index, and every row falls back to the bare ARN it always printed.
+   */
+  const resources = useMemo(() => {
+    const index = new Map<string, ImpactResource>();
+    for (const policy of assessment?.policies ?? []) {
+      for (const group of policy.affected ?? []) {
+        for (const resource of group.resources ?? []) {
+          if (resource?.arn && !index.has(resource.arn)) index.set(resource.arn, resource);
+        }
+      }
+    }
+    return index;
+  }, [assessment]);
+  const resourceOf: ResourceLookup = (arn) => resources.get(arn) ?? null;
+  const accountId = assessment?.account_id ?? "";
+
   const containmentOf = (finding: Finding): ContainmentState =>
     containmentState(finding, restrictions, assessment?.protected_actions ?? [],
                      assessment?.passrole_grants ?? null);
@@ -1032,7 +1086,8 @@ function RiskScope({
                       </h5>
                       {items.map((f) => (
                         <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
-                              block={blockProps(f)} containment={containmentOf(f)} />
+                              block={blockProps(f)} containment={containmentOf(f)}
+                              resourceOf={resourceOf} accountId={accountId} />
                       ))}
                     </div>
                   );
@@ -1052,7 +1107,8 @@ function RiskScope({
               </h4>
               {unassessable.map((f) => (
                 <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
-                      block={blockProps(f)} containment={containmentOf(f)} showAxis />
+                      block={blockProps(f)} containment={containmentOf(f)}
+                      resourceOf={resourceOf} accountId={accountId} showAxis />
               ))}
             </div>
           )}
