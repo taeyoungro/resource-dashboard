@@ -164,6 +164,27 @@
       ]
     },
     {
+      "id": "E-5",
+      "title": "임의 역할의 서비스 전달",
+      "category": "ESCALATION",
+      "escalationGrade": "HIGH",
+      "assetImpactGrade": "UNDETERMINED",
+      "evaluatedOn": "policyActionUnion",
+      "predicate": {
+        "action": "iam:PassRole"
+      },
+      "narrative": "이 부여는 역할을 서비스에 전달할 수 있다. 전달 가능한 역할이 가진 권한이 이 정책으로 도달 가능한 권한의 상한이며, 전달받은 서비스가 그 역할로 무엇을 하는지는 서비스마다 다르다.",
+      "notes": "E-1 이 같은 정책에서 발화하면 이 판정은 나오지 않는다. 그쪽은 전달한 역할로 코드를 돌리는 방법까지 확인된 경우이고, 같은 부여에 대해 더 적게 말하는 카드를 나란히 두면 결정이 둘로 읽힌다. 여기 남는 것은 전달은 되는데 그 다음이 확인되지 않은 경우다. 확인되지 않았다는 것은 경로가 없다는 뜻이 아니라 이 분석이 그 서비스를 아직 들여다보지 않았다는 뜻이다 — 지금까지 완성 경로를 확인한 것은 컨테이너 작업, 함수, 인스턴스 세 갈래뿐이다. 어느 서비스로 전달되는지는 부여 문장의 조건이 정하고 이 판정은 그것을 읽지 않는다. 전달 가능한 역할의 목록은 이 부여가 이름하는 역할이 아니라 인라인 문서의 전달 울타리가 남겨 두는 것이며, 울타리가 붙어 있으면 이 경로는 그것으로 끊긴다.",
+      "upperBound": {
+        "requires": "passableRoleSet",
+        "onUnreadableConstraintPolicy": "UNVERIFIED",
+        "onTruncatedResourceList": "NOT_ASSESSABLE"
+      },
+      "supersededBy": [
+        "E-1"
+      ]
+    },
+    {
       "id": "X-1",
       "title": "데이터 저장소 외부 공유 및 전량 반출",
       "category": "EXPOSURE",
