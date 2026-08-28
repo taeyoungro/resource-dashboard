@@ -39,6 +39,26 @@
 export const CAP = {
   // Identity - ending up as somebody else
   PASS_ROLE: 'pass-role',
+  /**
+   * One request names a role AND starts something that runs under it.
+   *
+   * The other half of the iam:PassRole escalation, and the half that was being written by name. E-1
+   * is titled "역할 전달을 통한 임의 권한 획득" and its predicate knew lambda:CreateFunction and
+   * lambda:RunMicrovm, so a policy granting iam:PassRole beside ecs:RunTask or ec2:RunInstances -
+   * the same escalation, on the two services people actually run compute on - fired nothing at all.
+   *
+   * The bar is arbitrary code under the named role from a single call, and the request models say
+   * which actions clear it: ecs:RunTask takes overrides.taskRoleArn AND
+   * overrides.containerOverrides[].command; ec2:RunInstances takes IamInstanceProfile AND UserData;
+   * lambda:RunMicrovm takes executionRoleArn and starts the environment. An action that only
+   * DEFINES a workload - lambda:CreateFunction, ecs:RegisterTaskDefinition - is not this: it needs
+   * something else to wake it, and E-1 names that pairing separately.
+   *
+   * iam:PassRole itself is deliberately not here. It is the IAM gate, has no API of its own, and a
+   * grant holding it and nothing else reaches nothing - so a rule asking for both terms must not be
+   * satisfiable by that one action twice.
+   */
+  RUN_AS_ROLE: 'run-as-role',
   REPLACE_IDENTITY: 'replace-identity',
   MINT_CREDENTIAL: 'mint-credential',
   ATTACH_POLICY: 'attach-policy',
@@ -149,7 +169,7 @@ export const CURATED = {
   'ec2:RebootInstances': [CAP.STOP_START],
   'ec2:TerminateInstances': [CAP.DELETE],
   // Also spend: a fleet of instances is a bill whether or not it carries a role.
-  'ec2:RunInstances': [CAP.CREATE, CAP.SPEND],
+  'ec2:RunInstances': [CAP.CREATE, CAP.SPEND, CAP.RUN_AS_ROLE],
   'ec2:AssociateIamInstanceProfile': [CAP.REPLACE_IDENTITY],
   'ec2:ReplaceIamInstanceProfileAssociation': [CAP.REPLACE_IDENTITY],
   'ec2:CreateLaunchTemplateVersion': [CAP.MODIFY_CODE],
@@ -247,7 +267,7 @@ export const CURATED = {
   // RunMicrovm takes an execution role and starts the environment in one call, which is why E-1
   // treats it as a branch of its own rather than requiring a separate wake-up action. The two
   // token actions hand out a short-lived session onto something already running.
-  'lambda:RunMicrovm': [CAP.CREATE, CAP.INVOKE, CAP.PASS_ROLE],
+  'lambda:RunMicrovm': [CAP.CREATE, CAP.INVOKE, CAP.RUN_AS_ROLE],
   'lambda:CreateMicrovmAuthToken': [CAP.MINT_CREDENTIAL],
   'lambda:CreateMicrovmShellAuthToken': [CAP.MINT_CREDENTIAL],
   'lambda:CreateMicrovmImage': [CAP.CREATE, CAP.MODIFY_CODE, CAP.PASS_ROLE],
@@ -261,9 +281,11 @@ export const CURATED = {
   'lambda:UpdateNetworkConnector': [CAP.MODIFY_CONFIG, CAP.NETWORK_ROUTE],
   'lambda:DeleteNetworkConnector': [CAP.DELETE],
   'ecs:RegisterTaskDefinition': [CAP.CREATE, CAP.MODIFY_CODE],
-  'ecs:RunTask': [CAP.INVOKE, CAP.MODIFY_CODE],
+  'ecs:RunTask': [CAP.INVOKE, CAP.MODIFY_CODE, CAP.RUN_AS_ROLE],
   'ecs:UpdateService': [CAP.MODIFY_CONFIG, CAP.MODIFY_CODE],
-  'ecs:StartTask': [CAP.INVOKE],
+  // Same request shape as RunTask - overrides carries taskRoleArn and the container
+  // command - onto a container instance you name rather than one the scheduler picks.
+  'ecs:StartTask': [CAP.INVOKE, CAP.MODIFY_CODE, CAP.RUN_AS_ROLE],
   'ecr:PutImage': [CAP.MODIFY_CODE],
   'ecr:BatchDeleteImage': [CAP.DELETE],
   'ssm:SendCommand': [CAP.INVOKE, CAP.MODIFY_CODE],
@@ -324,7 +346,6 @@ export const CURATED = {
   // userData, behind a name that reads like an inventory call and a level that says List.
   'ec2:DescribeInstanceAttribute': [CAP.READ_SECRET],
   'ec2:DescribeLaunchTemplateVersions': [CAP.READ_SECRET],
-  'lambda:GetFunction': [CAP.READ_DATA],
   'iam:GetRole': [CAP.READ_DATA],
   'iam:GetRolePolicy': [CAP.READ_DATA],
   'iam:GetPolicyVersion': [CAP.READ_DATA],
