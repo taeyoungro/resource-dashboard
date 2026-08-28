@@ -65,7 +65,13 @@ test('every action that fired a finding is rendered, and none of it is summarise
   // A count cannot answer that, and "등" is a count with a nicer face.
   assert.match(PANEL, /finding\.triggerActions\.map/,
                'the trigger actions are no longer rendered one by one');
-  const rendered = PANEL.slice(PANEL.indexOf('발화 동작'), PANEL.indexOf('<Targets'));
+  // Anchored on the LABEL as it is rendered, not on the first place those two words appear. The
+  // window used to start at the first "발화 동작" anywhere in the file, so a comment mentioning the
+  // label pushed the start earlier and swept 8,000 characters of unrelated components into the
+  // scan - which then failed on a ternary belonging to the containment block.
+  const rendered = PANEL.slice(PANEL.indexOf('>발화 동작<'), PANEL.indexOf('<Targets'));
+  assert.ok(rendered.length > 0 && rendered.length < 600,
+            'the anchor no longer bounds the action list alone');
   assert.ok(!/\bslice\(|\.length\s*>\s*\d+\s*\?|등\b/.test(rendered),
             'the action list is being truncated, capped or abbreviated');
 });

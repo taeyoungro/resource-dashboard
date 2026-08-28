@@ -878,3 +878,54 @@ test('a rule reached by a capability says something true of everything it reache
     }
   }
 });
+
+test('one rule on one policy is one card, however many resource types it reaches', () => {
+  // ec2:ReplaceRouteTableAssociation names three resource types, so X-4 printed three cards under
+  // AmazonEC2FullAccess - same rule, same grade, same sentence, same block button, differing only
+  // in the 대상 row. Three copies of one decision, and a summary that counted them as three
+  // findings. Matching still happens per unit, because a predicate needing several actions on ONE
+  // resource is only satisfiable inside a single unit's action set; what merges is the emission.
+  const acts = ['ec2:ReplaceRouteTableAssociation', 'ec2:ReplaceNetworkAclAssociation'];
+  const ref = reference({
+    'ec2:ReplaceRouteTableAssociation': { refuse: 'deref:association' },
+    'ec2:ReplaceNetworkAclAssociation': { refuse: 'deref:association' },
+  });
+  const d = digest([grant('AmazonEC2FullAccess', acts, [
+    unit('ec2:internet-gateway', [acts[0]], acts, { n: 2 }),
+    unit('ec2:route-table', [acts[0]], acts, { n: 5 }),
+    unit('ec2:subnet', acts, acts, { n: 10 }),
+  ])]);
+  const found = only(findings(d, RULES, ref), 'X-4');
+  assert.equal(found.length, 1, 'one action over three resource types still prints three cards');
+
+  const [card] = found;
+  assert.equal(card.targets.length, 3, 'the merged card lost a resource type');
+  assert.deepEqual(card.targets.map((t) => t.type),
+                   ['ec2:internet-gateway', 'ec2:route-table', 'ec2:subnet']);
+  assert.deepEqual(card.targets.map((t) => t.count), [2, 5, 10]);
+  // The union, in the order the predicate reached them, and never a count.
+  assert.deepEqual(card.triggerActions, acts);
+  // Which action reached WHICH type survives the merge - that is what separate cards used to say.
+  assert.deepEqual(card.targets.map((t) => t.actions),
+                   [[acts[0]], [acts[0]], acts]);
+});
+
+test('a merged card takes the worst status of its groups and says which group', () => {
+  // Co-location, attribution and truncation are properties of a GROUP, so merging could have hidden
+  // a doubt: two types confirmed and one not, printed as one confirmed card. The card takes the
+  // worst - claiming 확인 while a group could not be verified would assert what no unit established
+  // - and each group keeps the status it was decided at so the doubt still has an address.
+  const acts = ['ec2:StopInstances', 'ec2:ModifyInstanceAttribute', 'ec2:StartInstances'];
+  const d = digest([grant('AmazonEC2FullAccess', acts, [
+    unit('ec2:instance', acts, acts),
+    // The producer could not say which type these belong to, so every resource of the service was
+    // attached - the doubt resolveStatus records as UNVERIFIED.
+    unit('ec2:capacity-reservation', acts, acts, { attribution: 'service' }),
+  ])]);
+  const [card] = only(findings(d), 'E-3');
+  assert.ok(card, 'E-3 did not fire on a unit holding all three actions');
+  assert.equal(card.status, 'UNVERIFIED', 'a group that could not be verified was absorbed');
+  assert.deepEqual(card.targets.map((t) => t.status), ['CONFIRMED', 'UNVERIFIED']);
+  assert.ok(card.blockedBy.some((r) => r.includes('resource type')),
+            'the reason the card was downgraded is not carried');
+});

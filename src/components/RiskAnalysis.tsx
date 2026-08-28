@@ -248,12 +248,38 @@ function Targets({ finding }: { finding: Finding }) {
   }
   return (
     <>
+      {/* 한 동작이 여러 자원 유형을 이름하면 그만큼 걸린다. 한 판정이 몇 종류에 닿는지는
+          유형 목록을 세어 보게 하지 않고 먼저 말한다. */}
+      {finding.targets.length > 1 && (
+        <div className="finding-row">
+          <span className="finding-label">연관 자원</span>
+          <span>{finding.targets.length}종</span>
+        </div>
+      )}
       {finding.targets.map((target) => (
         <div className="finding-row" key={`${target.type}:${target.scope}`}>
           <span className="finding-label">대상</span>
           <span>
             <code>{target.type}</code> {target.count}개
             {target.scope === "*" ? "" : " (정책이 지목한 자원)"}
+            {/* 카드가 확인인데 이 유형만 아닌 경우가 있다. 무엇이 등급을 내렸는지는
+                유형 옆에 붙어야 어느 목록을 의심해야 하는지 알 수 있다. */}
+            {target.status !== "CONFIRMED" && (
+              <span className="badge badge-warn" title="이 유형에 대해서는 확인되지 않았습니다">
+                {" "}{STATUS_LABEL[target.status]}
+              </span>
+            )}
+            {/* 발화 동작 전부가 이 유형에 닿는 것은 아닐 때만 적는다. 전부 닿으면 위의
+                발화 동작 목록이 이미 그 말이다. */}
+            {target.actions.length > 0
+              && target.actions.length < finding.triggerActions.length && (
+              <span className="muted">
+                {" · "}
+                {target.actions.map((action) => (
+                  <code key={action} className="target-action">{action}</code>
+                ))}
+              </span>
+            )}
             {target.controlPlane.length > 0 && (
               <>
                 {" · "}
