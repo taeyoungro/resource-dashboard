@@ -830,6 +830,14 @@ dialog.picker button.commit {
   border-radius: 4px;
   padding: 0 4px;
 }
+/* A linked action reads as the same chip it was - the name is the information and the link is a
+   convenience on top of it, so nothing moves and nothing is coloured differently until hover. */
+.finding-actions a.action-doc { text-decoration: none; }
+.finding-actions a.action-doc:hover code,
+.finding-actions a.action-doc:focus-visible code {
+  border-color: var(--accent);
+  text-decoration: underline;
+}
 
 .finding-list { margin: 2px 0; padding-left: 18px; }
 .finding-list li { padding: 1px 0; line-height: 1.5; }
