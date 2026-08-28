@@ -391,7 +391,7 @@
             "action": "ec2:DeleteVpnConnection"
           },
           {
-            "action": "ec2:DeleteVpcEndpoint"
+            "action": "ec2:DeleteVpcEndpoints"
           }
         ]
       },

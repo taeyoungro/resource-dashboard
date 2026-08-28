@@ -7,6 +7,25 @@ import type {
 } from "../types";
 import { BlockPath } from "./BlockPath";
 import { alreadyRestricted, containmentState } from "../../server/blockPath.js";
+import { actionDocUrl } from "../../server/actionDocs.js";
+
+/**
+ * An action name, linked to AWS's page for it when there is one.
+ *
+ * The text is the name and nothing else - the link is a convenience on top of it, so an action with
+ * no page renders exactly as it did before. Opens in a new tab: an approver checking what an action
+ * does must not lose a half-composed restriction to do it.
+ */
+function ActionName({ action }: { action: string }) {
+  const href = actionDocUrl(action);
+  if (!href) return <code>{action}</code>;
+  return (
+    <a className="action-doc" href={href} target="_blank" rel="noreferrer noopener"
+       title={`${action} — AWS 문서`}>
+      <code>{action}</code>
+    </a>
+  );
+}
 
 // The findings, as an approver reads them.
 //
@@ -451,7 +470,7 @@ function Card({ finding, block, containment, showAxis = false }: {
         {/* 전량. 축약하지 않는다 (T-7). */}
         <span className="finding-actions">
           {finding.triggerActions.map((action) => (
-            <code key={action}>{action}</code>
+            <ActionName key={action} action={action} />
           ))}
         </span>
       </div>
