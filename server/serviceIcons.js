@@ -6,9 +6,10 @@
 // AWS-Step-Functions.
 //
 // This used to say nothing derivable connects the two, and be a hand table because of it. That was
-// wrong, and the cost was measured: 70 prefixes mapped against 455 that exist, so 232 of the 291
-// shipped icons (80%) reached nothing and every service outside the 70 rendered no icon at all -
-// silently, because an unmapped prefix is defined to render nothing.
+// wrong, and the cost was measured: 62 prefixes mapped against the 455 that exist, reaching 54 of
+// the 291 shipped icons - so 237 icons (81%) were carried and never rendered, and every service
+// outside the 62 showed nothing at all. Silently, because an unmapped prefix is defined to render
+// nothing. The join below covers 200 prefixes and reaches 174 of the icons.
 //
 // botocore carries the bridge. Every service model has a serviceFullName, which is the brand the
 // icon files are named after, and an endpointPrefix and signingName, which are what IAM keys on:

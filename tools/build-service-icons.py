@@ -5,9 +5,10 @@
 
 Why this is generated rather than written
 -----------------------------------------
-The hand table in serviceIcons.js mapped 70 prefixes. The icon deck ships 291 files and AWS has
-455 IAM service prefixes, so 232 icons (80%) reached nothing and every service outside the 70 got
-no icon at all - silently, because an unmapped prefix renders nothing by design.
+The hand table in serviceIcons.js mapped 62 prefixes and reached 54 icons. The deck ships 291 files
+and AWS has 455 IAM service prefixes, so 237 icons (81%) were carried and never rendered, and every
+service outside the 62 got no icon at all - silently, because an unmapped prefix renders nothing by
+design.
 
 Nothing derivable connects an IAM prefix to a brand: s3 is Simple Storage Service, ecr is Elastic
 Container Registry, events is EventBridge. That was the reason for a hand table, and it was wrong -
