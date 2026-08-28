@@ -156,8 +156,10 @@ export const CURATED = {
   'ec2:ModifyLaunchTemplate': [CAP.MODIFY_CODE],
   'lambda:UpdateFunctionCode': [CAP.MODIFY_CODE],
   'lambda:CreateFunction': [CAP.CREATE, CAP.MODIFY_CODE],
-  // Can change the execution role, which is why it is not merely configuration.
-  'lambda:UpdateFunctionConfiguration': [CAP.MODIFY_CONFIG, CAP.REPLACE_IDENTITY],
+  // Can change the execution role, which is why it is not merely configuration - and can attach a
+  // layer or move the handler, entry point and runtime, which changes what runs under a role that
+  // stays put. One name, three meanings, and IAM separates none of them.
+  'lambda:UpdateFunctionConfiguration': [CAP.MODIFY_CONFIG, CAP.REPLACE_IDENTITY, CAP.MODIFY_CODE],
   'lambda:InvokeFunction': [CAP.INVOKE],
   'lambda:InvokeFunctionUrl': [CAP.INVOKE],
   'lambda:InvokeAsync': [CAP.INVOKE],
@@ -165,6 +167,99 @@ export const CURATED = {
   'lambda:CreateFunctionUrlConfig': [CAP.SHARE_EXTERNAL],
   'lambda:DeleteFunction': [CAP.DELETE],
   'lambda:UpdateFunctionUrlConfig': [CAP.SHARE_EXTERNAL],
+  // The newer resource-policy pair. PutResourcePolicy REPLACES the whole document rather than
+  // appending a statement, so the one name both admits an outsider and wipes what was there.
+  'lambda:PutResourcePolicy': [CAP.SHARE_EXTERNAL, CAP.DELETE],
+  'lambda:AddLayerVersionPermission': [CAP.SHARE_EXTERNAL],
+  // The three REVOCATIONS, curated to override a derivation that has them backwards.
+  //
+  // The reference gives all six of these actions access level 'Permissions management' on a
+  // non-principal type, and derivedCapabilities turns that into share-external - correct for the
+  // three above, exactly wrong for these. The cost was not theoretical: candidatePaths lists
+  // share-external in the exfiltrate edge's targetless capabilities, so an action whose whole
+  // effect is to DELETE a policy was being offered to an approver as one that opens contents to a
+  // principal outside the account.
+  'lambda:RemovePermission': [CAP.DELETE],
+  'lambda:DeleteResourcePolicy': [CAP.DELETE],
+  'lambda:RemoveLayerVersionPermission': [CAP.DELETE],
+  // Reads whose RESPONSE is the material. Every one of these returns FunctionConfiguration, which
+  // carries the environment variables in plaintext and the execution role ARN; GetFunction adds a
+  // presigned download of the deployment package. The list forms take no target, so they answer for
+  // every function at once, and reading a published version returns variables the current
+  // configuration no longer has.
+  'lambda:GetFunction': [CAP.READ_DATA, CAP.READ_SECRET],
+  'lambda:GetFunctionConfiguration': [CAP.READ_DATA, CAP.READ_SECRET],
+  'lambda:ListFunctions': [CAP.READ_DATA, CAP.READ_SECRET],
+  'lambda:ListVersionsByFunction': [CAP.READ_DATA, CAP.READ_SECRET],
+  'lambda:GetLayerVersion': [CAP.READ_DATA],
+  // Re-pointings the derivation cannot see. Neither request resolves an association id - UpdateAlias
+  // names the function and the alias, UpdateEventSourceMapping names its own mapping id - so both
+  // fail the deref: test that CAP.REBIND is otherwise derived from, and both re-point a binding
+  // anyway. UpdateAlias moves which version production traffic reaches without touching code;
+  // UpdateEventSourceMapping carries FunctionName and cannot carry an event source at all, so the
+  // only thing an update can move is which function a live stream is delivered to.
+  'lambda:UpdateAlias': [CAP.REBIND],
+  'lambda:UpdateEventSourceMapping': [CAP.REBIND, CAP.MODIFY_CONFIG],
+  'lambda:PublishLayerVersion': [CAP.CREATE],
+  'lambda:PublishVersion': [CAP.CREATE],
+  // Code signing: the control that refuses an unsigned deployment. Deleting the attachment is the
+  // obvious way off; rewriting the config's trusted publishers is the way THROUGH while it stays
+  // attached. Both directions are curated for the same reason ec2:EnableSerialConsoleAccess and
+  // ec2:DisableSerialConsoleAccess both are - the action is the control's write surface, and
+  // whoever holds it decides what the control says.
+  'lambda:DeleteFunctionCodeSigningConfig': [CAP.DISABLE_GUARDRAIL],
+  'lambda:PutFunctionCodeSigningConfig': [CAP.DISABLE_GUARDRAIL],
+  'lambda:UpdateCodeSigningConfig': [CAP.DISABLE_GUARDRAIL],
+  'lambda:DeleteCodeSigningConfig': [CAP.DISABLE_GUARDRAIL],
+  // The account-wide switch that decides whether a resource policy granting public access is
+  // allowed to exist at all. Turning it off is what makes a later AddPermission with a wildcard
+  // principal succeed, which is this capability's definition exactly.
+  'lambda:PutPublicAccessBlockConfig': [CAP.DISABLE_GUARDRAIL],
+  // Capacity and concurrency. Provisioned environments and a scaling floor are a standing bill;
+  // reserved concurrency is not billed in either direction, so its only subject is availability.
+  'lambda:PutProvisionedConcurrencyConfig': [CAP.SPEND],
+  'lambda:PutFunctionScalingConfig': [CAP.SPEND, CAP.DELETE],
+  'lambda:CreateCapacityProvider': [CAP.CREATE, CAP.SPEND],
+  'lambda:UpdateCapacityProvider': [CAP.SPEND, CAP.DELETE],
+  'lambda:DeleteCapacityProvider': [CAP.DELETE],
+  'lambda:PutFunctionConcurrency': [CAP.DELETE],
+  // Curated for VISIBILITY rather than for a rule. Under a whole-service grant the digest's fold
+  // keeps an action only if a rule names it, the reference classifies it, or it is curated - so an
+  // action the verb table cannot guess is deleted before the matcher ever sees it. Delete,
+  // Put and Send match nothing useful here, and these would be invisible rather than coarse.
+  'lambda:DeleteFunctionConcurrency': [CAP.MODIFY_CONFIG],
+  'lambda:DeleteProvisionedConcurrencyConfig': [CAP.MODIFY_CONFIG],
+  'lambda:DeleteFunctionEventInvokeConfig': [CAP.MODIFY_CONFIG],
+  'lambda:PutFunctionRecursionConfig': [CAP.MODIFY_CONFIG],
+  'lambda:PutRuntimeManagementConfig': [CAP.MODIFY_CONFIG],
+  'lambda:DeleteLayerVersion': [CAP.DELETE],
+  'lambda:StopDurableExecution': [CAP.DELETE],
+  'lambda:PutFunctionEventInvokeConfig': [CAP.MODIFY_CONFIG, CAP.SHARE_EXTERNAL],
+  'lambda:UpdateFunctionEventInvokeConfig': [CAP.MODIFY_CONFIG, CAP.SHARE_EXTERNAL],
+  'lambda:GetDurableExecution': [CAP.READ_DATA],
+  'lambda:GetDurableExecutionHistory': [CAP.READ_DATA],
+  'lambda:SendDurableExecutionCallbackSuccess': [CAP.WRITE_DATA],
+  'lambda:SendDurableExecutionCallbackFailure': [CAP.WRITE_DATA],
+  'lambda:SendDurableExecutionCallbackHeartbeat': [CAP.WRITE_DATA],
+  'lambda:CheckpointDurableExecution': [CAP.WRITE_DATA],
+  // Managed instances and isolated execution environments. These sign as lambda and AWS writes
+  // their IAM actions under the lambda prefix, so a grant of the whole service holds them.
+  // RunMicrovm takes an execution role and starts the environment in one call, which is why E-1
+  // treats it as a branch of its own rather than requiring a separate wake-up action. The two
+  // token actions hand out a short-lived session onto something already running.
+  'lambda:RunMicrovm': [CAP.CREATE, CAP.INVOKE, CAP.PASS_ROLE],
+  'lambda:CreateMicrovmAuthToken': [CAP.MINT_CREDENTIAL],
+  'lambda:CreateMicrovmShellAuthToken': [CAP.MINT_CREDENTIAL],
+  'lambda:CreateMicrovmImage': [CAP.CREATE, CAP.MODIFY_CODE, CAP.PASS_ROLE],
+  'lambda:UpdateMicrovmImage': [CAP.MODIFY_CODE],
+  'lambda:TerminateMicrovm': [CAP.DELETE],
+  'lambda:SuspendMicrovm': [CAP.STOP_START],
+  'lambda:ResumeMicrovm': [CAP.STOP_START],
+  // A network connector provisions an interface into a VPC subnet and decides what the environment
+  // can reach and what can reach it, which is X-2's subject rather than a Lambda one.
+  'lambda:CreateNetworkConnector': [CAP.CREATE, CAP.NETWORK_ROUTE, CAP.PASS_ROLE],
+  'lambda:UpdateNetworkConnector': [CAP.MODIFY_CONFIG, CAP.NETWORK_ROUTE],
+  'lambda:DeleteNetworkConnector': [CAP.DELETE],
   'ecs:RegisterTaskDefinition': [CAP.CREATE, CAP.MODIFY_CODE],
   'ecs:RunTask': [CAP.INVOKE, CAP.MODIFY_CODE],
   'ecs:UpdateService': [CAP.MODIFY_CONFIG, CAP.MODIFY_CODE],
