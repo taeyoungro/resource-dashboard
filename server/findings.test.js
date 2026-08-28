@@ -1032,3 +1032,44 @@ test('the fence only speaks for iam:PassRole', () => {
   const [e3] = only(findings(d), 'E-3');
   assert.equal(containmentState(e3, [], [], [{ services: ['lambda.amazonaws.com'] }]), 'none');
 });
+
+test('the role-passing escalation is not one service\'s', () => {
+  // E-1 is titled 역할 전달을 통한 임의 권한 획득 and its predicate knew Lambda. AmazonECS_FullAccess
+  // carries the identical statement - iam:PassRole on * conditioned to ecs-tasks.amazonaws.com -
+  // beside ecs:RunTask, and fired nothing; AmazonEC2FullAccess with ec2:RunInstances fired nothing.
+  // Both are the same escalation on the services people actually run compute on.
+  //
+  // The request models are what qualifies an action: ecs:RunTask carries overrides.taskRoleArn AND
+  // overrides.containerOverrides[].command, ec2:RunInstances carries IamInstanceProfile AND
+  // UserData. One call, an arbitrary role, arbitrary code.
+  const fires = (acts) => {
+    const d = digest([grant('T', acts, [unit('iam:role', acts, acts)])]);
+    return only(findings(d), 'E-1').length > 0;
+  };
+  assert.ok(fires(['iam:PassRole', 'ecs:RunTask']), 'ECS reaches no role-passing finding');
+  assert.ok(fires(['iam:PassRole', 'ecs:StartTask']));
+  assert.ok(fires(['iam:PassRole', 'ec2:RunInstances']), 'EC2 reaches no role-passing finding');
+  assert.ok(fires(['iam:PassRole', 'lambda:RunMicrovm']));
+  // Defining a workload is not running one, and the pairing is named per service.
+  assert.ok(!fires(['iam:PassRole', 'ecs:RegisterTaskDefinition']),
+            'registering a definition alone runs nothing and was reported as an escalation');
+  assert.ok(fires(['iam:PassRole', 'ecs:RegisterTaskDefinition', 'ecs:CreateService']));
+  assert.ok(fires(['iam:PassRole', 'ecs:RegisterTaskDefinition', 'ecs:UpdateService']));
+  assert.ok(!fires(['iam:PassRole', 'lambda:CreateFunction']));
+  assert.ok(fires(['iam:PassRole', 'lambda:CreateFunction', 'lambda:InvokeFunction']));
+});
+
+test('the gate alone is not the escalation, and neither is the launch alone', () => {
+  // The trap the capability term creates if iam:PassRole is allowed to carry it: a rule asking for
+  // both terms would be satisfied by that one action twice, and every policy granting iam:PassRole
+  // and nothing else would report a CRITICAL path to nowhere.
+  const fires = (acts) => {
+    const d = digest([grant('T', acts, [unit('iam:role', acts, acts)])]);
+    return only(findings(d), 'E-1').length > 0;
+  };
+  assert.ok(!fires(['iam:PassRole']), 'passing a role with nothing to pass it to was an escalation');
+  assert.deepEqual(capabilitiesOf('iam:PassRole').caps, ['pass-role']);
+  assert.ok(!capabilitiesOf('iam:PassRole').caps.includes('run-as-role'));
+  // And a launcher without the IAM permission cannot pass anything.
+  assert.ok(!fires(['ecs:RunTask', 'ec2:RunInstances']));
+});
