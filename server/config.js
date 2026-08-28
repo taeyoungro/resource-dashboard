@@ -114,6 +114,24 @@ export function load() {
     mirrorPrefix: (process.env.OPT_MIRROR_PREFIX ?? 'mirror-').trim(),
     specPolicyPrefix: (process.env.OPT_SPEC_POLICY_PREFIX ?? 'cmp-').trim(),
 
+    // Whether the risk analysis counts this deployment's OWN resources as reachable.
+    //
+    // Off by default here means "keep counting them", and the switch is the other way round: the
+    // organisation denies every principal outside the pipeline on the opt-* namespace with an SCP
+    // and a resource control policy, so a grant that names those resources cannot actually touch
+    // them and reporting 118 roles where 29 are reachable overstates the reach by four times.
+    //
+    // It is a SWITCH and not a constant because the claim it makes is about a control that lives
+    // outside this repository. Turn it on where those policies are attached; leave it off and the
+    // analysis reports what the grant names, which is the safe direction to be wrong in. The count
+    // it removes is never silent - every unit carries how many were set aside and why.
+    //
+    // What it cannot distinguish: a CUSTOMER resource whose name happens to start with opt-. That
+    // is a name match (basis 'prefix'), the same one T-4 forbids from moving a grade, and here it
+    // moves a count instead. The mitigation is the same as everywhere else in this file - the
+    // number is shown with its reason attached rather than folded away.
+    excludeGoverned: (process.env.OPT_EXCLUDE_GOVERNED ?? '').trim().toLowerCase() === 'on',
+
     // ---- the risk analysis ---------------------------------------------------------------------
     //
     // Off unless asked for, and that is the only default that is honest here. Turning it on spends

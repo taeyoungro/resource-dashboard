@@ -158,24 +158,39 @@ function completeServices(asWritten) {
  * cannot be given up - the pipeline's own resources are never sampled out, a small unit is carried
  * whole and says so, and only then does the cap apply.
  */
-function sampleOf(resources, controlPlane) {
-  const arns = resources.map((r) => r.arn).filter(Boolean);
+function sampleOf(resources, controlPlane, { excludeGoverned = false } = {}) {
+  const all = resources.map((r) => r.arn).filter(Boolean);
   const hits = [];
-  for (const arn of arns) {
+  for (const arn of all) {
     const hit = controlPlane.classify(arn);
     // basis travels with the hit. A prefix match is a match against a name and may not move a
     // grade (T-4); findings.js grades on 'configured' and 'declared' only, and it can only make
     // that distinction if the digest carried it.
     if (hit) hits.push({ arn, role: hit.role, basis: hit.basis });
   }
+
+  // The organisation denies everyone outside the pipeline on its own namespace, so where that is
+  // attached these ARNs are named by the grant and reachable by nobody. Set aside rather than
+  // dropped: the count travels on the unit and the card prints it, because a list that quietly
+  // shrank from 118 to 29 is a different claim with no way to tell it was made.
+  //
+  // The whole hit set goes, not just the prefix matches. A configured name and a declared ARN are
+  // stronger evidence of the same fact - that this is the deployment's own machinery - and it would
+  // be strange to set aside opt-SolutionInspector by its name and keep opt-approval-store, which
+  // this deployment can say outright it owns.
+  const governed = excludeGoverned ? new Set(hits.map((h) => h.arn)) : new Set();
+  const arns = governed.size ? all.filter((a) => !governed.has(a)) : all;
+  const kept = governed.size ? hits.filter((h) => !governed.has(h.arn)) : hits;
+  const aside = { governed: governed.size, governed_roles: [...new Set(hits.map((h) => h.role))].sort() };
+
   if (arns.length <= SAMPLE_CAP) {
-    return { sample: arns, sample_complete: true, cp: hits };
+    return { sample: arns, sample_complete: true, cp: kept, ...aside };
   }
   // The producer already sorts sensitive first, then by ARN, so taking the head keeps the ones an
   // approver was meant to see. Control-plane hits are unioned back in whatever their position.
   const head = arns.slice(0, SAMPLE_CAP);
-  for (const { arn } of hits) if (!head.includes(arn)) head.push(arn);
-  return { sample: head, sample_complete: false, cp: hits };
+  for (const { arn } of kept) if (!head.includes(arn)) head.push(arn);
+  return { sample: head, sample_complete: false, cp: kept, ...aside };
 }
 
 /**
@@ -205,6 +220,7 @@ function colocation(group) {
  */
 export function condense(assessment, {
   controlPlane, ruleActions = new Set(), rulesSha256 = null, impactSha256 = null,
+  excludeGoverned = false,
 } = {}) {
   const levels = levelsOf(assessment);
   // Everything the reference establishes about an action, not just its level. levelsOf stays
@@ -277,6 +293,10 @@ export function condense(assessment, {
     const index = new Map(risk.map((a, i) => [a, i]));
 
     const units = [];
+    // Resource TYPES that exist under this grant and hold nothing an outside principal can reach,
+    // because every resource of the type is this deployment's own. Kept apart from units so the
+    // fact survives without producing a target row that reaches nothing.
+    const governedOnly = [];
     for (const group of policy.affected ?? []) {
       const acts = [];
       let reads = 0;
@@ -294,7 +314,15 @@ export function condense(assessment, {
           reads += 1;
         }
       }
-      const { sample, sample_complete, cp } = sampleOf(group.resources ?? [], controlPlane);
+      const { sample, sample_complete, cp, governed, governed_roles } =
+        sampleOf(group.resources ?? [], controlPlane, { excludeGoverned });
+      // Nothing left to reach. The unit is not emitted - a target row reading "0개" is noise - but
+      // the count is kept on the grant, so "this policy names 118 roles and every one of them is
+      // ours" stays a sentence somebody can read rather than an absence.
+      if (governed > 0 && governed >= (group.total ?? (group.resources ?? []).length)) {
+        governedOnly.push({ t: group.resource_type, n: governed, roles: governed_roles });
+        continue;
+      }
       units.push({
         // Every unit is emitted, including one whose actions are all passive. The COUNT is the
         // finding for reconnaissance: "108 roles, 44 policies, 15 stacks, and you cannot stop the
@@ -304,7 +332,14 @@ export function condense(assessment, {
         // which is the same token the console link table and the page are keyed by. Prefixing the
         // service again produced 'ec2:ec2:instance' and broke every join.
         t: group.resource_type,
-        n: group.total ?? (group.resources ?? []).length,
+        // Net of what was set aside. The producer's own total is the gross figure and the ARNs it
+        // could not list are already missing from it, so subtracting what was seen and set aside is
+        // the best number available - never larger than the truth, which is the direction to err.
+        n: Math.max(0, (group.total ?? (group.resources ?? []).length) - governed),
+        // How many of this type are this deployment's own, and what they do. Zero unless the switch
+        // is on, so an untouched deployment carries the same bytes it did.
+        governed,
+        governed_roles: governed ? governed_roles : [],
         scope: group.scope ?? '*',
         colocation: colocation(group),
         // 'service' means at least one action was admitted only because the table did not know it,
@@ -366,6 +401,9 @@ export function condense(assessment, {
       unscoped_actions: risk.filter((a) => unscoped.has(a)),
       non_restrictable: nonRestrictable,
       units,
+      // Emitted only when something was set aside, so an untouched deployment's digest is
+      // byte-identical to what it was.
+      ...(governedOnly.length ? { governed_only: governedOnly } : {}),
     });
   }
 

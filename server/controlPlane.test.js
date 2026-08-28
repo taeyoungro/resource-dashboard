@@ -89,14 +89,42 @@ test('a name that merely LOOKS like the pipeline is not matched', () => {
   // name, must not be graded as the governance store - the inference would be wrong exactly where
   // it matters, in somebody else's account.
   const renamed = controlPlane({ ...CONFIG, approvalTable: 'acme-approvals' });
-  assert.equal(renamed.classify(arn.approval), null,
-               'matched a name this deployment was not configured with');
+  assert.notEqual(role(renamed, arn.approval), ROLES.APPROVAL_STORE,
+                  'a name this deployment was not configured with was read as the approval store');
   assert.equal(
     role(renamed, `arn:aws:dynamodb:us-east-1:${ACCOUNT}:table/acme-approvals`),
     ROLES.APPROVAL_STORE,
   );
+  // It is still a hit, and the difference between the two answers is the whole of T-4. The solution
+  // prefix now applies to every service rather than to iam alone - the pipeline writes opt-* names
+  // in nine of them - so a table called opt-approval-store IS in the namespace this deployment
+  // issues, whatever this deployment calls its own store. What it is not is CONFIGURED, and the
+  // basis says which of the two was established: findings.js grades on 'configured' and 'declared',
+  // so a name reaches the reader and never the number.
+  assert.equal(renamed.classify(arn.approval).basis, 'prefix');
   const cp = controlPlane(CONFIG);
-  assert.equal(cp.classify(`arn:aws:dynamodb:us-east-1:${ACCOUNT}:table/approval-store`), null);
+  assert.equal(cp.classify(`arn:aws:dynamodb:us-east-1:${ACCOUNT}:table/approval-store`), null,
+               'a name outside the issued namespace was matched anyway');
+});
+
+test('the solution prefix is the deployment\'s convention, not IAM\'s', () => {
+  // It used to be tested against iam alone, which read the convention as an IAM one. Every name the
+  // pipeline writes carries it, and the resources an approver most needs kept apart from a
+  // customer's are the ones in the other eight services - the queue that carries every event, the
+  // buckets holding terraform state, the stacks that deploy the whole thing.
+  const cp = controlPlane(CONFIG);
+  for (const [service, name] of [
+    ['sqs', 'opt-iam-event-queue'], ['s3', 'opt-org-policy-terraform-state'],
+    ['dynamodb', 'opt-tf-state-lock'], ['ecs', 'opt-inspector'],
+    ['cloudformation', 'opt-stack-dashboard-host'], ['events', 'opt-IamRoleEvent'],
+    ['logs', 'opt-applier'], ['ecr', 'opt-impact'],
+  ]) {
+    const text = `arn:aws:${service}:us-east-1:${ACCOUNT}:${name}`;
+    assert.ok(cp.classify(text), `${service} name in the issued namespace was not recognised`);
+  }
+  // The other two prefixes stay where they live. mirror-* names roles and cmp-* names customer
+  // managed policies; claiming them in another service would assert a namespace nothing issues.
+  assert.equal(cp.classify(`arn:aws:s3:us-east-1:${ACCOUNT}:mirror-bucket`), null);
 });
 
 test('an operator can declare what no configuration can name, and it wins', () => {

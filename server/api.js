@@ -534,6 +534,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         ruleActions: RULE_ACTIONS,
         rulesSha256: RULES_SHA256,
         impactSha256: key,
+        excludeGoverned: config.excludeGoverned,
       });
       // What the assessment already knows about each action - its access level, the types it names,
       // whether it creates them, and the allow_only verdict whose `deref:` form identifies a

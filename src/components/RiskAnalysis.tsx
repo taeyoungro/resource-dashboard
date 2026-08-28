@@ -266,6 +266,17 @@ function Targets({ finding }: { finding: Finding }) {
           <span>
             <code>{target.type}</code> {target.count}개
             {target.scope === "*" ? "" : " (정책이 지목한 자원)"}
+            {/* 뺀 것은 뺐다고 말한다. 118개가 29개가 된 목록은 도달 범위에 대한 다른 주장이고,
+                말하지 않으면 그 주장이 있었다는 것조차 알 수 없다. */}
+            {target.governed > 0 && (
+              <span className="muted" title={
+                "이 배포가 자기 것으로 인식한 자원입니다. 조직의 서비스 제어 정책과 자원 제어 "
+                + "정책이 파이프라인 밖의 주체를 이 이름 공간에서 거부하므로, 부여가 이름해도 "
+                + "닿지 않습니다. 이름으로 판정한 것이라 등급은 움직이지 않습니다."
+              }>
+                {" "}· 파이프라인 자원 {target.governed}개 제외
+              </span>
+            )}
             {/* 카드가 확인인데 이 유형만 아닌 경우가 있다. 무엇이 등급을 내렸는지는
                 유형 옆에 붙어야 어느 목록을 의심해야 하는지 알 수 있다. */}
             {target.status !== "CONFIRMED" && (
