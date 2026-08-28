@@ -520,6 +520,8 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
           sample: u.sample ?? [],
           sampleComplete: u.sample_complete !== false,
           controlPlane: u.cp ?? [],
+          governed: u.governed ?? 0,
+          governedRoles: u.governed_roles ?? [],
           actions: match.hits.filter((a) => unitActions(grant, u).includes(a)),
           status: match.status,
         }))),

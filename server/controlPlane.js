@@ -77,12 +77,29 @@ export function controlPlane(config) {
     ['ecs', new Map([[config.cluster, ROLES.TASK_CLUSTER]])],
   ]);
 
-  // Names the pipeline ISSUES. opt-* is every role and policy this solution creates for itself;
-  // mirror-* and cmp-* are the governed namespaces it manages on a user's behalf. Both are
-  // configured prefixes (the generator writes them), so matching them is recognising this
-  // deployment's own output - not reading intent into a string.
+  // Names the pipeline ISSUES. opt-* is everything this solution creates for itself; mirror-* and
+  // cmp-* are the governed namespaces it manages on a user's behalf. All three are configured
+  // prefixes (the generator writes them), so matching them is recognising this deployment's own
+  // output - not reading intent into a string.
+  //
+  // `on: null` means every service, and opt-* is the one that needs it. The prefix used to be
+  // tested against iam alone, which was reading the convention as an IAM convention when it is the
+  // deployment's. Every name the pipeline writes carries it, across nine services:
+  //
+  //   iam              opt-SolutionInspector, opt-AuditRole, opt-IICPSPassRoleAllowlist
+  //   s3               opt-org-policy-terraform-state, opt-solution-markers, opt-inlinepolicy-terraform
+  //   dynamodb         opt-approval-store, opt-tf-state-lock
+  //   sqs              opt-iam-event-queue
+  //   ecs              opt-solution-cluster, opt-inspector, opt-applier, opt-impact
+  //   cloudformation   opt-stack-*, opt-stackset-*
+  //   events           opt-IamRoleEvent, opt-CmpVersionEvent, opt-applier-on-approval
+  //   logs, ecr        the same task names again
+  //
+  // mirror-* and cmp-* stay on iam because that is genuinely where they live - one names roles and
+  // the other customer managed policies - and widening them would claim a namespace the pipeline
+  // does not issue elsewhere.
   const prefixes = [
-    { on: 'iam', prefix: config.solutionPrefix, role: ROLES.PIPELINE_ROLE },
+    { on: null, prefix: config.solutionPrefix, role: ROLES.PIPELINE_ROLE },
     { on: 'iam', prefix: config.mirrorPrefix, role: ROLES.GOVERNED_ARTIFACT },
     { on: 'iam', prefix: config.specPolicyPrefix, role: ROLES.GOVERNED_ARTIFACT },
   ].filter((p) => p.prefix);
@@ -109,7 +126,7 @@ export function controlPlane(config) {
     if (exact) return { role: exact, basis: 'configured' };
 
     for (const { on, prefix, role } of prefixes) {
-      if (parsed.service === on && parsed.name && parsed.name.startsWith(prefix)) {
+      if ((on === null || parsed.service === on) && parsed.name && parsed.name.startsWith(prefix)) {
         // Deliberately a weaker basis than the two above, and the difference is load-bearing.
         //
         // A configured value is this deployment saying "the lock table is called this". A prefix is

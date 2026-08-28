@@ -121,6 +121,7 @@ const build = (doc, over = {}) => condense(doc, {
   ruleActions: RULES,
   rulesSha256: 'r'.repeat(64),
   impactSha256: 'i'.repeat(64),
+  excludeGoverned: over.excludeGoverned === true,
 });
 
 // ---- the paths ------------------------------------------------------------------------------
@@ -437,4 +438,94 @@ test('the fold keeps an action the reference classifies, and counts what nothing
   })], { action_reference: reference }));
   assert.equal(named.coverage.actions_unclassified, 1);
   assert.deepEqual(named.coverage.actions_unclassified_sample, ['ec2:WhoKnowsWhat']);
+});
+
+test('this deployment\'s own resources are set aside, counted, and only when asked', () => {
+  // The organisation denies every principal outside the pipeline on the opt-* namespace with an SCP
+  // and a resource control policy, so a grant naming those resources cannot reach them. Reporting
+  // 5 roles where 2 are reachable overstates the reach; reporting 2 with no explanation understates
+  // what was decided. Both numbers travel.
+  const roles = ['opt-SolutionInspector', 'opt-AuditRole', 'opt-MirrorTagWriter',
+                 'app-Worker', 'app-Reporting'];
+  const doc = {
+    account_id: ACCOUNT,
+    policies: [{
+      identifier: 'arn:aws:iam::aws:policy/IAMFullAccess', source: 'aws_managed',
+      actions_granted: ['iam:UpdateAssumeRolePolicy'],
+      affected: [{
+        service: 'iam', resource_type: 'iam:role', total: roles.length, scope: '*',
+        actions: ['iam:UpdateAssumeRolePolicy'],
+        resources: roles.map((name) => ({ arn: `arn:aws:iam::${ACCOUNT}:role/${name}` })),
+      }],
+    }],
+  };
+
+  // Off is what an untouched deployment gets, and it is the safe direction: report what the grant
+  // names.
+  const [asIs] = build(doc).grants[0].units;
+  assert.equal(asIs.n, 5);
+  assert.equal(asIs.governed, 0);
+  assert.deepEqual(asIs.governed_roles, []);
+
+  const [net] = build(doc, { excludeGoverned: true }).grants[0].units;
+  assert.equal(net.n, 2, 'the count still includes resources nobody outside the pipeline can reach');
+  assert.equal(net.governed, 3, 'how many were set aside is not reported');
+  assert.deepEqual(net.sample.sort(),
+                   [`arn:aws:iam::${ACCOUNT}:role/app-Reporting`,
+                    `arn:aws:iam::${ACCOUNT}:role/app-Worker`]);
+  assert.deepEqual(net.cp, [], 'a resource that was set aside is still offered as a target');
+});
+
+test('a type that is nothing but this deployment is reported, not deleted', () => {
+  // The difference between "this policy reaches no roles" and "this policy names 3 roles and every
+  // one of them is ours". A unit whose count fell to zero would say the first; the grant carries
+  // the second so the sentence survives without a target row that reaches nothing.
+  const doc = {
+    account_id: ACCOUNT,
+    policies: [{
+      identifier: 'arn:aws:iam::aws:policy/IAMFullAccess', source: 'aws_managed',
+      actions_granted: ['iam:UpdateAssumeRolePolicy'],
+      affected: [{
+        service: 'iam', resource_type: 'iam:role', total: 2, scope: '*',
+        actions: ['iam:UpdateAssumeRolePolicy'],
+        resources: [{ arn: `arn:aws:iam::${ACCOUNT}:role/opt-SolutionApplier` },
+                    { arn: `arn:aws:iam::${ACCOUNT}:role/opt-SolutionImpact` }],
+      }],
+    }],
+  };
+  const grant = build(doc, { excludeGoverned: true }).grants[0];
+  assert.deepEqual(grant.units, [], 'a unit reaching nothing was still emitted');
+  assert.deepEqual(grant.governed_only, [{ t: 'iam:role', n: 2, roles: ['pipeline_role'] }]);
+  // And with the switch off it is an ordinary unit again.
+  assert.equal(build(doc).grants[0].units[0].n, 2);
+  assert.equal(build(doc).grants[0].governed_only, undefined);
+});
+
+test('the set-aside covers every service the pipeline writes into, not iam alone', () => {
+  // cloudformation stacks, the event queue, the state buckets, the cluster - the request was
+  // explicit that IAM is not the whole of it, and the pipeline's naming convention was never an
+  // IAM convention.
+  const own = [
+    ['sqs', 'opt-iam-event-queue'], ['s3', 'opt-solution-markers'],
+    ['dynamodb', 'opt-approval-store'], ['cloudformation', 'opt-stack-dashboard-host'],
+    ['ecs', 'opt-solution-cluster'],
+  ];
+  for (const [service, name] of own) {
+    const doc = {
+      account_id: ACCOUNT,
+      policies: [{
+        identifier: 'arn:aws:iam::aws:policy/Admin', source: 'aws_managed',
+        actions_granted: [`${service}:Delete`],
+        affected: [{
+          service, resource_type: `${service}:thing`, total: 2, scope: '*',
+          actions: [`${service}:Delete`],
+          resources: [{ arn: `arn:aws:${service}:us-east-1:${ACCOUNT}:${name}` },
+                      { arn: `arn:aws:${service}:us-east-1:${ACCOUNT}:acme-${service}` }],
+        }],
+      }],
+    };
+    const [unit] = build(doc, { excludeGoverned: true }).grants[0].units;
+    assert.equal(unit.n, 1, `${service}: the pipeline's own resource was counted as reachable`);
+    assert.equal(unit.governed, 1, `${service}: nothing was set aside`);
+  }
 });

@@ -660,6 +660,15 @@ export interface FindingTarget {
   sampleComplete: boolean;
   controlPlane: ControlPlaneHit[];
   /**
+   * How many resources of this type were set aside as this deployment's own, and what they do.
+   *
+   * Zero unless OPT_EXCLUDE_GOVERNED is on. The count is shown rather than folded into the total:
+   * a list that quietly shrank from 118 to 29 is a different claim about reach with no way to tell
+   * it was made.
+   */
+  governed: number;
+  governedRoles: string[];
+  /**
    * Which of the finding's trigger actions reach THIS type - not always all of them. One card now
    * carries every type a rule fired on, and ec2:ReplaceNetworkAclAssociation reaches subnets while
    * ec2:ReplaceRouteTableAssociation reaches route tables and gateways too.
