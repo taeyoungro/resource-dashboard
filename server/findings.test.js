@@ -842,3 +842,23 @@ test('revoking a policy is never offered as a way to share one', () => {
     assert.ok(capabilitiesOf(action).caps.includes('share-external'), action);
   }
 });
+
+test('a rule reached by a capability says something true of everything it reaches', () => {
+  // X-2 printed "라우트 테이블에 기본 경로를 추가하거나 보안 그룹에 인그레스를 추가해" on a card whose
+  // trigger actions were lambda:CreateNetworkConnector and lambda:UpdateNetworkConnector. Neither adds
+  // a route and neither adds a security group rule - they provision interfaces into a VPC - so the
+  // sentence on the card was false, which is worse than no card at all.
+  //
+  // The capability term is the whole point of the rule: it is what makes X-2 reach past the four ec2
+  // names in its own predicate. A narrative written for only those four cannot survive that, so the
+  // mechanisms live in the notes as examples and the narrative states the effect they share.
+  const acts = ['lambda:CreateNetworkConnector', 'lambda:UpdateNetworkConnector'];
+  const d = digest([grant('AWSLambda_FullAccess', acts, [unit('lambda:function', acts, acts)])]);
+  const [found] = only(findings(d), 'X-2', 'action');
+  assert.ok(found, 'attaching an execution environment to a private network reaches no egress finding');
+  assert.deepEqual(found.triggerActions, acts);
+  for (const mechanism of ['라우트 테이블', '보안 그룹']) {
+    assert.ok(!found.narrative.includes(mechanism),
+      `X-2 asserts "${mechanism}" of ${acts.join(' and ')}, which do neither`);
+  }
+});
