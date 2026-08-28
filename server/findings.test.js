@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { RULES, RULES_SHA256, RULE_ACTIONS, RuleError, validate } from './rules.js';
 import { evaluateGrant, findings, sections, sortFindings, summary } from './findings.js';
 import { capabilitiesOf, referenceIndex } from './capabilities.js';
-import { blockOffer, containmentState } from './blockPath.js';
+import { blockOffer, containmentState, mergeBlock } from './blockPath.js';
 
 const ACCOUNT = '718100330247';
 const arn = (type, i) => `arn:aws:${type.split(':')[0]}:us-east-1:${ACCOUNT}:${type.split(':')[1]}/r${i}`;
@@ -928,4 +928,39 @@ test('a merged card takes the worst status of its groups and says which group', 
   assert.deepEqual(card.targets.map((t) => t.status), ['CONFIRMED', 'UNVERIFIED']);
   assert.ok(card.blockedBy.some((r) => r.includes('resource type')),
             'the reason the card was downgraded is not carried');
+});
+
+test('two policies firing one rule stay two findings, and one block never reaches the other', () => {
+  // The boundary the per-unit merge must not be extended across, pinned because the two cases look
+  // alike on screen: one rule, one grade, one sentence, twice. Merging units inside a grant removes
+  // a duplicate; merging grants would remove the only thing tying a Deny to the grant that made it
+  // necessary, and a Deny justified by two grants outlives either of them.
+  //
+  //   AWSLambda_FullAccess + AmazonEC2FullAccess  ->  one Deny covering both
+  //   AWSLambda_FullAccess detached               ->  the Deny reads as orphaned
+  //   the Deny removed                            ->  the EC2 path is open again
+  const lambda = ['lambda:UpdateFunctionCode'];
+  const ec2 = ['ec2:ReplaceIamInstanceProfileAssociation'];
+  const d = digest([
+    grant('AWSLambda_FullAccess', lambda, [unit('lambda:function', lambda, lambda)], { p: 'P1' }),
+    grant('AmazonEC2FullAccess', ec2, [unit('ec2:instance', ec2, ec2)], { p: 'P2' }),
+  ]);
+  const found = only(findings(d), 'E-3');
+  assert.equal(found.length, 2, 'one rule over two policies was merged into one card');
+  assert.deepEqual(found.map((f) => f.policyId).sort(), ['P1', 'P2']);
+  // Each card names only its own policy's actions - the union would be a Deny spanning both.
+  for (const card of found) {
+    const expected = card.policyId === 'P1' ? lambda : ec2;
+    assert.deepEqual(card.triggerActions, expected);
+    assert.deepEqual(blockOffer(card).map((o) => o.action), expected);
+  }
+
+  // And applying one card's block leaves the other policy's decision exactly where it was, so
+  // detaching a grant retires its own restrictions and no others.
+  const [first, second] = found;
+  const before = [{ policy: second.policyName, actions: second.triggerActions, intent: 'deny_action' }];
+  const after = mergeBlock(before, first.policyName,
+    [{ policy: first.policyName, actions: first.triggerActions, intent: 'deny_action' }]);
+  assert.equal(after.length, 2);
+  assert.deepEqual(after.filter((r) => r.policy === second.policyName), before);
 });

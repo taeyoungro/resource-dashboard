@@ -433,6 +433,23 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
       // target. The card takes the worst of them, which is the only honest summary - a card saying
       // 확인 while one of its three types could not be verified would be claiming something no unit
       // established.
+      //
+      // THE MERGE STOPS AT THE POLICY, and that boundary is a safety property rather than a
+      // presentation choice. This function is called once per grant, so nothing here can cross it -
+      // the temptation is in the caller, where two policies firing the same rule look like two
+      // copies of one decision and merging them looks like the same tidying this loop just did.
+      //
+      // It is not. A finding is what the block dialog writes a Deny from, and a Deny justified by
+      // two grants outlives either of them:
+      //
+      //     AWSLambda_FullAccess + AmazonEC2FullAccess  ->  one Deny covering both
+      //     AWSLambda_FullAccess detached               ->  the Deny now reads as orphaned
+      //     the Deny removed                            ->  the EC2 path is open again
+      //
+      // Nobody in that sequence did anything visibly wrong, and the last step is the one the
+      // dashboard would have taught them. Keeping a finding inside one policy keeps the decision
+      // and the grant that made it necessary attached to each other, so detaching a grant retires
+      // exactly its own restrictions and no others.
       const hits = [];
       for (const match of matches) {
         for (const action of match.hits) if (!hits.includes(action)) hits.push(action);
