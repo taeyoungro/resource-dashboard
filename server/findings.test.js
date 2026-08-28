@@ -842,3 +842,39 @@ test('revoking a policy is never offered as a way to share one', () => {
     assert.ok(capabilitiesOf(action).caps.includes('share-external'), action);
   }
 });
+
+test('a rule reached by a capability says something true of everything it reaches', () => {
+  // Two rules reach lambda through a capability term alone, and both shipped text written when only
+  // ec2 actions could get there.
+  //
+  //   X-2 told an approver that "라우트 테이블에 기본 경로를 추가하거나 보안 그룹에 인그레스를
+  //       추가해" on a card whose trigger actions were lambda:CreateNetworkConnector and
+  //       UpdateNetworkConnector. Neither adds a route and neither adds a security group rule -
+  //       they provision interfaces into a VPC. A false sentence on a card is worse than no card.
+  //   C-1 explained itself in terms of launching instances, which is one service's spelling of a
+  //       bill and not what a provisioned-concurrency setting does.
+  //
+  // The capability term is the whole point of both rules: it is what makes them reach past the
+  // action names in their own predicates. Text written for only those names cannot survive it, so
+  // the mechanisms belong in the notes as examples and the sentence states the shared effect.
+  const CASES = [
+    { id: 'X-2', acts: ['lambda:CreateNetworkConnector', 'lambda:UpdateNetworkConnector'],
+      absent: ['라우트 테이블', '보안 그룹'],
+      why: 'attaching an execution environment to a private network reaches no egress finding' },
+    { id: 'C-1', acts: ['lambda:PutProvisionedConcurrencyConfig', 'lambda:PutFunctionScalingConfig'],
+      absent: ['인스턴스'],
+      why: 'keeping execution environments warm reaches no cost finding' },
+  ];
+  for (const { id, acts, absent, why } of CASES) {
+    const d = digest([grant('AWSLambda_FullAccess', acts, [unit('lambda:function', acts, acts)])]);
+    const [found] = only(findings(d), id, 'action');
+    assert.ok(found, why);
+    assert.deepEqual(found.triggerActions, acts);
+    // The notes travel to the card beside the narrative, so both are held to the same standard.
+    const shown = `${found.narrative} ${found.notes ?? ''}`;
+    for (const mechanism of absent) {
+      assert.ok(!shown.includes(mechanism),
+        `${id} describes "${mechanism}" of ${acts.join(' and ')}, which do no such thing`);
+    }
+  }
+});
