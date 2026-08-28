@@ -45,6 +45,25 @@ export const ROLES = {
   OPERATOR_DECLARED: 'operator_declared',
 };
 
+/**
+ * The roles that are this deployment's own machinery, as opposed to what it produces for others.
+ *
+ * The distinction the exclusion turns on, and it is not a shade of the same thing. Everything below
+ * exists to run the pipeline: an outside principal has no business reaching it, and the
+ * organisation's service and resource control policies say so on the opt-* namespace.
+ *
+ * GOVERNED_ARTIFACT is deliberately absent. mirror-* roles and cmp-* policies are what the pipeline
+ * CREATES FOR A USER - they are the subject of the permission set being approved, not infrastructure
+ * behind it - and the PassRole fence's whole design is that approved mirror roles are the ones that
+ * stay passable. Setting them aside would hide the reachable set rather than the unreachable one,
+ * which is the exact inversion of what the exclusion is for.
+ */
+export const PIPELINE_OWNED = new Set([
+  ROLES.APPROVAL_STORE, ROLES.STATE_LOCK, ROLES.TERRAFORM_STATE, ROLES.INLINE_STATE,
+  ROLES.MARKER_STORE, ROLES.EVENT_QUEUE, ROLES.TASK_CLUSTER, ROLES.PIPELINE_ROLE,
+  ROLES.OPERATOR_DECLARED,
+]);
+
 /** An operator-declared entry: "<arn>" or "<arn>|<free-text label>". */
 function parseDeclared(entry) {
   const [arn, label] = String(entry).split('|');

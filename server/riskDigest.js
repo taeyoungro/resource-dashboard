@@ -43,6 +43,7 @@
 // few.
 
 import { parseArn } from './arn.js';
+import { PIPELINE_OWNED } from './controlPlane.js';
 import { CURATED, capabilitiesOf, derivedCapabilities, referenceIndex } from './capabilities.js';
 
 export const DIGEST_VERSION = 1;
@@ -174,14 +175,25 @@ function sampleOf(resources, controlPlane, { excludeGoverned = false } = {}) {
   // dropped: the count travels on the unit and the card prints it, because a list that quietly
   // shrank from 118 to 29 is a different claim with no way to tell it was made.
   //
-  // The whole hit set goes, not just the prefix matches. A configured name and a declared ARN are
-  // stronger evidence of the same fact - that this is the deployment's own machinery - and it would
-  // be strange to set aside opt-SolutionInspector by its name and keep opt-approval-store, which
-  // this deployment can say outright it owns.
-  const governed = excludeGoverned ? new Set(hits.map((h) => h.arn)) : new Set();
+  // Which hits go is decided by what the resource IS to this deployment, not by how it was
+  // recognised. A configured name and a declared ARN are stronger evidence of the same fact as a
+  // prefix - that this is the pipeline's own machinery - so all three bases are eligible, and it
+  // would be strange to set aside opt-SolutionInspector by its name and keep opt-approval-store,
+  // which this deployment can say outright it owns.
+  //
+  // What is NOT eligible is the governed artifact. mirror-* roles are what the pipeline creates FOR
+  // a user; they are the subject of the approval rather than infrastructure behind it, and the
+  // PassRole fence leaves exactly the approved ones passable. Setting them aside would hide the
+  // reachable set instead of the unreachable one.
+  const governed = excludeGoverned
+    ? new Set(hits.filter((h) => PIPELINE_OWNED.has(h.role)).map((h) => h.arn))
+    : new Set();
   const arns = governed.size ? all.filter((a) => !governed.has(a)) : all;
   const kept = governed.size ? hits.filter((h) => !governed.has(h.arn)) : hits;
-  const aside = { governed: governed.size, governed_roles: [...new Set(hits.map((h) => h.role))].sort() };
+  const aside = {
+    governed: governed.size,
+    governed_roles: [...new Set(hits.filter((h) => governed.has(h.arn)).map((h) => h.role))].sort(),
+  };
 
   if (arns.length <= SAMPLE_CAP) {
     return { sample: arns, sample_complete: true, cp: kept, ...aside };

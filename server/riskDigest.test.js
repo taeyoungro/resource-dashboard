@@ -529,3 +529,33 @@ test('the set-aside covers every service the pipeline writes into, not iam alone
     assert.equal(unit.governed, 1, `${service}: nothing was set aside`);
   }
 });
+
+test('what the pipeline creates FOR a user is not set aside with what runs it', () => {
+  // The inversion this guards against. mirror-* roles are the subject of the approval - they are
+  // what a permission set exists to grant, and the PassRole fence's design is that the approved
+  // ones stay passable - so setting them aside would hide the reachable set rather than the
+  // unreachable one. opt-* is the machinery behind the decision and nobody outside reaches it.
+  const roles = ['opt-SolutionInspector', 'opt-SolutionApplier', 'mirror-ec2-Test',
+                 'mirror-lambda-Test', 'AWS-QuickSetup-ResourceExplorerRole'];
+  const doc = {
+    account_id: ACCOUNT,
+    policies: [{
+      identifier: 'arn:aws:iam::aws:policy/AWSLambda_FullAccess', source: 'aws_managed',
+      actions_granted: ['iam:PassRole'],
+      affected: [{
+        service: 'iam', resource_type: 'iam:role', total: roles.length, scope: '*',
+        actions: ['iam:PassRole'],
+        resources: roles.map((name) => ({ arn: `arn:aws:iam::${ACCOUNT}:role/${name}` })),
+      }],
+    }],
+  };
+  const [unit] = build(doc, { excludeGoverned: true }).grants[0].units;
+  assert.equal(unit.governed, 2, 'the two opt-* roles were not the ones set aside');
+  assert.deepEqual(unit.governed_roles, ['pipeline_role'],
+                   'a role label that is not this deployment\'s own machinery was set aside');
+  assert.deepEqual(unit.sample.map((a) => a.split('/').pop()).sort(),
+                   ['AWS-QuickSetup-ResourceExplorerRole', 'mirror-ec2-Test', 'mirror-lambda-Test'],
+                   'the mirror roles this approval is about were hidden');
+  // They stay classified, so the reader still sees what they are - only the count stops moving.
+  assert.deepEqual(unit.cp.map((h) => h.role), ['governed_artifact', 'governed_artifact']);
+});
