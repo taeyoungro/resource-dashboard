@@ -11,7 +11,8 @@ import { test } from 'node:test';
 
 import { makeMarkerBodies } from './markerBodies.js';
 import {
-  changesFromPlan, identityFromConfig, isDigest, planIdFromKey, planPrefixFromId, readPlan,
+  changesFromPlan, identityFromConfig, isDigest, passroleFromPlan, planIdFromKey,
+  planPrefixFromId, readPlan,
   requestIdFromMarkerKey, sweep,
 } from './sweep.js';
 
@@ -784,4 +785,58 @@ test('a refusal the panel cannot parse leaves the plan readable', async () => {
                                 '644701781058:ps-Taeyoung');
   assert.equal(detail.refusal, null);
   assert.ok(detail.plan_file_sha256);
+});
+
+
+// ---- the PassRole requests a mirror plan carries ------------------------------------------------
+
+test('the requests are read from the plan outputs, and a value terraform cannot give yet is null',
+  () => {
+    const plan = {
+      output_changes: {
+        passrole_requested_by: { actions: ['create'], after: ['bob', 'alice', 'bob'] },
+        passrole_services: { actions: ['create'], after: ['lambda.amazonaws.com'] },
+        // The ordinary case for a role this plan is creating: terraform says "(known after apply)".
+        passrole_target_arn: { actions: ['create'], after: null, after_unknown: true },
+      },
+    };
+    assert.deepEqual(passroleFromPlan(plan), {
+      requested_by: ['alice', 'bob'],
+      services: ['lambda.amazonaws.com'],
+      target_arn: null,
+    });
+  });
+
+test('after_unknown is not read as a value', () => {
+  // `true` where an ARN belongs would put the string "true" on screen and, worse, make a caller
+  // think the role is known.
+  const plan = { output_changes: { passrole_target_arn: { after_unknown: true } } };
+  assert.equal(passroleFromPlan(plan).target_arn, null);
+
+  // The case that matters more, because a type check would not stop it: for a LIST output
+  // after_unknown is list-shaped too. Read as the value, it would put names on the screen as
+  // requests nobody made - and a name on this screen is what an approver ticks.
+  assert.deepEqual(
+    passroleFromPlan({ output_changes: { passrole_requested_by: { after_unknown: ['alice'] } } }),
+    { requested_by: [], services: [], target_arn: null });
+});
+
+test('a plan with no passrole outputs answers empty rather than undefined', () => {
+  // Every plan goes through this - a permission set plan has none of these outputs at all - and the
+  // page reads .requested_by.length without checking.
+  for (const plan of [null, {}, { output_changes: {} }, { output_changes: { other: {} } }]) {
+    assert.deepEqual(passroleFromPlan(plan),
+      { requested_by: [], services: [], target_arn: null });
+  }
+});
+
+test('a non-list output does not become a request', () => {
+  const plan = {
+    output_changes: {
+      passrole_requested_by: { after: 'alice' },
+      passrole_services: { after: { not: 'a list' } },
+    },
+  };
+  assert.deepEqual(passroleFromPlan(plan).requested_by, []);
+  assert.deepEqual(passroleFromPlan(plan).services, []);
 });

@@ -205,7 +205,33 @@ export interface PlanDetail {
   /** The generated configuration the plan came from. */
   config_json: string;
   changes: PlanChange[];
+  /** Who asked to be able to pass this mirror role, and to which services. Requests, not grants. */
+  passrole: PassroleRequests;
   artifacts: string[];
+}
+
+/**
+ * The PassRole requests a mirror role plan carries, from its terraform outputs.
+ *
+ * A user asks by tagging their own <service>-* role with <their Identity Center name> = passrole.
+ * The inspector reads the tag; the mirror document carries the answer here. Asking grants nothing -
+ * a grant happens only when an approver confirms a name on the decision, and the applier checks
+ * that name against `requested_by` again, because this tier is the one that is not trusted.
+ */
+export interface PassroleRequests {
+  /** Identity Center user names read off the source role's tags. Empty on a plan with no request. */
+  requested_by: string[];
+  /**
+   * The services the grant may be conditioned on, from the mirror role's trust policy. A role can
+   * only be assumed by a service it trusts, so passing it to any other grants nothing. Empty means
+   * no grant can be written: the condition would have to be invented.
+   */
+  services: string[];
+  /**
+   * The role the grant would name. Null while it does not exist yet - terraform reports
+   * "(known after apply)" for a role the same plan is creating, which is the ordinary case.
+   */
+  target_arn: string | null;
 }
 
 /** An announcement from the listener that it dispatched an inspection.
@@ -300,6 +326,20 @@ export interface DecisionPayload {
    * somebody clicked Deny.
    */
   restrictions?: Restriction[];
+
+  /**
+   * Whose PassRole request this approval CONFIRMS. Names only, omitted when nobody was ticked.
+   *
+   * A separate act from approving the plan, and deliberately so: applying a mirror role decides
+   * what the role IS, and this decides who may hand it to a service. Only one of those is an
+   * escalation, so approving a plan grants nothing on its own.
+   *
+   * Names are all that travels. What the grant says - which role, conditioned on which services -
+   * the applier reads from the plan's own outputs, exactly as it recomposes a restriction rather
+   * than applying a document this page built. The server checks each name against the plan's
+   * recorded requesters and the applier checks them again.
+   */
+  passrole_grant_to?: string[];
 
   /**
    * The digest of the assessment the restriction was chosen from. Required whenever restrictions is

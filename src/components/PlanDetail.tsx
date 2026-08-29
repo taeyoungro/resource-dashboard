@@ -20,6 +20,7 @@ interface Props {
     reviewer: string,
     comment: string,
     restrictions: Restriction[],
+    passroleGrantTo: string[],
     analysis: RiskAnalysisCitation | null,
   ) => void;
 }
@@ -30,6 +31,107 @@ const actionClass = (actions: string[]) => {
   return "badge badge-ok";
 };
 
+/**
+ * The PassRole requests on this plan, and the one place they can be confirmed.
+ *
+ * Deliberately its own section, below what the plan changes and above the plan text. A request is
+ * not part of the plan's diff - tagging a role changes no resource, only the outputs that carry the
+ * ask - so folding it into 바뀌는 것 would file an escalation under "nothing changed".
+ *
+ * What this screen may and may not do
+ * -----------------------------------
+ * It sends NAMES. Which role and which services the grant is conditioned on are read by the applier
+ * from the plan's own outputs, exactly as a restriction travels as decisions rather than as a
+ * policy document. This tier does not author IAM content, so the worst a defect here can do is
+ * confirm the wrong person - and the applier checks each name against the requests the inspector
+ * read off the source role, so even that is bounded.
+ */
+function PassroleRequests({ detail, confirmed, onConfirmed, disabled }: {
+  detail: Detail;
+  confirmed: string[];
+  onConfirmed: (names: string[]) => void;
+  disabled: boolean;
+}) {
+  const requests = detail.passrole?.requested_by ?? [];
+  if (requests.length === 0) return null;
+
+  const services = detail.passrole?.services ?? [];
+  // No service means no grant can be written: the condition would have to be invented, and an
+  // unconditioned PassRole allows passing the role to anything. The applier refuses it and so does
+  // the decision route, so the boxes are disabled rather than offered and then rejected.
+  const grantable = services.length > 0;
+
+  const toggle = (name: string) => {
+    onConfirmed(confirmed.includes(name)
+      ? confirmed.filter((n) => n !== name)
+      : [...confirmed, name].sort());
+  };
+
+  return (
+    <>
+      <h3>
+        PassRole 요청 <span className="muted small">{requests.length}건</span>
+      </h3>
+      <p className="muted small">
+        이 역할을 서비스에 넘길 수 있게 해 달라는 요청입니다. 원본 역할에{" "}
+        <code>&lt;사용자 이름&gt; = passrole</code> 태그를 붙여 요청합니다.{" "}
+        <strong>요청은 아무것도 부여하지 않습니다</strong> — 계획을 승인하는 것과 부여하는 것은
+        별개의 결정이고, 아래에서 이름을 고른 사람에게만 부여됩니다.
+      </p>
+
+      {!grantable && (
+        <div className="warn-inline">
+          이 역할의 신뢰 정책이 어떤 서비스도 맡기지 않습니다. 조건 없는 PassRole 은 역할을
+          아무 서비스에나 넘길 수 있게 하므로, 부여할 수 없습니다. 원본 역할의 신뢰 정책을 먼저
+          고치십시오.
+        </div>
+      )}
+
+      <table className="policy-table">
+        <thead>
+          <tr>
+            <th>부여</th>
+            <th>요청한 사람</th>
+            <th>넘길 수 있게 되는 서비스</th>
+          </tr>
+        </thead>
+        <tbody>
+          {requests.map((name) => (
+            <tr key={name}>
+              <td>
+                <label className="pick-item">
+                  <input
+                    type="checkbox"
+                    checked={confirmed.includes(name)}
+                    disabled={disabled || !grantable}
+                    onChange={() => toggle(name)}
+                  />
+                  {confirmed.includes(name) ? " 부여함" : " 부여 안 함"}
+                </label>
+              </td>
+              <td><code>{name}</code></td>
+              <td className="finding-actions">
+                {services.length === 0
+                  ? <span className="muted">없음</span>
+                  : services.map((s) => <code key={s}>{s}</code>)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <p className="muted small">
+        부여 대상:{" "}
+        {detail.passrole?.target_arn
+          ? <code>{detail.passrole.target_arn}</code>
+          : <span>이 계획이 만드는 역할입니다 — 적용 전에는 ARN 이 정해지지 않습니다.</span>}
+        {" "}문장은 요청한 사람의 권한 세트 인라인 정책에 들어가며,{" "}
+        <code>iam:PassedToService</code> 조건으로 위 서비스에 묶입니다.
+      </p>
+    </>
+  );
+}
+
 export function PlanDetail({
   detail, decided, busy, assessmentState, onDecide,
 }: Props) {
@@ -37,12 +139,18 @@ export function PlanDetail({
   const [comment, setComment] = useState("");
   const [restrictions, setRestrictions] = useState<Restriction[]>([]);
   const [analysis, setAnalysis] = useState<RiskAnalysisCitation | null>(null);
+  // Whose PassRole request this approver has ticked. Nobody, until somebody is.
+  const [grantTo, setGrantTo] = useState<string[]>([]);
 
   // Dropped when the plan changes, and that is the whole reason it is state here rather than inside
   // the analysis panel. The citation names an assessment digest; carrying one from the previous plan
   // into this decision would be citing an analysis of something else, which the server would refuse
   // - correctly, but after the reviewer had already pressed the button.
   useEffect(() => { setAnalysis(null); }, [detail.plan_id, detail.request_id]);
+  // Dropped with the plan, for a harder reason than the citation above: a name carried over from a
+  // previous inspection would confirm a request that inspection recorded and this one may not. The
+  // server and the applier both refuse that, but only after the button was pressed.
+  useEffect(() => { setGrantTo([]); }, [detail.plan_id, detail.request_id]);
 
   const submit = (decision: "approve" | "deny") => {
     if (!reviewer.trim()) {
@@ -58,14 +166,22 @@ export function PlanDetail({
       window.alert("동작을 고르지 않은 제한이 있습니다. 지우거나 동작을 고르세요.");
       return;
     }
+    const granting = decision === "approve" ? grantTo : [];
     const what = detail.resource ?? detail.plan_id;
     const suffix = active.length > 0 ? ` 제한 ${active.length}건과 함께` : "";
+    // Named separately in the confirmation, because it is a separate act. Approving the plan and
+    // granting somebody the ability to pass the role are different decisions, and a reviewer who
+    // reads only this line has to see both.
+    const grants = granting.length > 0
+      ? `\n\n그리고 ${granting.join(", ")} 에게 이 역할의 PassRole 을 부여합니다.`
+      : "";
     if (
-      !window.confirm(`${what} 를${suffix} ${decision === "approve" ? "승인" : "거부"}합니다.`)
+      !window.confirm(
+        `${what} 를${suffix} ${decision === "approve" ? "승인" : "거부"}합니다.${grants}`)
     ) {
       return;
     }
-    onDecide(decision, reviewer.trim(), comment.trim(), active, analysis);
+    onDecide(decision, reviewer.trim(), comment.trim(), active, granting, analysis);
   };
 
   return (
@@ -167,6 +283,13 @@ export function PlanDetail({
           </tbody>
         </table>
       )}
+
+      <PassroleRequests
+        detail={detail}
+        confirmed={grantTo}
+        onConfirmed={setGrantTo}
+        disabled={busy || decided}
+      />
 
       <h3>terraform plan</h3>
       <pre className="plan">{detail.plan_text || "plan.txt 가 없습니다."}</pre>
