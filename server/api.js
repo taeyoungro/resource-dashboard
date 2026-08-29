@@ -14,7 +14,9 @@ import { timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { NotificationError, parse as parseNotification } from './notifications.js';
-import { putJson } from './s3.js';
+import { getBucketPolicy, listBuckets, putJson } from './s3.js';
+import { openStatements, parsePolicy, readPolicy, sameAccountOf } from './bucketPolicy.js';
+import { governedPrincipals } from './governedPrincipals.js';
 import { ImpactError, parse as parseImpact } from './impacts.js';
 import { planPrefixFromId, readImpact, readPlan } from './sweep.js';
 import { controlPlane } from './controlPlane.js';
@@ -334,6 +336,90 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         }
       }
       return { templates, error: templateError };
+    },
+
+    // ---- the resource policy review ------------------------------------------------------------
+    //
+    // A READ, and the whole of it. The dashboard names the buckets in this account and reads one
+    // bucket's policy so it can answer "which of the roles and permission sets we issued does this
+    // policy speak about". It holds no s3:PutBucketPolicy and must not: a host able to edit a
+    // resource policy could open a bucket to the internet, and this one is the approval screen.
+    //
+    // Off unless asked for. See config.resourcePolicyReview for what turning it on widens.
+    'GET /api/buckets': async () => {
+      if (!config.resourcePolicyReview) {
+        throw new HttpError(503, 'the resource policy review is off - set OPT_RESOURCE_POLICY_REVIEW=on '
+          + 'and grant s3:ListAllMyBuckets and s3:GetBucketPolicy to this host');
+      }
+      return {
+        buckets: await listBuckets(s3),
+        // Which account these are in, when the deployment was told. The review needs it to know
+        // whether a governed principal is inside the bucket's account or outside it.
+        account_id: config.accountId,
+      };
+    },
+
+    'GET /api/buckets/:bucket/review': async ({ params }) => {
+      if (!config.resourcePolicyReview) {
+        throw new HttpError(503, 'the resource policy review is off - set OPT_RESOURCE_POLICY_REVIEW=on');
+      }
+      const bucket = String(params.bucket ?? '');
+      // Bucket naming rules, applied here because this value goes into an AWS call. Not a security
+      // boundary - the role's own permissions are that - but a malformed name should be refused
+      // with a reason rather than sent to S3 to produce a less useful one.
+      if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) {
+        throw new HttpError(400, 'that is not a bucket name');
+      }
+
+      const state = store.get();
+      const principals = governedPrincipals(state, { mirrorPrefix: config.mirrorPrefix });
+
+      const text = await getBucketPolicy(s3, bucket);
+      if (text === null) {
+        // No policy at all. Said as its own answer rather than as an empty document: a bucket with
+        // no policy grants nothing across accounts and denies nothing here, and an empty document
+        // would be read as the second half only.
+        return {
+          bucket,
+          account_id: config.accountId,
+          has_policy: false,
+          policy: null,
+          principals: principals.map((principal) => ({
+            principal, outcome: 'SILENT', sameAccount: sameAccountOf(principal, config.accountId),
+            statements: [], unknownKeys: [], unreadable: [],
+          })),
+          open: [],
+          governed_count: principals.length,
+          error: null,
+        };
+      }
+
+      let policy;
+      try {
+        policy = parsePolicy(text);
+      } catch (error) {
+        // Reported, never swallowed. A policy this cannot read is not a bucket with nothing in it,
+        // and the two must not reach the screen looking alike.
+        return {
+          bucket, account_id: config.accountId, has_policy: true, policy: null,
+          principals: [], open: [], governed_count: principals.length,
+          error: error.message,
+        };
+      }
+
+      const read = readPolicy(policy, principals, { bucketAccountId: config.accountId });
+      return {
+        bucket,
+        account_id: config.accountId,
+        has_policy: true,
+        // The document itself, because the reading is a claim about it and an approver has to be
+        // able to check the claim against the thing it was made about.
+        policy: policy.document,
+        principals: read,
+        open: openStatements(policy, { bucketAccountId: config.accountId }),
+        governed_count: principals.length,
+        error: null,
+      };
     },
 
     'GET /api/state': async () => {

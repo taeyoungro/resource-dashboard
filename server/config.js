@@ -132,6 +132,32 @@ export function load() {
     // number is shown with its reason attached rather than folded away.
     excludeGoverned: (process.env.OPT_EXCLUDE_GOVERNED ?? '').trim().toLowerCase() === 'on',
 
+    // This deployment's own account, for the one question that cannot be answered without it.
+    //
+    // A bucket policy's silence means opposite things either side of an account boundary: for a
+    // principal in the bucket's own account an identity policy alone is enough and the silence says
+    // nothing, and across accounts both halves are required so the silence is the answer. The
+    // review therefore has to know which side a governed principal is on.
+    //
+    // Configured rather than discovered. sts:GetCallerIdentity would answer it and would mean a new
+    // SDK package for one string; the template already knows the number and can pass it exactly.
+    // Absent is UNKNOWN, never "a different account" - the review then declines to interpret
+    // silence rather than interpreting it the confident way round.
+    accountId: (process.env.OPT_ACCOUNT_ID ?? '').trim() || null,
+
+    // Whether the dashboard may name the buckets in this account and read their policies.
+    //
+    // Off by default because it widens what a compromise of this host yields: today it reads two
+    // named buckets, and with this it can read every bucket POLICY in the account. That is not
+    // object data and it is not nothing - a bucket policy describes who reaches the bucket.
+    //
+    // It never permits a WRITE. The dashboard holds no s3:PutBucketPolicy and must not: a host that
+    // could edit a bucket policy could open a bucket to the internet, which is a larger blast
+    // radius than an approval screen is worth carrying. Resource policies are read here and changed
+    // somewhere else, deliberately.
+    resourcePolicyReview:
+      (process.env.OPT_RESOURCE_POLICY_REVIEW ?? '').trim().toLowerCase() === 'on',
+
     // ---- the risk analysis ---------------------------------------------------------------------
     //
     // Off unless asked for, and that is the only default that is honest here. Turning it on spends

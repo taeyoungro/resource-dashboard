@@ -4,13 +4,24 @@
 // the environment and no credentials file, so a compromise of this host yields a role that can
 // list two buckets, read them, and write one prefix - and nothing else.
 //
+// With the resource policy review turned on it can also NAME every bucket in this account and read
+// their policies. That is a real widening of the sentence above and it is stated here rather than
+// left to the template: a bucket policy is not object data, but it does describe who reaches the
+// bucket, which is worth something to somebody who took this host. It buys the one question the
+// review answers and it is off by default - see config.resourcePolicyReview. What the host still
+// cannot do is WRITE a bucket policy, and that boundary is the point: a host that could edit one
+// could open a bucket to the internet, which is a larger blast radius than an approval screen
+// should carry.
+//
 // Every listing passes an explicit Prefix. On the state bucket that is not a nicety: the role's
 // s3:ListBucket carries a condition on s3:prefix limiting it to plans/, so a listing without one
 // is denied rather than filtered.
 
 import { createHash } from 'node:crypto';
 import {
+  GetBucketPolicyCommand,
   GetObjectCommand,
+  ListBucketsCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
@@ -109,4 +120,49 @@ export async function putJson(s3, bucket, key, body) {
     throw new S3Error(`put s3://${bucket}/${key} failed: ${err.message}`, err);
   }
   return payload.length;
+}
+
+/**
+ * Every bucket in this account, by name.
+ *
+ * s3:ListAllMyBuckets is account-wide by construction - it takes no bucket and cannot be narrowed
+ * to one - so this returns names and creation dates and nothing else. It is the picker's input; the
+ * policy read below is a separate call against a bucket somebody chose.
+ *
+ * The region is NOT here. ListBuckets does not report one and asking for it per bucket would be a
+ * GetBucketLocation on every bucket in the account to draw a list, so the caller learns the region
+ * of the one bucket it goes on to read.
+ */
+export async function listBuckets(s3) {
+  try {
+    const page = await s3.send(new ListBucketsCommand({}));
+    return (page.Buckets ?? [])
+      .map((b) => ({ name: b.Name, createdAt: b.CreationDate?.toISOString() ?? null }))
+      .filter((b) => b.name)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch (err) {
+    throw new S3Error(`list buckets failed: ${err.message}`, err);
+  }
+}
+
+/**
+ * One bucket's policy as text, or null when it has none.
+ *
+ * The two are different facts and the caller must be able to tell them apart, which is why a bucket
+ * with no policy is null rather than an empty document: no policy means nothing is granted across
+ * accounts and nothing is denied here, and an empty document would be read as the second half only.
+ *
+ * NoSuchBucketPolicy is the ordinary answer for most buckets and is not an error. AccessDenied is,
+ * and it is left to the caller - a bucket this host may not read the policy of must not be reported
+ * as a bucket with no policy.
+ */
+export async function getBucketPolicy(s3, bucket) {
+  try {
+    const out = await s3.send(new GetBucketPolicyCommand({ Bucket: bucket }));
+    return typeof out.Policy === 'string' ? out.Policy : null;
+  } catch (err) {
+    const code = err?.name ?? err?.Code ?? '';
+    if (code === 'NoSuchBucketPolicy') return null;
+    throw new S3Error(`get policy of s3://${bucket} failed: ${err.message}`, err);
+  }
 }

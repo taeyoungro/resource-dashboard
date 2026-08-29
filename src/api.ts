@@ -1,5 +1,6 @@
 import type {
-  DecisionPayload, DecisionResult, NotificationFeed, PlanDetail, RiskAnalysisAnswer, SweepState,
+  BucketList, BucketReview, DecisionPayload, DecisionResult, NotificationFeed, PlanDetail,
+  RiskAnalysisAnswer, SweepState,
 } from "./types";
 
 // Same origin. The server that serves this page is the server that answers these calls, so there
@@ -55,6 +56,15 @@ export const api = {
    *  which is a machine's credential and never reaches this page. */
   notifications: async (): Promise<NotificationFeed> =>
     handle(await fetch(`${BASE}/notifications`, { headers: headers() })),
+
+  /** Every bucket in this account. 503 when the review is not turned on for this deployment. */
+  buckets: async (): Promise<BucketList> =>
+    handle(await fetch(`${BASE}/buckets`, { headers: headers() })),
+
+  /** One bucket's policy, read against the principals this deployment issued. A read, never a write. */
+  bucketReview: async (bucket: string): Promise<BucketReview> =>
+    handle(await fetch(`${BASE}/buckets/${encodeURIComponent(bucket)}/review`,
+                       { headers: headers() })),
 
   plan: async (planId: string): Promise<PlanDetail> =>
     handle(await fetch(`${BASE}/plans/${encodeURIComponent(planId)}`, { headers: headers() })),

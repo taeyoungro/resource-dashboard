@@ -894,3 +894,92 @@ export interface RiskAnalysisAnswer {
   /** Why no model answered. Not an error state - the rules ran either way. */
   analysis_error: string | null;
 }
+
+// ---- the resource policy review ----------------------------------------------------------------
+//
+// A read of ONE bucket's policy against the principals this deployment issued. The dashboard holds
+// s3:ListAllMyBuckets and s3:GetBucketPolicy for it and nothing that writes: resource policies are
+// read here and changed somewhere else, because a host able to edit one could open a bucket.
+
+export type BucketPolicyOutcome =
+  | "ALLOWED"
+  | "CONDITIONAL"
+  | "DELEGATED"
+  | "DENIED"
+  | "SILENT"
+  /** The policy holds a statement this reading does not interpret, so nothing is settled. */
+  | "UNREADABLE";
+
+export type PrincipalKind = "mirror_role" | "permission_set";
+
+/** One governed resource as a bucket policy would have to name it. */
+export interface GovernedPrincipal {
+  id: string;
+  kind: PrincipalKind;
+  label: string;
+  accountId: string;
+  arn: string;
+  /**
+   * True for a permission set. What a policy can name is the IAM role it materialises as, whose
+   * name carries a suffix AWS chooses and this deployment never sees - so the ARN above is a
+   * pattern and a card built on it may say "a role of this permission set", not "this role".
+   */
+  arnIsPattern: boolean;
+  planId: string;
+}
+
+/** One statement's bearing on one principal. */
+export interface BucketPolicyStatement {
+  sid: string | null;
+  effect: "Allow" | "Deny";
+  /** How it came to name the principal, or null when the statement could not be read. */
+  match: "any" | "arn" | "account" | "condition" | null;
+  /** Set when the statement uses a form this reading does not interpret - NotPrincipal today. */
+  unreadable: string | null;
+  /** Condition keys that cannot be decided from a principal: request context, tags, org membership. */
+  unknownKeys: string[];
+  /** True when every condition was settled, null when some could not be. */
+  holds: boolean | null;
+}
+
+export interface BucketPolicyReading {
+  principal: GovernedPrincipal;
+  outcome: BucketPolicyOutcome;
+  /**
+   * Whether the principal is inside the bucket's account. Null when the deployment was not told
+   * which account the bucket is in - and then the meaning of SILENT is not decided either.
+   */
+  sameAccount: boolean | null;
+  statements: BucketPolicyStatement[];
+  unknownKeys: string[];
+  unreadable: string[];
+}
+
+/** An Allow that reaches beyond this deployment's own principals. A different question, kept apart. */
+export interface OpenStatement {
+  sid: string | null;
+  anyPrincipal: boolean;
+  accounts: string[];
+  arns: string[];
+  services: string[];
+  conditionKeys: string[];
+  actions: string[];
+}
+
+export interface BucketList {
+  buckets: { name: string; createdAt: string | null }[];
+  account_id: string | null;
+}
+
+export interface BucketReview {
+  bucket: string;
+  account_id: string | null;
+  has_policy: boolean;
+  /** The document itself, so the reading can be checked against what it was made about. */
+  policy: unknown | null;
+  principals: BucketPolicyReading[];
+  open: OpenStatement[];
+  governed_count: number;
+  /** Set when the policy could not be parsed. Not the same fact as a bucket with no policy. */
+  error: string | null;
+}
