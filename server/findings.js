@@ -529,6 +529,8 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
           ?? !hits.some((a) => (grant.non_restrictable ?? []).includes(a)),
         blockedBy: [...new Set(matches.flatMap((m) => m.blockedBy))],
         relatedTo: rule.relatedTo ?? [],
+        // Read by withTwins and removed there - engine bookkeeping, not part of a finding.
+        supersededBy: rule.supersededBy ?? [],
         // Copied. Never composed, never interpolated - see T-4 and the header.
         narrative: rule.narrative,
         notes: rule.notes ?? null,
@@ -553,6 +555,7 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
         restrictable: rule.forceRestrictable ?? true,
         blockedBy: [`the rule could not be evaluated: ${error.message}`],
         relatedTo: rule.relatedTo ?? [],
+        supersededBy: rule.supersededBy ?? [],
         narrative: rule.narrative,
         notes: rule.notes ?? null,
         truncated: null,
@@ -619,7 +622,21 @@ function withTwins(list) {
     if (!firedOn.has(finding.policyId)) firedOn.set(finding.policyId, new Set());
     firedOn.get(finding.policyId).add(finding.id);
   }
-  return list.map((finding) => ({
+  // A finding whose subject a sharper rule already stated on the same policy and the same axis.
+  //
+  // E-5 is the case it exists for. It fires on iam:PassRole alone, because a grant that can hand a
+  // role to a service is worth a card whether or not this analysis has worked out what the
+  // receiving service does with it - and for most services it has not. Where E-1 DID work it out,
+  // both would fire and an approver would read the same decision twice, once as "this chain is
+  // complete" and once as "this chain might exist". The second says less than the first about
+  // exactly the same grant, so it stands down.
+  //
+  // Per axis, not per policy: the two axes ask different questions, and a rule that answered one of
+  // them does not answer the other.
+  const survives = (finding) => !(finding.supersededBy ?? []).some(
+    (id) => byAxis.has(`${finding.axis} ${id} ${finding.policyId}`));
+
+  return list.filter(survives).map(({ supersededBy, ...finding }) => ({
     ...finding,
     alsoOnOtherAxis: byAxis.has(
       `${finding.axis === AXIS.ACTION ? AXIS.RESOURCE : AXIS.ACTION} ${key(finding)}`),

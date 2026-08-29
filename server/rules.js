@@ -173,6 +173,17 @@ export function validate(doc) {
         throw new RuleError(`rule ${rule.id}: relatedTo names ${related}, which is not a rule here`);
       }
     }
+    // A rule that stands down where a sharper one fired. Same check as relatedTo and for the same
+    // reason - a renamed id would silently stop superseding, and the symptom is two cards for one
+    // decision rather than an error.
+    for (const sharper of rule.supersededBy ?? []) {
+      if (!seen.has(sharper)) {
+        throw new RuleError(`rule ${rule.id}: supersededBy names ${sharper}, which is not a rule here`);
+      }
+      if (sharper === rule.id) {
+        throw new RuleError(`rule ${rule.id}: supersededBy names itself`);
+      }
+    }
   }
 
   const sort = doc.sort ?? {};

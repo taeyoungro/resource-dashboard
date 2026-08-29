@@ -1073,3 +1073,49 @@ test('the gate alone is not the escalation, and neither is the launch alone', ()
   // And a launcher without the IAM permission cannot pass anything.
   assert.ok(!fires(['ecs:RunTask', 'ec2:RunInstances']));
 });
+
+test('a policy that can pass a role says so even where no chain was worked out', () => {
+  // AmazonMSKFullAccess carries iam:PassRole to hand a service execution role to kafka, and this
+  // analysis has never examined what MSK does with one - so E-1 could not fire and the policy
+  // reported nothing about role passing at all. Not knowing the completion is a reason to say less,
+  // not a reason to say nothing: the passable role set is still the ceiling.
+  const fires = (id, acts) => {
+    const d = digest([grant('T', acts, [unit('iam:role', acts, acts)])]);
+    return only(findings(d), id).length > 0;
+  };
+  assert.ok(fires('E-5', ['iam:PassRole', 'kafka:CreateCluster']), 'MSK reports no role passing');
+  assert.ok(fires('E-5', ['iam:PassRole']), 'the bare grant reports nothing');
+  assert.ok(fires('E-5', ['iam:PassRole', 'ecs:RegisterTaskDefinition']),
+            'a half chain reports neither half');
+  // No iam:PassRole, nothing to say. AmazonEC2FullAccess is this shape - it grants ec2:* and no
+  // role passing at all, which is why neither rule belongs on it.
+  assert.ok(!fires('E-5', ['ec2:RunInstances', 'ec2:StopInstances']));
+  assert.ok(!fires('E-1', ['ec2:RunInstances', 'ec2:StopInstances']));
+});
+
+test('the sharper rule silences the general one on the same policy and axis', () => {
+  // Both are true of AmazonECS_FullAccess, and printing both puts one decision on screen twice -
+  // once as "this chain is complete" and once as "this chain might exist". The second says strictly
+  // less about the same grant.
+  const acts = ['iam:PassRole', 'ecs:RunTask'];
+  const d = digest([grant('AmazonECS_FullAccess', acts, [unit('iam:role', acts, acts)])]);
+  const list = findings(d);
+  assert.ok(list.some((f) => f.id === 'E-1'), 'the complete chain is gone');
+  assert.deepEqual(list.filter((f) => f.id === 'E-5'), [],
+                   'the general finding was printed beside the sharper one');
+  // On both axes, since E-1 answers both.
+  assert.deepEqual([...new Set(list.filter((f) => f.id === 'E-1').map((f) => f.axis))].sort(),
+                   ['action', 'resource']);
+  // Engine bookkeeping does not reach the wire.
+  for (const finding of list) assert.ok(!('supersededBy' in finding));
+});
+
+test('a rule cannot be superseded by one that is not there, or by itself', () => {
+  // Same failure mode relatedTo has: a renamed id would silently stop superseding, and the symptom
+  // is two cards for one decision rather than an error.
+  const base = { schemaVersion: '0.1', sectionOrder: ['ESCALATION'], sort: {} };
+  assert.throws(() => validate({ ...base, rules: [{ ...RULES[0], supersededBy: ['E-99'] }] }),
+                (e) => e instanceof RuleError && /supersededBy names E-99/.test(e.message));
+  assert.throws(() => validate({ ...base, rules: [{ ...RULES[0], supersededBy: [RULES[0].id] }] }),
+                (e) => e instanceof RuleError && /supersededBy names itself/.test(e.message));
+});
