@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, apiKey } from "./api";
 import { MarkerPage } from "./components/MarkerPage";
 import { PlanPage } from "./components/PlanPage";
+import { ResourcePolicyPage } from "./components/ResourcePolicyPage";
 import type { SweepState } from "./types";
 import { clock } from "./time";
 
@@ -9,7 +10,7 @@ import { clock } from "./time";
 // period (OPT_MARKER_GRACE_SECONDS, default 15 minutes) is presumed running, an older one is
 // presumed dead. One tab per answer, so "what is broken" and "what is merely busy" are different
 // clicks rather than two badge colors in one table.
-type Tab = "plans" | "failed" | "running";
+type Tab = "plans" | "failed" | "running" | "rbp";
 
 // The server sweeps the buckets on startup and every 24 hours; this only asks it what it last
 // saw. Cheap - no S3 call unless the refresh button is pressed - so it can be frequent enough
@@ -80,6 +81,14 @@ export default function App() {
           >
             진행 {counts ? `(${counts.running})` : ""}
           </button>
+          {/* 승인 흐름 밖의 화면이라 개수를 달지 않는다. 세어서 보여 줄 대기열이 없고,
+              숫자가 붙으면 처리해야 할 것이 있다는 뜻으로 읽힌다. */}
+          <button
+            className={tab === "rbp" ? "tab active" : "tab"}
+            onClick={() => setTab("rbp")}
+          >
+            자원 정책
+          </button>
         </div>
         <div className="api-key topbar-key">
           <input
@@ -126,6 +135,8 @@ export default function App() {
 
       {tab === "plans" ? (
         <PlanPage state={state} error={error} onRefresh={sweepNow} />
+      ) : tab === "rbp" ? (
+        <ResourcePolicyPage />
       ) : (
         <MarkerPage state={state} error={error} onRefresh={sweepNow} filter={tab} />
       )}

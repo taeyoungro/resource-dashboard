@@ -1173,3 +1173,12 @@ dialog.picker.block-path { width: min(44rem, 94vw); }
   font-size: 0.78rem;
   padding: 0.25rem 0.6rem;
 }
+
+/* 자원 정책 화면. 승인 흐름 밖에 있고 읽기만 하므로, 카드 모양은 판정 화면에서 빌려 쓰되 결정을
+   부르는 요소(차단 단추, 등급 색)는 가져오지 않는다. */
+.rbp { padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; }
+.rbp > .finding-row { align-items: center; }
+.rbp select { min-width: 22ch; max-width: 48ch; margin-right: 8px; }
+/* 한 주체에 대한 판정. .finding 의 테두리를 그대로 쓰고 안쪽만 조금 눕힌다. */
+.rbp-reading { display: flex; flex-direction: column; gap: 4px; }
+.rbp-reading .res-name { font-weight: 600; }
