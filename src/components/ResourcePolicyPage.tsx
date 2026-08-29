@@ -3,6 +3,8 @@ import { api } from "../api";
 import type {
   BucketList, BucketPolicyOutcome, BucketPolicyReading, BucketReview, OpenStatement,
 } from "../types";
+import { GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
+import { byOpenGrade, byWeight, openGrade, shapeOf } from "../../server/bucketPolicyGrade.js";
 
 // 자원 기반 정책을 읽는 화면. 읽기만 한다.
 //
@@ -76,17 +78,52 @@ function silenceMeans(reading: BucketPolicyReading): string | null {
     + "닿지 않습니다. 객체 ACL 과 액세스 포인트는 이 화면이 읽지 않는 다른 문입니다.";
 }
 
+// 판정 하나를 위험 카드와 같은 모양으로 보인다. 등급·상태·순서·제목은 판정이 무엇을 뜻하는가에
+// 대한 판단이지 꾸밈이 아니므로 server/bucketPolicyGrade.js 에 있고, 여기는 그것을 그린다.
 function Reading({ reading }: { reading: BucketPolicyReading }) {
   const badge = OUTCOME_LABEL[reading.outcome];
+  const shape = shapeOf(reading);
   const silence = silenceMeans(reading);
   return (
-    <div className="finding rbp-reading">
+    <details className={`finding grade-${shape.grade.toLowerCase()}`}>
+      <summary className="finding-head">
+        <span className={GRADE_CLASS[shape.grade]}>{GRADE_LABEL[shape.grade]}</span>
+        <strong className="finding-title">{shape.title}</strong>
+        <span className="finding-tags">
+          <span className={badge.className} title={badge.why}>{badge.label}</span>
+          <span className="badge badge-svc">
+            {reading.principal.kind === "permission_set" ? "권한 세트" : "미러 역할"}
+          </span>
+          {/* 계정 관계는 이 판정의 뜻을 뒤집는 하나이므로 접어 두지 않는다. */}
+          <span
+            className="badge"
+            title={reading.sameAccount === null
+              ? "OPT_ACCOUNT_ID 가 설정되지 않아 이 버킷이 어느 계정인지 모릅니다. 허용과 침묵의 "
+                + "뜻이 계정 경계 이쪽과 저쪽에서 다르므로, 모르는 채로는 등급을 낮추지 않습니다."
+              : reading.sameAccount
+                ? "버킷과 같은 계정입니다. 자기 정책만으로도 닿을 수 있으므로 이 정책이 더한 것은 "
+                  + "그만큼 적습니다."
+                : "버킷과 다른 계정입니다. 양쪽이 다 허용해야 성립하므로 이 정책은 필요조건입니다."}
+          >
+            {reading.sameAccount === null
+              ? "계정 미상"
+              : reading.sameAccount ? "같은 계정" : "다른 계정"}
+          </span>
+          {shape.status && (
+            <span className={shape.status === "CONFIRMED" ? "badge badge-ok" : "badge badge-warn"}>
+              {STATUS_LABEL[shape.status]}
+            </span>
+          )}
+        </span>
+      </summary>
+
+      <p className="finding-narrative">{badge.why}</p>
+
       <div className="finding-row">
-        <span className={badge.className} title={badge.why}>{badge.label}</span>
-        <code className="res-name">{reading.principal.label}</code>
-        <span className="muted">
-          {reading.principal.kind === "permission_set" ? "권한 세트" : "미러 역할"}
-          {" · 계정 "}{reading.principal.accountId}
+        <span className="finding-label">주체</span>
+        <span>
+          <code className="res-name">{reading.principal.label}</code>
+          <span className="muted">{" · 계정 "}{reading.principal.accountId}</span>
         </span>
       </div>
 
@@ -141,13 +178,14 @@ function Reading({ reading }: { reading: BucketPolicyReading }) {
       )}
 
       {silence && <p className="finding-narrative muted">{silence}</p>}
-    </div>
+    </details>
   );
 }
 
 /** 우리 주체가 아닌 쪽으로 열린 허용. 다른 질문이라 따로 둔다. */
 function Open({ statements }: { statements: OpenStatement[] }) {
   if (statements.length === 0) return null;
+  const ordered = [...statements].sort(byOpenGrade);
   return (
     <div className="finding-section">
       <h4>
@@ -156,17 +194,25 @@ function Open({ statements }: { statements: OpenStatement[] }) {
           다른 질문이며, 이 버킷을 처음 보는 사람이 먼저 묻는 쪽입니다
         </span>
       </h4>
-      {statements.map((s, i) => (
-        <div className="finding" key={`${s.sid ?? "no-sid"}:${i}`}>
-          <div className="finding-row">
-            <span className={s.anyPrincipal && s.conditionKeys.length === 0
-              ? "badge badge-danger" : "badge badge-warn"}>
-              {s.anyPrincipal
-                ? (s.conditionKeys.length === 0 ? "모든 주체 · 조건 없음" : "모든 주체 · 조건 있음")
-                : "외부 지목"}
+      {ordered.map((s, i) => {
+        const shape = openGrade(s);
+        return (
+        <details className={`finding grade-${shape.grade.toLowerCase()}`}
+                 key={`${s.sid ?? "no-sid"}:${i}`}>
+          <summary className="finding-head">
+            <span className={GRADE_CLASS[shape.grade]}>{GRADE_LABEL[shape.grade]}</span>
+            <code className="finding-id">{s.sid ?? "(Sid 없음)"}</code>
+            <strong className="finding-title">{shape.label}</strong>
+            <span className="finding-tags">
+              <span className="badge badge-svc">동작 {s.actions.length}개</span>
+              {s.conditionKeys.length > 0 && (
+                <span className="badge badge-warn">조건 키 {s.conditionKeys.length}개</span>
+              )}
             </span>
-            <code>{s.sid ?? "(Sid 없음)"}</code>
-          </div>
+          </summary>
+
+          <p className="finding-narrative">{shape.why}</p>
+
           {s.accounts.length > 0 && (
             <div className="finding-row">
               <span className="finding-label">계정</span>
@@ -197,8 +243,106 @@ function Open({ statements }: { statements: OpenStatement[] }) {
               </span>
             </div>
           )}
-        </div>
-      ))}
+          {s.services.length > 0 && (
+            <div className="finding-row">
+              <span className="finding-label">서비스</span>
+              <span className="finding-actions">
+                {s.services.map((v) => <code key={v}>{v}</code>)}
+              </span>
+            </div>
+          )}
+        </details>
+        );
+      })}
+    </div>
+  );
+}
+
+// 정책 원문 영역.
+//
+// 판정은 문서에 대한 주장이고, 주장은 대조할 수 있어야 한다. 그래서 문서를 접어 두지 않고 늘 같은
+// 자리에 편다.
+//
+// 두 형태를 모두 둔다. "원문 그대로"는 S3 가 돌려준 바이트이고 "정리된 형태"는 그것을 구문 분석한
+// 뒤 다시 찍은 것이다. 둘은 같지 않다 — 키 순서, 공백, 중복 키의 처리는 구문 분석기가 정하므로,
+// 다시 찍은 것만 보이는 화면은 아무도 쓰지 않은 문서를 보여 주는 셈이다. 판정이 만들어진 것은
+// 정리된 쪽이고 승인자가 대조해야 하는 것은 원문 쪽이라, 어느 하나를 고를 수 없다.
+function PolicyDocument({ review }: { review: BucketReview }) {
+  const [form, setForm] = useState<"pretty" | "raw">("pretty");
+  const [copied, setCopied] = useState(false);
+
+  if (!review.has_policy) return null;
+
+  const raw = review.document_text;
+  // 구문 분석에 실패했으면 정리된 형태가 존재하지 않는다. 탭을 남겨 두고 빈 화면을 보이는 대신
+  // 원문으로 고정한다 — 그때가 문서가 가진 전부인 순간이다.
+  const parsed = review.policy != null ? JSON.stringify(review.policy, null, 2) : null;
+  const shown = parsed != null && form === "pretty" ? parsed : raw;
+  if (shown == null) return null;
+
+  const bytes = raw != null ? new TextEncoder().encode(raw).length : null;
+  const document = review.policy as { Version?: unknown; Id?: unknown; Statement?: unknown } | null;
+  const statements = Array.isArray(document?.Statement) ? document.Statement.length : null;
+
+  const copy = () => {
+    // 클립보드는 보안 컨텍스트에서만 있다. 없으면 조용히 실패하는 대신 아무 표시도 하지 않는다.
+    navigator.clipboard?.writeText(shown).then(
+      () => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); },
+      () => undefined,
+    );
+  };
+
+  return (
+    <div className="finding-section policy-document">
+      <h4>
+        자원 정책 원문{" "}
+        <span className="muted small">
+          {bytes != null && `${bytes.toLocaleString()}바이트`}
+          {statements != null && ` · 문장 ${statements}개`}
+          {typeof document?.Version === "string" && ` · Version ${document.Version}`}
+          {typeof document?.Id === "string" && ` · Id ${document.Id}`}
+        </span>
+      </h4>
+
+      <div className="policy-document-bar">
+        {parsed != null ? (
+          <span className="policy-form">
+            <button
+              type="button"
+              className={form === "pretty" ? "on" : undefined}
+              onClick={() => setForm("pretty")}
+            >
+              정리된 형태
+            </button>
+            <button
+              type="button"
+              className={form === "raw" ? "on" : undefined}
+              onClick={() => setForm("raw")}
+            >
+              원문 그대로
+            </button>
+          </span>
+        ) : (
+          <span className="muted small">
+            구문 분석에 실패해서 정리된 형태가 없습니다. S3 가 돌려준 그대로입니다.
+          </span>
+        )}
+        <button type="button" onClick={copy}>{copied ? "복사했습니다" : "복사"}</button>
+      </div>
+
+      <pre className={form === "raw" || parsed == null ? "policy-json wrap" : "policy-json"}>
+        {shown}
+      </pre>
+
+      {/* 구문 분석에 실패했으면 위의 막대가 이미 같은 말을 하고 있으므로 되풀이하지 않는다. */}
+      {parsed != null && (
+        <p className="muted small">
+          {form === "pretty"
+            ? "구문 분석한 뒤 다시 찍은 것입니다. 아래 판정은 이 구조로부터 만들어졌습니다. 키 순서와 "
+              + "공백은 원문과 다를 수 있으므로, 문서 자체를 대조할 때는 원문 그대로를 보십시오."
+            : "S3 가 돌려준 그대로입니다. 이것이 버킷에 실제로 붙어 있는 문서입니다."}
+        </p>
+      )}
     </div>
   );
 }
@@ -209,7 +353,6 @@ export function ResourcePolicyPage() {
   const [review, setReview] = useState<BucketReview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [showPolicy, setShowPolicy] = useState(false);
 
   useEffect(() => {
     api.buckets().then(setList).catch((e) => setError(e.message));
@@ -272,11 +415,6 @@ export function ResourcePolicyPage() {
                   ? `자원 정책 있음 · 대조한 주체 ${review.governed_count}개`
                   : "자원 정책 없음"}
             </span>
-            {review.has_policy && !review.error && (
-              <button type="button" onClick={() => setShowPolicy((v) => !v)}>
-                {showPolicy ? "원문 접기" : "원문 보기"}
-              </button>
-            )}
           </div>
 
           {review.error && (
@@ -293,9 +431,7 @@ export function ResourcePolicyPage() {
             </p>
           )}
 
-          {showPolicy && review.policy != null && (
-            <pre className="policy-json">{JSON.stringify(review.policy, null, 2)}</pre>
-          )}
+          <PolicyDocument review={review} />
 
           <Open statements={review.open} />
 
@@ -306,7 +442,10 @@ export function ResourcePolicyPage() {
                   {review.principals.length}개 — 나쁜 쪽부터
                 </span>
               </h4>
-              {review.principals.map((r) => <Reading key={r.principal.id} reading={r} />)}
+              {/* 서버는 판정 우선순위로 정렬해서 보낸다 — 거부가 어느 허용보다 앞선다. 그것은
+                  무엇이 이기는지의 순서이고, 읽는 순서는 등급이 정한다. */}
+              {[...review.principals].sort(byWeight)
+                .map((r) => <Reading key={r.principal.id} reading={r} />)}
             </div>
           )}
 
@@ -331,7 +470,7 @@ export function ResourcePolicyPage() {
                 안 됩니다.
               </li>
               <li>
-                <strong>자원 범위.</strong> <code>arn:aws:s3:::버킷</code> 과
+                <strong>자원 범위.</strong> <code>arn:aws:s3:::버킷</code> 과{" "}
                 <code>arn:aws:s3:::버킷/*</code> 는 다른 자원이고, 접두사로 좁힌 문장도 있습니다.
                 이 판정은 주체만 보며 어느 객체까지 닿는지는 말하지 않습니다.
               </li>

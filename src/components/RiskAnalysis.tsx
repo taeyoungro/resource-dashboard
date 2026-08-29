@@ -6,6 +6,7 @@ import type {
   Impact as ImpactAssessment, ImpactResource, Restriction, RiskAnalysisAnswer,
   RiskAnalysisCitation,
 } from "../types";
+import { GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
 import { BlockPath } from "./BlockPath";
 import { alreadyRestricted, containmentState } from "../../server/blockPath.js";
 import { actionDocUrl } from "../../server/actionDocs.js";
@@ -171,21 +172,8 @@ const SECTIONS: { category: FindingCategory; label: string; why: string }[] = [
       + "놓지 않는다 — 상한은 이 정책이 아니라 서비스 할당량이 정한다" },
 ];
 
-const GRADE_LABEL: Record<Grade, string> = {
-  CRITICAL: "치명", HIGH: "높음", MEDIUM: "보통", LOW: "낮음", NONE: "없음",
-};
-const GRADE_CLASS: Record<Grade, string> = {
-  CRITICAL: "grade grade-critical",
-  HIGH: "grade grade-high",
-  MEDIUM: "grade grade-medium",
-  LOW: "grade grade-low",
-  NONE: "grade",
-};
-const STATUS_LABEL: Record<FindingStatus, string> = {
-  CONFIRMED: "확인",
-  UNVERIFIED: "미확인",
-  NOT_ASSESSABLE: "평가 불가",
-};
+// 자원 정책 화면도 같은 어휘를 쓴다. 두 곳에 적어 두면 언젠가 한쪽만 바뀌므로 src/grades.ts 에
+// 한 벌만 둔다.
 const MECHANISM_LABEL: Record<string, string> = {
   new_resource: "신규 자원 생성",
   existing_resource: "기존 자원 변조",
