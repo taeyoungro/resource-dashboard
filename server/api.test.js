@@ -182,7 +182,7 @@ function stubS3(objects) {
   return s3;
 }
 
-function harness({ pushed = null, riskAnalysis = false, assessment = null,
+function harness({ pushed = null, riskAnalysis = false, assessment = null, planOutputs = null,
                    makeModelClient = async () => { throw new Error('not configured'); },
                  } = {}) {
   const document = assessment ? JSON.stringify(assessment) : ASSESSMENT_JSON;
@@ -196,7 +196,10 @@ function harness({ pushed = null, riskAnalysis = false, assessment = null,
     }),
     [`${PREFIX}changes.sha256`]: CHANGES,
     [`${PREFIX}tfplan`]: 'binary-plan-bytes',
-    [`${PREFIX}plan.json`]: JSON.stringify({ resource_changes: [{ change: { actions: ['update'] } }] }),
+    [`${PREFIX}plan.json`]: JSON.stringify({
+      resource_changes: [{ change: { actions: ['update'] } }],
+      ...(planOutputs ? { output_changes: planOutputs } : {}),
+    }),
     [`${PREFIX}impact.json`]: document,
     [`${PREFIX}impact.sha256`]: sha,
   });
@@ -1510,4 +1513,86 @@ test('the review is refused outright when the switch is off', async () => {
   });
   await assert.rejects(() => route[REVIEW]({ params: { bucket: BUCKET } }), /resource policy review is off/);
   await assert.rejects(() => route['GET /api/buckets']({}), /resource policy review is off/);
+});
+
+
+// ---- confirming a PassRole grant, which is not approving the plan -------------------------------
+
+const ASKED = {
+  passrole_requested_by: { after: ['alice'] },
+  passrole_services: { after: ['lambda.amazonaws.com'] },
+};
+
+test('the requests reach the page so an approver can see what is being asked', async () => {
+  const { route } = harness({ planOutputs: ASKED });
+  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  assert.deepEqual(detail.passrole,
+    { requested_by: ['alice'], services: ['lambda.amazonaws.com'], target_arn: null });
+});
+
+test('approving the plan grants nothing on its own', async () => {
+  // The whole point of the second confirmation. An approval that carried the grant with it would
+  // act on whatever tag happened to be on the source role when it was inspected.
+  const { route, s3 } = harness({ planOutputs: ASKED });
+  await route['POST /api/plans/:id/decision']({ params: { id: PLAN_ID }, body: decision() });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal('passrole_grant_to' in marker, false,
+    'an approval with nobody ticked carried a grant');
+});
+
+test('a confirmed name travels as a name and nothing else', async () => {
+  const { route, s3 } = harness({ planOutputs: ASKED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID }, body: decision({ passrole_grant_to: ['alice'] }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.deepEqual(marker.passrole_grant_to, ['alice']);
+  // What the grant SAYS is read by the applier from the plan. This tier never authors it.
+  assert.equal(JSON.stringify(marker).includes('mirror_role_arn'), false);
+  assert.equal(JSON.stringify(marker).includes('iam:PassRole'), false);
+});
+
+test('a name nobody asked for is refused, and the message says who did ask', async () => {
+  const { route, s3 } = harness({ planOutputs: ASKED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID }, body: decision({ passrole_grant_to: ['root-admin'] }),
+    }),
+    (e) => e.status === 409 && /root-admin/.test(e.message) && /alice/.test(e.message));
+  assert.equal(s3.puts.some((p) => p.key.startsWith('applier/')), false,
+    'a marker was written despite the refusal');
+});
+
+test('a denial cannot confirm a grant', async () => {
+  const { route } = harness({ planOutputs: ASKED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({ decision: 'deny', comment: 'no', passrole_grant_to: ['alice'] }),
+    }),
+    (e) => e.status === 400 && /nothing is granted/.test(e.message));
+});
+
+test('a grant on a role no service can assume is refused before the apply, not after', async () => {
+  // An unconditioned PassRole allows passing the role to anything, so the applier refuses it. That
+  // refusal would land after the mirror role was already created; this one lands on the button.
+  const { route } = harness({
+    planOutputs: { ...ASKED, passrole_services: { after: [] } },
+  });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID }, body: decision({ passrole_grant_to: ['alice'] }),
+    }),
+    (e) => e.status === 409 && /iam:PassedToService/.test(e.message));
+});
+
+test('confirmations of another shape are refused', async () => {
+  for (const broken of ['alice', [''], [null], [{ user_name: 'alice' }]]) {
+    const { route } = harness({ planOutputs: ASKED });
+    await assert.rejects(
+      () => route['POST /api/plans/:id/decision']({
+        params: { id: PLAN_ID }, body: decision({ passrole_grant_to: broken }),
+      }),
+      (e) => e.status === 400, `accepted passrole_grant_to=${JSON.stringify(broken)}`);
+  }
 });

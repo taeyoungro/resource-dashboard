@@ -182,7 +182,7 @@ function analysisCitation(claim, impactDigest) {
 }
 
 function decisionMarker({ config, plan, prefix, payload, now, restrictions = [], impactDigest = '',
-                         analysis = null }) {
+                         passroleGrantTo = [], analysis = null }) {
   return {
     // What the applier is being asked to do, and to what.
     request_id: plan.request_id,
@@ -239,6 +239,14 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
     // with neither carries neither, exactly as before.
     ...(restrictions.length > 0 ? { restrictions } : {}),
     ...(impactDigest ? { expected_impact_sha256: impactDigest } : {}),
+
+    // Whose PassRole request this approval CONFIRMS. Names only, and omitted when nobody was
+    // ticked - which is the ordinary case, because approving a mirror role plan grants nothing.
+    //
+    // Names are all that travels, for the same reason restrictions travel as decisions: what the
+    // grant actually says - which role, conditioned on which services - is read by the applier from
+    // the plan's own outputs. This tier says who was confirmed and never what they get.
+    ...(passroleGrantTo.length > 0 ? { passrole_grant_to: passroleGrantTo } : {}),
 
     // What the approver was looking at, if an analysis was run. Advisory, and cited rather than
     // copied - the applier does nothing with it, and a record that cannot be traced to the analysis
@@ -1296,10 +1304,52 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         }
       }
 
+      // The PassRole confirmations, checked against the requests the plan actually records.
+      //
+      // A separate act from approving the plan, and the page sends nothing here unless somebody
+      // ticked a box: applying a mirror role decides what the role is, and this decides who may
+      // hand it to a service. One of those is an escalation and the other is not.
+      //
+      // Checked here so the approver gets a readable refusal, and checked AGAIN by the applier
+      // against the same output, because this tier is the one that is not trusted. A name is the
+      // only part of a grant that comes from here - the role and the services are read from the
+      // plan - so it is the only part that needs bounding.
+      const grantTo = body.passrole_grant_to ?? [];
+      if (!Array.isArray(grantTo)
+          || grantTo.some((u) => typeof u !== 'string' || !u.trim())) {
+        throw new HttpError(400, 'passrole_grant_to must be an array of Identity Center user names');
+      }
+      const confirmed = [...new Set(grantTo.map((u) => u.trim()))].sort();
+      if (confirmed.length > 0) {
+        if (body.decision !== 'approve') {
+          throw new HttpError(400, 'a denial cannot confirm a PassRole grant: nothing is granted');
+        }
+        const requested = new Set(plan.passrole?.requested_by ?? []);
+        const unasked = confirmed.filter((u) => !requested.has(u));
+        if (unasked.length > 0) {
+          throw new HttpError(
+            409,
+            `${unasked.join(', ')} did not ask for PassRole on this role. A request is a tag on the `
+            + `source role - <user name> = passrole - and this plan records requests from `
+            + `${[...requested].sort().join(', ') || 'nobody'}. A grant is confirmed, never `
+            + 'originated.',
+          );
+        }
+        if ((plan.passrole?.services ?? []).length === 0) {
+          throw new HttpError(
+            409,
+            'this role\'s trust policy admits no service, so a PassRole grant on it would have no '
+            + 'iam:PassedToService condition and would allow passing it to anything. The applier '
+            + 'refuses such a grant, so the confirmation is refused here instead of failing after '
+            + 'the apply.',
+          );
+        }
+      }
+
       const marker = decisionMarker({
         config, plan, prefix: planPrefixFromId(id),
         payload: { ...body, reviewer, comment }, now: Date.now(),
-        restrictions, impactDigest,
+        restrictions, impactDigest, passroleGrantTo: confirmed,
         analysis: body.risk_analysis ? analysisCitation(body.risk_analysis, impactDigest) : null,
       });
       const key = `${config.applierPrefix}${requestId}.json`;

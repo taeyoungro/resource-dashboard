@@ -187,6 +187,42 @@ export function changesFromPlan(planJson) {
   return changes;
 }
 
+/** The PassRole requests this plan carries, from the mirror document's outputs.
+ *
+ * A user asks by tagging their <service>-* role <their name> = passrole. The inspector reads the
+ * tag, resolves the name against Identity Center, and the mirror document carries the answer in
+ * three outputs. This reads them so the page can put the request in front of an approver.
+ *
+ * Asking grants nothing, and the shape here says so: these are requests, and a grant happens only
+ * when an approver names somebody in the decision. The applier checks that name against
+ * requested_by again - this page is the untrusted tier and its list is a convenience, not the
+ * authority.
+ *
+ * target_arn is null on a role that does not exist yet: terraform reports "(known after apply)" and
+ * there is no ARN to show until the apply produces one. That is not a reason to withhold the
+ * request - the approver is deciding about a role the same plan is creating.
+ */
+export function passroleFromPlan(planJson) {
+  const outputs = planJson?.output_changes ?? {};
+  const after = (name) => {
+    const change = outputs[name];
+    // `after` carries the value; `after_unknown` means terraform cannot say yet. Reading the second
+    // as a value would put the string "true" on screen where an ARN belongs.
+    if (!change || change.after === undefined || change.after === null) return null;
+    return change.after;
+  };
+  const list = (name) => {
+    const value = after(name);
+    return Array.isArray(value) ? value.filter((v) => typeof v === 'string' && v.trim()) : [];
+  };
+  const arn = after('passrole_target_arn');
+  return {
+    requested_by: [...new Set(list('passrole_requested_by'))].sort(),
+    services: [...new Set(list('passrole_services'))].sort(),
+    target_arn: typeof arn === 'string' && arn.trim() ? arn.trim() : null,
+  };
+}
+
 /** The body of every marker, from the cache where possible and S3 for the rest.
  *
  * The cache holds what this process was already given: the listener announces an inspector marker
@@ -687,6 +723,8 @@ export async function readPlan(s3, config, planId) {
     plan_text: planText,
     config_json: configJson ? JSON.stringify(configJson, null, 2) : '',
     changes: changesFromPlan(planJson),
+    // Who asked to be able to pass this mirror role, and to which services. Requests, not grants.
+    passrole: passroleFromPlan(planJson),
     artifacts: [...byName.keys()].sort(),
   };
 }
