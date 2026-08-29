@@ -3,6 +3,8 @@ import { api } from "../api";
 import type {
   BucketList, BucketPolicyOutcome, BucketPolicyReading, BucketReview, OpenStatement,
 } from "../types";
+import { GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
+import { byOpenGrade, byWeight, openGrade, shapeOf } from "../../server/bucketPolicyGrade.js";
 
 // 자원 기반 정책을 읽는 화면. 읽기만 한다.
 //
@@ -76,17 +78,52 @@ function silenceMeans(reading: BucketPolicyReading): string | null {
     + "닿지 않습니다. 객체 ACL 과 액세스 포인트는 이 화면이 읽지 않는 다른 문입니다.";
 }
 
+// 판정 하나를 위험 카드와 같은 모양으로 보인다. 등급·상태·순서·제목은 판정이 무엇을 뜻하는가에
+// 대한 판단이지 꾸밈이 아니므로 server/bucketPolicyGrade.js 에 있고, 여기는 그것을 그린다.
 function Reading({ reading }: { reading: BucketPolicyReading }) {
   const badge = OUTCOME_LABEL[reading.outcome];
+  const shape = shapeOf(reading);
   const silence = silenceMeans(reading);
   return (
-    <div className="finding rbp-reading">
+    <details className={`finding grade-${shape.grade.toLowerCase()}`}>
+      <summary className="finding-head">
+        <span className={GRADE_CLASS[shape.grade]}>{GRADE_LABEL[shape.grade]}</span>
+        <strong className="finding-title">{shape.title}</strong>
+        <span className="finding-tags">
+          <span className={badge.className} title={badge.why}>{badge.label}</span>
+          <span className="badge badge-svc">
+            {reading.principal.kind === "permission_set" ? "권한 세트" : "미러 역할"}
+          </span>
+          {/* 계정 관계는 이 판정의 뜻을 뒤집는 하나이므로 접어 두지 않는다. */}
+          <span
+            className="badge"
+            title={reading.sameAccount === null
+              ? "OPT_ACCOUNT_ID 가 설정되지 않아 이 버킷이 어느 계정인지 모릅니다. 허용과 침묵의 "
+                + "뜻이 계정 경계 이쪽과 저쪽에서 다르므로, 모르는 채로는 등급을 낮추지 않습니다."
+              : reading.sameAccount
+                ? "버킷과 같은 계정입니다. 자기 정책만으로도 닿을 수 있으므로 이 정책이 더한 것은 "
+                  + "그만큼 적습니다."
+                : "버킷과 다른 계정입니다. 양쪽이 다 허용해야 성립하므로 이 정책은 필요조건입니다."}
+          >
+            {reading.sameAccount === null
+              ? "계정 미상"
+              : reading.sameAccount ? "같은 계정" : "다른 계정"}
+          </span>
+          {shape.status && (
+            <span className={shape.status === "CONFIRMED" ? "badge badge-ok" : "badge badge-warn"}>
+              {STATUS_LABEL[shape.status]}
+            </span>
+          )}
+        </span>
+      </summary>
+
+      <p className="finding-narrative">{badge.why}</p>
+
       <div className="finding-row">
-        <span className={badge.className} title={badge.why}>{badge.label}</span>
-        <code className="res-name">{reading.principal.label}</code>
-        <span className="muted">
-          {reading.principal.kind === "permission_set" ? "권한 세트" : "미러 역할"}
-          {" · 계정 "}{reading.principal.accountId}
+        <span className="finding-label">주체</span>
+        <span>
+          <code className="res-name">{reading.principal.label}</code>
+          <span className="muted">{" · 계정 "}{reading.principal.accountId}</span>
         </span>
       </div>
 
@@ -141,13 +178,14 @@ function Reading({ reading }: { reading: BucketPolicyReading }) {
       )}
 
       {silence && <p className="finding-narrative muted">{silence}</p>}
-    </div>
+    </details>
   );
 }
 
 /** 우리 주체가 아닌 쪽으로 열린 허용. 다른 질문이라 따로 둔다. */
 function Open({ statements }: { statements: OpenStatement[] }) {
   if (statements.length === 0) return null;
+  const ordered = [...statements].sort(byOpenGrade);
   return (
     <div className="finding-section">
       <h4>
@@ -156,17 +194,25 @@ function Open({ statements }: { statements: OpenStatement[] }) {
           다른 질문이며, 이 버킷을 처음 보는 사람이 먼저 묻는 쪽입니다
         </span>
       </h4>
-      {statements.map((s, i) => (
-        <div className="finding" key={`${s.sid ?? "no-sid"}:${i}`}>
-          <div className="finding-row">
-            <span className={s.anyPrincipal && s.conditionKeys.length === 0
-              ? "badge badge-danger" : "badge badge-warn"}>
-              {s.anyPrincipal
-                ? (s.conditionKeys.length === 0 ? "모든 주체 · 조건 없음" : "모든 주체 · 조건 있음")
-                : "외부 지목"}
+      {ordered.map((s, i) => {
+        const shape = openGrade(s);
+        return (
+        <details className={`finding grade-${shape.grade.toLowerCase()}`}
+                 key={`${s.sid ?? "no-sid"}:${i}`}>
+          <summary className="finding-head">
+            <span className={GRADE_CLASS[shape.grade]}>{GRADE_LABEL[shape.grade]}</span>
+            <code className="finding-id">{s.sid ?? "(Sid 없음)"}</code>
+            <strong className="finding-title">{shape.label}</strong>
+            <span className="finding-tags">
+              <span className="badge badge-svc">동작 {s.actions.length}개</span>
+              {s.conditionKeys.length > 0 && (
+                <span className="badge badge-warn">조건 키 {s.conditionKeys.length}개</span>
+              )}
             </span>
-            <code>{s.sid ?? "(Sid 없음)"}</code>
-          </div>
+          </summary>
+
+          <p className="finding-narrative">{shape.why}</p>
+
           {s.accounts.length > 0 && (
             <div className="finding-row">
               <span className="finding-label">계정</span>
@@ -197,8 +243,17 @@ function Open({ statements }: { statements: OpenStatement[] }) {
               </span>
             </div>
           )}
-        </div>
-      ))}
+          {s.services.length > 0 && (
+            <div className="finding-row">
+              <span className="finding-label">서비스</span>
+              <span className="finding-actions">
+                {s.services.map((v) => <code key={v}>{v}</code>)}
+              </span>
+            </div>
+          )}
+        </details>
+        );
+      })}
     </div>
   );
 }
@@ -387,7 +442,10 @@ export function ResourcePolicyPage() {
                   {review.principals.length}개 — 나쁜 쪽부터
                 </span>
               </h4>
-              {review.principals.map((r) => <Reading key={r.principal.id} reading={r} />)}
+              {/* 서버는 판정 우선순위로 정렬해서 보낸다 — 거부가 어느 허용보다 앞선다. 그것은
+                  무엇이 이기는지의 순서이고, 읽는 순서는 등급이 정한다. */}
+              {[...review.principals].sort(byWeight)
+                .map((r) => <Reading key={r.principal.id} reading={r} />)}
             </div>
           )}
 
