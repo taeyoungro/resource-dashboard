@@ -1413,3 +1413,101 @@ test('polling one scope never returns another scope\'s run', async () => {
     'the poll fell back to the whole-plan run',
   );
 });
+
+
+// ---- the resource policy review, and the document it is a claim about ---------------------------
+//
+// The panel that prints the policy needs one thing from this route that the reading does not: the
+// document as S3 returned it. Re-serialising the parsed structure is not the same document - key
+// order, spacing and a duplicate key are the parser's to decide - and on a policy that will not
+// parse there is no parsed structure at all, which is exactly when somebody needs to see the bytes.
+
+function reviewRoute(policyText, { accountId = ACCOUNT } = {}) {
+  const s3 = {
+    async send(command) {
+      if (!command.constructor.name.startsWith('GetBucketPolicy')) {
+        throw new Error(`unexpected ${command.constructor.name}`);
+      }
+      if (policyText === null) {
+        const err = new Error('NoSuchBucketPolicy');
+        err.name = 'NoSuchBucketPolicy';
+        throw err;
+      }
+      return { Policy: policyText };
+    },
+  };
+  return routes({
+    config: {
+      markerBucket: 'opt-solution-markers', stateBucket: 'state', region: 'us-east-1',
+      solutionPrefix: 'opt-', mirrorPrefix: 'mirror-', specPolicyPrefix: 'cmp-',
+      controlPlaneArns: [], resourcePolicyReview: true, accountId,
+    },
+    s3,
+    store: { get: () => ({ plans: [{ account_id: ACCOUNT, resource: 'mirror-lambda-Test' }] }) },
+    notifications: { recent: () => [], enabled: true },
+    markerBodies: { put: () => {}, get: () => null },
+    impacts: { get: () => null },
+    actions: { all: () => ({ schema: 1, services: {}, error: null }) },
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+  });
+}
+
+const REVIEW = 'GET /api/buckets/:bucket/review';
+const BUCKET = 'reporting-data';
+
+test('the document reaches the page as the bytes S3 returned, not as a round trip', async () => {
+  // Written so a round trip cannot reproduce it: keys out of alphabetical order, two-space indent,
+  // and a trailing newline. If the route ever starts sending JSON.stringify(parsed) instead, every
+  // one of those is silently rewritten and this fails.
+  const text = '{\n  "Statement": [\n    {"Effect": "Allow", "Principal": "*", "Action": "s3:GetObject",'
+    + ' "Resource": "arn:aws:s3:::reporting-data/*"}\n  ],\n  "Version": "2012-10-17"\n}\n';
+  const body = await reviewRoute(text)[REVIEW]({ params: { bucket: BUCKET } });
+
+  assert.equal(body.has_policy, true);
+  assert.equal(body.error, null);
+  assert.equal(body.document_text, text, 'the document was not passed through unchanged');
+  assert.notEqual(body.document_text, JSON.stringify(body.policy, null, 2));
+  // And the parsed form is there beside it, because that is what the reading was made from.
+  assert.equal(body.policy.Version, '2012-10-17');
+});
+
+test('a policy that will not parse still arrives with its text, which is all there is of it', async () => {
+  const text = '{"Version": "2012-10-17", "Statement": [ this is not json ]}';
+  const body = await reviewRoute(text)[REVIEW]({ params: { bucket: BUCKET } });
+
+  assert.equal(body.has_policy, true);
+  assert.equal(body.policy, null);
+  assert.ok(body.error, 'a policy that cannot be parsed must say so');
+  assert.equal(body.document_text, text, (
+    'the text was withheld on the one answer where the reading is empty, so the screen would report '
+    + 'a problem with a document nobody can look at'
+  ));
+});
+
+test('a bucket with no policy has no document, and that is not an empty one', async () => {
+  const body = await reviewRoute(null)[REVIEW]({ params: { bucket: BUCKET } });
+
+  assert.equal(body.has_policy, false);
+  assert.equal(body.policy, null);
+  assert.equal(body.document_text, null, 'no policy must not arrive looking like an empty document');
+  assert.equal(body.error, null, 'a bucket with no policy is an answer, not a failure');
+});
+
+test('the review is refused outright when the switch is off', async () => {
+  const route = routes({
+    config: {
+      markerBucket: 'opt-solution-markers', stateBucket: 'state', region: 'us-east-1',
+      solutionPrefix: 'opt-', mirrorPrefix: 'mirror-', specPolicyPrefix: 'cmp-',
+      controlPlaneArns: [], resourcePolicyReview: false, accountId: ACCOUNT,
+    },
+    s3: { async send() { throw new Error('the route must not reach S3 while it is off'); } },
+    store: { get: () => ({ plans: [] }) },
+    notifications: { recent: () => [], enabled: true },
+    markerBodies: { put: () => {}, get: () => null },
+    impacts: { get: () => null },
+    actions: { all: () => ({ schema: 1, services: {}, error: null }) },
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+  });
+  await assert.rejects(() => route[REVIEW]({ params: { bucket: BUCKET } }), /resource policy review is off/);
+  await assert.rejects(() => route['GET /api/buckets']({}), /resource policy review is off/);
+});

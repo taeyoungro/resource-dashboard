@@ -384,6 +384,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
           account_id: config.accountId,
           has_policy: false,
           policy: null,
+          document_text: null,
           principals: principals.map((principal) => ({
             principal, outcome: 'SILENT', sameAccount: sameAccountOf(principal, config.accountId),
             statements: [], unknownKeys: [], unreadable: [],
@@ -400,8 +401,13 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       } catch (error) {
         // Reported, never swallowed. A policy this cannot read is not a bucket with nothing in it,
         // and the two must not reach the screen looking alike.
+        //
+        // The text goes with the error. This is the one case where the document is the whole of what
+        // anybody can act on - there is no reading to check it against - so withholding it would
+        // leave the screen saying "something is wrong with a document you may not see".
         return {
           bucket, account_id: config.accountId, has_policy: true, policy: null,
+          document_text: text,
           principals: [], open: [], governed_count: principals.length,
           error: error.message,
         };
@@ -414,7 +420,15 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         has_policy: true,
         // The document itself, because the reading is a claim about it and an approver has to be
         // able to check the claim against the thing it was made about.
+        //
+        // Both forms, and they are not interchangeable. `policy` is the parsed structure, which is
+        // what the reading was made from; `document_text` is the bytes S3 returned. Re-serialising
+        // the first does not reproduce the second - key order, spacing and any duplicate key are the
+        // parser's to decide - so a screen that showed only a re-serialised document would be
+        // showing something nobody wrote. The document is what an approver checks the claim against,
+        // so the document is what is sent.
         policy: policy.document,
+        document_text: text,
         principals: read,
         open: openStatements(policy, { bucketAccountId: config.accountId }),
         governed_count: principals.length,

@@ -1008,6 +1008,50 @@ code.target-action { font-size: 0.92em; opacity: 0.85; margin-right: 4px; }
   tab-size: 2;
 }
 
+/* S3 returns a bucket policy minified, so the raw form is usually one very long line. Wrapping it
+   beats a horizontal scrollbar on a document somebody is reading to check a claim. Breaking inside a
+   word is deliberate: the long tokens here are ARNs, and an ARN that wraps mid-string is still
+   readable where one pushed off the right edge is not. */
+.policy-json.wrap {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.policy-document-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* Two mutually exclusive views of one document, so they read as one control rather than as two
+   buttons that happen to sit together. */
+.policy-form {
+  display: inline-flex;
+  gap: 0;
+}
+
+.policy-form button {
+  border-radius: 0;
+}
+
+.policy-form button:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.policy-form button:last-child {
+  border-radius: 0 4px 4px 0;
+  margin-left: -1px;
+}
+
+.policy-form button.on {
+  background: var(--panel-2);
+  border-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
 /* The standard restrictions this deployment offers. Folded shut: an approver who already knows
    what they are restricting should not have to scroll past three of them to reach the editor. */
 .templates { margin: 10px 0 14px; }

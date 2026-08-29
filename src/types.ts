@@ -975,8 +975,16 @@ export interface BucketReview {
   bucket: string;
   account_id: string | null;
   has_policy: boolean;
-  /** The document itself, so the reading can be checked against what it was made about. */
+  /** The parsed document - what the reading below was actually made from. Null when unparseable. */
   policy: unknown | null;
+  /**
+   * The document as S3 returned it, byte for byte. Null only when the bucket has no policy.
+   *
+   * Not the same thing as re-serialising `policy`: key order, spacing and any duplicate key are the
+   * parser's to decide, so a screen showing only the round trip would be showing a document nobody
+   * wrote. Present even when parsing failed, which is the one case where it is all there is.
+   */
+  document_text: string | null;
   principals: BucketPolicyReading[];
   open: OpenStatement[];
   governed_count: number;
