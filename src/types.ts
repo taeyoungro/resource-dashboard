@@ -8,9 +8,24 @@
 /** A marker still sitting in the bucket. */
 export interface Marker {
   /** Which container the prefix belongs to - the one that should have deleted it. */
-  kind: "inspector" | "applier";
+  kind: "inspector" | "applier" | "inline_writer";
   key: string;
-  request_id: string;
+
+  /**
+   * Null for inline_writer when the body could not be read: that key is the permission set lock
+   * and does not carry a request id, unlike the other two.
+   */
+  request_id: string | null;
+
+  /** The document an inline_writer marker locks. Null on every other kind - they lock nothing. */
+  permission_set: string | null;
+
+  /**
+   * True only for inline_writer. While the object exists no further inline work for that permission
+   * set can start, and the grant it was meant to limit is already in force - so a failed one is not
+   * just an unfinished task, it is a blocked permission set somebody has to clear by hand.
+   */
+  blocks_further_writes: boolean;
 
   /** From the marker body. Null when the body could not be read. */
   account_id: string | null;

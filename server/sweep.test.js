@@ -23,6 +23,8 @@ const CONFIG = {
   stateBucket: 'opt-org-policy-terraform-state',
   inspectorPrefix: 'inspector/',
   applierPrefix: 'applier/',
+  impactPrefix: 'impact/',
+  inlineWriterPrefix: 'inline_writer/',
   planSuffix: 'plan/',
   markerGraceSeconds: 900,
   maxBodiesPerSweep: 200,
@@ -871,4 +873,61 @@ test('a row carries the number of people who asked, so the list can offer the wa
   // And nothing on a plan nobody asked about - a way in to an empty screen teaches people to stop
   // clicking, so the row shows none.
   assert.equal(state.plans.find((p) => p.resource === 'ps-alice').passrole_requests, 0);
+});
+
+
+// ---- the inline writer's lock, which was the one marker nobody swept ---------------------------
+
+test('a held inline writer lock is reported, because it blocks a permission set', async () => {
+  // The worst state in the system was the only invisible one. The approval went through, the grant
+  // went into force, the restriction did not, and every later decision for that permission set was
+  // blocked - with nothing on any screen saying so, because outcome.json records that state as
+  // `dispatched`. The prefix was simply never listed.
+  const key = 'inline_writer/644701781058:644701781058-alice.json';
+  const s3 = fakeS3(
+    { 'opt-solution-markers': [{ key, lastModified: ago(4000) }] },
+    { [`opt-solution-markers/${key}`]: {
+      mode: 'deny',
+      request_id: '644701781058-5555555555555555',
+      account_id: '644701781058',
+      resource: 'ps-alice',
+      permission_set_name: '644701781058-alice',
+    } },
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  const lock = state.markers.find((m) => m.kind === 'inline_writer');
+  assert.ok(lock, 'the inline_writer prefix was not swept');
+  assert.equal(lock.state, 'failed');
+  assert.equal(lock.blocks_further_writes, true,
+    'the row does not say the permission set is blocked');
+  // The key is the lock, not a request. The request id is in the body.
+  assert.equal(lock.permission_set, '644701781058-alice');
+  assert.equal(lock.request_id, '644701781058-5555555555555555');
+});
+
+test('a lock whose body will not read still says which permission set it holds', async () => {
+  // The key carries the identity even when the body is unreadable, and that is the fact that
+  // matters: something has to be cleared, and the reader needs to know what is blocked.
+  const key = 'inline_writer/644701781058:644701781058-alice.json';
+  const s3 = fakeS3({ 'opt-solution-markers': [{ key, lastModified: ago(4000) }] }, {});
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  const lock = state.markers.find((m) => m.kind === 'inline_writer');
+  assert.equal(lock.permission_set, '644701781058-alice');
+  assert.equal(lock.request_id, null, 'a request id was invented from a key that has none');
+  assert.equal(lock.blocks_further_writes, true);
+});
+
+test('the other three kinds are not locks and do not claim to be', async () => {
+  const key = 'applier/644701781058-6666666666666666.json';
+  const s3 = fakeS3(
+    { 'opt-solution-markers': [{ key, lastModified: ago(4000) }] },
+    { [`opt-solution-markers/${key}`]: { account_id: '644701781058', resource: 'ps-alice' } },
+  );
+  const state = await sweep(s3, CONFIG, { now: NOW });
+  const row = state.markers.find((m) => m.kind === 'applier');
+  assert.equal(row.blocks_further_writes, false);
+  assert.equal(row.permission_set, null);
+  assert.equal(row.request_id, '644701781058-6666666666666666');
 });

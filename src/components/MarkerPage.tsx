@@ -82,8 +82,13 @@ export function MarkerPage({ state, error, onRefresh, filter }: Props) {
             </thead>
             <tbody>
               {markers.map((m) => (
-                <tr key={m.key}>
-                  <td>{m.kind}</td>
+                <tr key={m.key} className={m.blocks_further_writes ? "marker-lock" : undefined}>
+                  <td>
+                    {m.kind}
+                    {m.blocks_further_writes ? (
+                      <span className="meta small"> 잠금</span>
+                    ) : null}
+                  </td>
                   <td>
                     {m.resource ?? <span className="muted">본문을 읽지 못함</span>}
                     {m.request_kind ? <span className="meta small"> {m.request_kind}</span> : null}
@@ -92,6 +97,13 @@ export function MarkerPage({ state, error, onRefresh, filter }: Props) {
                         {" "}
                         {m.decision} · {m.reviewer ?? "검토자 없음"}
                       </span>
+                    ) : null}
+                    {m.blocks_further_writes && m.permission_set ? (
+                      <div className="meta small">
+                        {m.permission_set} 권한 세트의 인라인 정책 작업이 이 객체 때문에 막혀 있습니다.
+                        승인된 권한은 이미 발효되었고 제한은 걸리지 않았습니다 — 객체를 지우기 전에
+                        어느 작성기 실행이 실패했는지 확인해야 합니다.
+                      </div>
                     ) : null}
                   </td>
                   <td>{m.account_id ?? "—"}</td>

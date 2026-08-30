@@ -28,6 +28,7 @@ interface Props {
     comment: string,
     restrictions: Restriction[],
     passroleGrantTo: string[],
+    passroleRevokeFrom: string[],
     analysis: RiskAnalysisCitation | null,
   ) => void;
 }
@@ -53,10 +54,12 @@ const actionClass = (actions: string[]) => {
  * confirm the wrong person - and the applier checks each name against the requests the inspector
  * read off the source role, so even that is bounded.
  */
-function PassroleRequests({ detail, confirmed, onConfirmed, disabled }: {
+function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdrawn, disabled }: {
   detail: Detail;
   confirmed: string[];
   onConfirmed: (names: string[]) => void;
+  withdrawn: string[];
+  onWithdrawn: (names: string[]) => void;
   disabled: boolean;
 }) {
   const requests = detail.passrole?.requested_by ?? [];
@@ -68,10 +71,22 @@ function PassroleRequests({ detail, confirmed, onConfirmed, disabled }: {
   // the decision route, so the boxes are disabled rather than offered and then rejected.
   const grantable = services.length > 0;
 
-  const toggle = (name: string) => {
-    onConfirmed(confirmed.includes(name)
-      ? confirmed.filter((n) => n !== name)
-      : [...confirmed, name].sort());
+  // Three answers, not two, and the third is not the absence of the first. Leaving somebody
+  // unticked removes nothing - the writer keeps every grant a decision does not name - so taking
+  // one back has to be said out loud. Withdrawing stays available when granting is not: a role
+  // whose trust policy lost its services is exactly one whose grants should come off.
+  const setChoice = (name: string, choice: "grant" | "none" | "revoke") => {
+    onConfirmed(choice === "grant"
+      ? [...confirmed.filter((n) => n !== name), name].sort()
+      : confirmed.filter((n) => n !== name));
+    onWithdrawn(choice === "revoke"
+      ? [...withdrawn.filter((n) => n !== name), name].sort()
+      : withdrawn.filter((n) => n !== name));
+  };
+  const choiceOf = (name: string): "grant" | "none" | "revoke" => {
+    if (confirmed.includes(name)) return "grant";
+    if (withdrawn.includes(name)) return "revoke";
+    return "none";
   };
 
   return (
@@ -94,10 +109,16 @@ function PassroleRequests({ detail, confirmed, onConfirmed, disabled }: {
         </div>
       )}
 
+      <p className="muted small">
+        <strong>고르지 않은 것은 회수가 아닙니다.</strong> 이미 부여된 권한은 그대로 남습니다 —
+        지난번에 부여받은 사람을 이번에 고르지 않았다고 해서 그 사람의 권한이 사라지지는 않습니다.
+        되돌리려면 <strong>회수</strong>를 골라야 합니다.
+      </p>
+
       <table className="policy-table">
         <thead>
           <tr>
-            <th>부여</th>
+            <th>결정</th>
             <th>요청한 사람</th>
             <th>넘길 수 있게 되는 서비스</th>
           </tr>
@@ -106,15 +127,16 @@ function PassroleRequests({ detail, confirmed, onConfirmed, disabled }: {
           {requests.map((name) => (
             <tr key={name}>
               <td>
-                <label className="pick-item">
-                  <input
-                    type="checkbox"
-                    checked={confirmed.includes(name)}
-                    disabled={disabled || !grantable}
-                    onChange={() => toggle(name)}
-                  />
-                  {confirmed.includes(name) ? " 부여함" : " 부여 안 함"}
-                </label>
+                <select
+                  value={choiceOf(name)}
+                  disabled={disabled}
+                  onChange={(e) =>
+                    setChoice(name, e.target.value as "grant" | "none" | "revoke")}
+                >
+                  <option value="none">그대로 두기</option>
+                  <option value="grant" disabled={!grantable}>부여</option>
+                  <option value="revoke">회수</option>
+                </select>
               </td>
               <td><code>{name}</code></td>
               <td className="finding-actions">
@@ -126,6 +148,13 @@ function PassroleRequests({ detail, confirmed, onConfirmed, disabled }: {
           ))}
         </tbody>
       </table>
+
+      <p className="muted small">
+        태그를 이미 뗀 사람은 이 목록에 없고, 그 사람의 권한은 여기서 회수할 수 없습니다. 화면은
+        권한 세트의 인라인 정책을 읽지 못하므로 — 읽을 권한을 갖지 않는 것이 설계입니다 — 지금
+        누구에게 부여되어 있는지 알 수 있는 곳이 없습니다. 태그와 실제 부여를 대조하는 주기 대사가
+        아직 없어서 생기는 공백입니다.
+      </p>
 
       <p className="muted small">
         부여 대상:{" "}
@@ -148,6 +177,9 @@ export function PlanDetail({
   const [analysis, setAnalysis] = useState<RiskAnalysisCitation | null>(null);
   // Whose PassRole request this approver has ticked. Nobody, until somebody is.
   const [grantTo, setGrantTo] = useState<string[]>([]);
+  // And whose this approver has taken back. Separate state, because it is not the complement of the
+  // one above - most people are in neither, and leaving somebody out of both changes nothing.
+  const [revokeFrom, setRevokeFrom] = useState<string[]>([]);
 
   // Dropped when the plan changes, and that is the whole reason it is state here rather than inside
   // the analysis panel. The citation names an assessment digest; carrying one from the previous plan
@@ -157,7 +189,7 @@ export function PlanDetail({
   // Dropped with the plan, for a harder reason than the citation above: a name carried over from a
   // previous inspection would confirm a request that inspection recorded and this one may not. The
   // server and the applier both refuse that, but only after the button was pressed.
-  useEffect(() => { setGrantTo([]); }, [detail.plan_id, detail.request_id]);
+  useEffect(() => { setGrantTo([]); setRevokeFrom([]); }, [detail.plan_id, detail.request_id]);
 
   const submit = (decision: "approve" | "deny") => {
     if (!reviewer.trim()) {
@@ -174,6 +206,9 @@ export function PlanDetail({
       return;
     }
     const granting = decision === "approve" ? grantTo : [];
+    // A withdrawal rides on the apply that follows an approval. A denied plan applies nothing, so
+    // there is no run to carry it - the server refuses that pairing and so does this.
+    const withdrawing = decision === "approve" ? revokeFrom : [];
     const what = detail.resource ?? detail.plan_id;
     const suffix = active.length > 0 ? ` 제한 ${active.length}건과 함께` : "";
     // Named separately in the confirmation, because it is a separate act. Approving the plan and
@@ -182,13 +217,16 @@ export function PlanDetail({
     const grants = granting.length > 0
       ? `\n\n그리고 ${granting.join(", ")} 에게 이 역할의 PassRole 을 부여합니다.`
       : "";
+    const revokes = withdrawing.length > 0
+      ? `\n\n그리고 ${withdrawing.join(", ")} 에게서 이 역할의 PassRole 을 회수합니다.`
+      : "";
     if (
       !window.confirm(
-        `${what} 를${suffix} ${decision === "approve" ? "승인" : "거부"}합니다.${grants}`)
+        `${what} 를${suffix} ${decision === "approve" ? "승인" : "거부"}합니다.${grants}${revokes}`)
     ) {
       return;
     }
-    onDecide(decision, reviewer.trim(), comment.trim(), active, granting, analysis);
+    onDecide(decision, reviewer.trim(), comment.trim(), active, granting, withdrawing, analysis);
   };
 
   return (
@@ -337,6 +375,8 @@ export function PlanDetail({
           detail={detail}
           confirmed={grantTo}
           onConfirmed={setGrantTo}
+          withdrawn={revokeFrom}
+          onWithdrawn={setRevokeFrom}
           disabled={busy || decided}
         />
       )}
