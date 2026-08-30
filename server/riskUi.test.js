@@ -1314,8 +1314,9 @@ test('a card whose path has been cut is coloured by that, not by the grade', () 
   // after the Deny is written cannot answer it.
   const card = PANEL.slice(PANEL.indexOf('const cut = containment'),
                            PANEL.indexOf('<summary className="finding-head">'));
-  assert.ok(/containment === "full"/.test(card) && /containment === "fenced"/.test(card),
-            'a fully cut path is not coloured as cut');
+  assert.ok(/containment === "full"/.test(card), 'a fully cut path is not coloured as cut');
+  assert.ok(/containment === "fenced"/.test(card) && card.includes('contained-fenced'),
+            'the PassRole fence has no colour of its own');
   assert.ok(/containment === "partial"/.test(card), 'a partly cut path is not coloured as cut');
   assert.ok(card.includes('contained-full') && card.includes('contained-partial'),
             'the card root carries no containment class, so the CSS has nothing to hook on');
@@ -1326,7 +1327,7 @@ test('a card whose path has been cut is coloured by that, not by the grade', () 
 });
 
 test('the cut colours reach both the edge and the badge, and clear the filled one', () => {
-  for (const cls of ['contained-full', 'contained-partial']) {
+  for (const cls of ['contained-full', 'contained-fenced', 'contained-partial']) {
     assert.match(CSS, new RegExp(`\\.finding\\.${cls}\\s*\\{[^}]*border-left-color:`),
                  `${cls} does not colour the left edge`);
     const badge = CSS.match(new RegExp(`\\.finding\\.${cls} \\.grade \\{([^}]*)\\}`));
@@ -1339,9 +1340,12 @@ test('the cut colours reach both the edge and the badge, and clear the filled on
   }
   // Two shades, not one: a resource-scoped restriction does not close what a Resource "*" Deny
   // closes, and one colour for both would say it does.
-  assert.notEqual(CSS.match(/\.finding\.contained-full\s*\{[^}]*border-left-color:\s*([^;]+)/)[1],
-                  CSS.match(/\.finding\.contained-partial\s*\{[^}]*border-left-color:\s*([^;]+)/)[1],
-                  'full and partial containment are the same colour');
+  // Three answers, three colours. "I closed this", "this was already closed for me", and "some of
+  // it is closed" are different things to do next about.
+  const edge = (cls) =>
+    CSS.match(new RegExp(`\\.finding\\.${cls}\\s*\\{[^}]*border-left-color:\\s*([^;]+)`))[1].trim();
+  const colours = ['contained-full', 'contained-fenced', 'contained-partial'].map(edge);
+  assert.equal(new Set(colours).size, 3, `containment states share a colour: ${colours.join(', ')}`);
   // The asset grade is about what the reached resources are worth, which cutting the path does not
   // change. It must not be recoloured with the rest of the header.
   assert.match(CSS, /\.finding\.contained-full \.grade\.grade-asset[\s\S]{0,120}?\{[^}]*color:/,
