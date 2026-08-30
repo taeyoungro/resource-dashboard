@@ -585,6 +585,28 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
           assessment = stored.document;
           digest = stored.digest;
           source = 'stored';
+        } else if (stored?.document && plan.changes.length === 0) {
+          // An assessment from an EARLIER inspection of this resource, kept because this plan moves
+          // no resource.
+          //
+          // The match above exists because a prefix is overwritten in place: an assessment from a
+          // previous inspection describes a permission set that plan no longer produces, and showing
+          // it beside a fresh plan.txt is the mismatch the digests exist to prevent. That reasoning
+          // holds for every plan that CHANGES something, and not for one that changes nothing.
+          //
+          // The case it was not written for is the passrole tag. Tagging a <service>-* role starts
+          // an inspection whose plan moves no IAM resource - only the outputs carrying the request -
+          // so the new request id is a different inspection of an identical permission set. Dropping
+          // the assessment there answered "what does this reach" with silence about a governed
+          // resource that was assessed, applied, and has not changed since.
+          //
+          // Carried WITHOUT the digest, and that is the whole safety of it. A restriction is
+          // validated against the assessment an approver read, and this one belongs to another
+          // inspection - so the page shows it and can compose nothing from it. The reader is told
+          // which inspection it came from rather than being handed it as current.
+          assessment = stored.document;
+          digest = null;
+          source = 'earlier';
         }
       }
 

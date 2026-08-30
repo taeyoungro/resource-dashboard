@@ -39,6 +39,10 @@ const foldPreference = {
 
 export function PlanPage({ state, error, onRefresh }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Which question this panel is answering about the selected plan. Two views of one resource: what
+  // it will reach, and who asked to be able to pass it. They are different decisions, and reading
+  // one while meaning to make the other is the confusion this split exists to remove.
+  const [view, setView] = useState<"assessment" | "passrole">("assessment");
   const [detail, setDetail] = useState<Detail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -171,7 +175,12 @@ export function PlanPage({ state, error, onRefresh }: Props) {
         {!folded && (
           <>
             {error && <div className="error">{error}</div>}
-            <PlanList items={plans} selectedId={selectedId} onSelect={setSelectedId} />
+            <PlanList
+              items={plans}
+              selectedId={selectedId}
+              onSelect={(id) => { setSelectedId(id); setView("assessment"); }}
+              onSelectPassrole={(id) => { setSelectedId(id); setView("passrole"); }}
+            />
             {/* Below the plan list, not merged into it. The list is what the buckets say; this is
                 what a machine announced a moment ago and the sweep has not confirmed yet. */}
             <Notifications />
@@ -189,6 +198,8 @@ export function PlanPage({ state, error, onRefresh }: Props) {
             decided={selected?.state === "decided"}
             busy={busy}
             assessmentState={selected?.assessment ?? null}
+            view={view}
+            onView={setView}
             onDecide={decide}
           />
         ) : (

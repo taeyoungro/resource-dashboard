@@ -183,6 +183,7 @@ function stubS3(objects) {
 }
 
 function harness({ pushed = null, riskAnalysis = false, assessment = null, planOutputs = null,
+                   noChanges = false,
                    makeModelClient = async () => { throw new Error('not configured'); },
                  } = {}) {
   const document = assessment ? JSON.stringify(assessment) : ASSESSMENT_JSON;
@@ -197,7 +198,7 @@ function harness({ pushed = null, riskAnalysis = false, assessment = null, planO
     [`${PREFIX}changes.sha256`]: CHANGES,
     [`${PREFIX}tfplan`]: 'binary-plan-bytes',
     [`${PREFIX}plan.json`]: JSON.stringify({
-      resource_changes: [{ change: { actions: ['update'] } }],
+      resource_changes: noChanges ? [] : [{ change: { actions: ['update'] } }],
       ...(planOutputs ? { output_changes: planOutputs } : {}),
     }),
     [`${PREFIX}impact.json`]: document,
@@ -1595,4 +1596,51 @@ test('confirmations of another shape are refused', async () => {
       }),
       (e) => e.status === 400, `accepted passrole_grant_to=${JSON.stringify(broken)}`);
   }
+});
+
+
+test('an assessment survives an inspection that moves no resource', async () => {
+  // The passrole tag case. Tagging a <service>-* role starts an inspection whose plan moves no IAM
+  // resource, so its request id is new and the stored assessment - of a permission set that has not
+  // changed - was dropped. A governed resource that had been assessed and applied read as
+  // unassessed, and the answer to "what does this reach" became silence.
+  const { route } = harness({
+    assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
+    planOutputs: ASKED,
+    noChanges: true,
+  });
+  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  assert.ok(detail.assessment, 'the earlier assessment was dropped');
+  assert.equal(detail.assessment_source, 'earlier');
+  // And carried WITHOUT a digest, which is the whole safety of it: a restriction is validated
+  // against the assessment the approver read, and this one belongs to another inspection.
+  assert.equal(detail.assessment_sha256, null);
+});
+
+test('an assessment from another inspection is still dropped when the plan changes something', async () => {
+  // The rule this does not weaken. A plan that MOVES a resource produces a permission set the old
+  // assessment does not describe, and showing it beside a fresh plan.txt is the mismatch the
+  // digests exist to prevent.
+  const { route } = harness({
+    assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
+  });
+  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  assert.equal(detail.assessment, null);
+  assert.equal(detail.assessment_source, null);
+});
+
+test('a restriction cannot be composed from an earlier assessment', async () => {
+  // It has no digest, so the page sends none, and the decision route refuses a restriction without
+  // one. Checked here because the display change must not have opened a path around that.
+  const { route } = harness({
+    assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
+    planOutputs: ASKED,
+    noChanges: true,
+  });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({ restrictions: [restriction] }),
+    }),
+    (e) => e.status === 400 || e.status === 409);
 });

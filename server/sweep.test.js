@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import { makeMarkerBodies } from './markerBodies.js';
 import {
   changesFromPlan, identityFromConfig, isDigest, passroleFromPlan, planIdFromKey,
+  requestersFromConfig,
   planPrefixFromId, readPlan,
   requestIdFromMarkerKey, sweep,
 } from './sweep.js';
@@ -79,7 +80,7 @@ const BUCKET = 'opt-org-policy-terraform-state';
  * prefix, not two. Every test that used to spell out plans/<request id>/ was spelling out the bug.
  */
 function planFixture(account, resource,
-                     { at, requestId, hasChanges = true, digest, outcome } = {}) {
+                     { at, requestId, hasChanges = true, digest, outcome, requestedBy } = {}) {
   const prefix = `${account}/${resource}/plan/`;
   const names = ['tfplan', 'main.tf.json', 'plan.json', 'plan.txt', 'changes.sha256',
                  'request.json'];
@@ -89,6 +90,7 @@ function planFixture(account, resource,
     [`${BUCKET}/${prefix}main.tf.json`]: {
       terraform: { backend: { s3: { bucket: BUCKET,
                                     key: `${account}/${resource}/terraform.tfstate` } } },
+      ...(requestedBy ? { output: { passrole_requested_by: { value: requestedBy } } } : {}),
     },
     [`${BUCKET}/${prefix}tfplan`]: 'binary plan',
     [`${BUCKET}/${prefix}plan.txt`]: 'terraform will do things',
@@ -839,4 +841,34 @@ test('a non-list output does not become a request', () => {
   };
   assert.deepEqual(passroleFromPlan(plan).requested_by, []);
   assert.deepEqual(passroleFromPlan(plan).services, []);
+});
+
+
+test('the row says how many asked, read from the document the sweep already fetches', () => {
+  // main.tf.json rather than plan.json: the sweep reads it for every row to get the identity, and
+  // the requesters are literal in it - the inspector resolved the tags before generating.
+  assert.deepEqual(
+    requestersFromConfig({ output: { passrole_requested_by: { value: ['bob', 'alice', 'bob'] } } }),
+    ['alice', 'bob']);
+  for (const document of [null, {}, { output: {} },
+                          { output: { passrole_requested_by: { value: 'alice' } } }]) {
+    assert.deepEqual(requestersFromConfig(document), []);
+  }
+});
+
+
+test('a row carries the number of people who asked, so the list can offer the way in', async () => {
+  const asked = planFixture('644701781058', 'lambda-function1',
+                            { at: ago(600), requestId: '644701781058-3333333333333333',
+                              requestedBy: ['bob', 'alice'] });
+  const quiet = planFixture('644701781058', 'ps-alice',
+                            { at: ago(600), requestId: '644701781058-4444444444444444' });
+  const s3 = fakeS3({ [BUCKET]: [...asked.objects, ...quiet.objects] },
+                    { ...asked.bodies, ...quiet.bodies });
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  assert.equal(state.plans.find((p) => p.resource === 'lambda-function1').passrole_requests, 2);
+  // And nothing on a plan nobody asked about - a way in to an empty screen teaches people to stop
+  // clicking, so the row shows none.
+  assert.equal(state.plans.find((p) => p.resource === 'ps-alice').passrole_requests, 0);
 });

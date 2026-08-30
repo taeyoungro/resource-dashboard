@@ -57,7 +57,12 @@ import { INTENT_LABEL, INTENT_NOTE, SECTIONS, isScoped } from "./intents";
 
 interface Props {
   assessment: Assessment;
-  source: "pushed" | "stored" | null;
+  /**
+   * Where the assessment came from. "earlier" is the one that changes what this panel may do: it
+   * belongs to a previous inspection of the same resource, kept because the current plan moves no
+   * resource, and it arrives with no digest - so it is readable and nothing can be composed from it.
+   */
+  source: "pushed" | "stored" | "earlier" | null;
   restrictions: Restriction[];
   onChange: (restrictions: Restriction[]) => void;
   disabled: boolean;
@@ -629,6 +634,7 @@ export function Impact({
             연관 자원: {assessment.allowed_resources.length}개
             {sensitiveTotal > 0 && ` · 민감 ${sensitiveTotal}개`}
             {source === "stored" && " · 버킷에서 읽음"}
+            {source === "earlier" && " · 앞선 검사의 평가"}
           </span>
         </div>
       </header>

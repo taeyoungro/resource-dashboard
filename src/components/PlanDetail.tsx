@@ -14,6 +14,13 @@ interface Props {
   busy: boolean;
   /** From the sweep, so the page can tell "still assessing" from "no assessment". */
   assessmentState: AssessmentState | null;
+  /**
+   * Which question this panel answers about the plan. Chosen on the row in the list, and kept here
+   * rather than inside this component so that selecting a different plan can reset it - a view that
+   * survived the selection would open one resource on another's question.
+   */
+  view: "assessment" | "passrole";
+  onView: (view: "assessment" | "passrole") => void;
   /** IAM actions per service, so the restriction picker offers a list instead of asking for typing. */
   onDecide: (
     decision: "approve" | "deny",
@@ -133,7 +140,7 @@ function PassroleRequests({ detail, confirmed, onConfirmed, disabled }: {
 }
 
 export function PlanDetail({
-  detail, decided, busy, assessmentState, onDecide,
+  detail, decided, busy, assessmentState, view, onView, onDecide,
 }: Props) {
   const [reviewer, setReviewer] = useState("");
   const [comment, setComment] = useState("");
@@ -197,6 +204,28 @@ export function PlanDetail({
         </span>
       </div>
 
+      {/* Two questions about one resource, and the answer to one is not the answer to the other.
+          Only offered where there is a PassRole request - a tab that opens an empty panel is a tab
+          people learn to ignore. */}
+      {(detail.passrole?.requested_by ?? []).length > 0 && (
+        <div className="tabs detail-tabs">
+          <button
+            type="button"
+            className={view === "assessment" ? "tab active" : "tab"}
+            onClick={() => onView("assessment")}
+          >
+            영향도 · 위험 분석
+          </button>
+          <button
+            type="button"
+            className={view === "passrole" ? "tab active" : "tab"}
+            onClick={() => onView("passrole")}
+          >
+            PassRole 요청 {detail.passrole.requested_by.length}
+          </button>
+        </div>
+      )}
+
       {/* First on the page and above everything, because it outranks everything: it says the last
           thing that happened to this resource was a refusal, and until it existed that sentence
           lived only in the container's log. */}
@@ -214,7 +243,7 @@ export function PlanDetail({
           making the decision path depend on the querier would turn an assessment outage into a
           pipeline outage. What is unavailable without one is the RESTRICTION - it names resources,
           and the enumerated set is the only fence those names can be checked against. */}
-      {detail.assessment ? (
+      {view === "passrole" ? null : detail.assessment ? (
         <>
           <RestrictionTemplates
             assessment={detail.assessment}
@@ -244,6 +273,7 @@ export function PlanDetail({
       {/* The findings. Below the assessment because it reads the assessment, and above the plan
           because a grade an approver has not seen yet is worth more than terraform's own output,
           which they will read next either way. */}
+      {view === "passrole" ? null : (
       <RiskAnalysis
         planId={detail.plan_id}
         ready={!!detail.assessment}
@@ -253,7 +283,13 @@ export function PlanDetail({
         onRestrictions={setRestrictions}
         restrictDisabled={busy || decided}
       />
+      )}
 
+      {/* What the plan does, and terraform's own words for it. On the PassRole view neither is the
+          question - the plan that carries a request moves no resource, so the change table would
+          read "변경 없음" over a screen that is entirely about a change of permission. */}
+      {view === "passrole" ? null : (
+      <>
       <h3>바뀌는 것</h3>
       {detail.changes.length === 0 ? (
         <div className="empty">
@@ -284,13 +320,6 @@ export function PlanDetail({
         </table>
       )}
 
-      <PassroleRequests
-        detail={detail}
-        confirmed={grantTo}
-        onConfirmed={setGrantTo}
-        disabled={busy || decided}
-      />
-
       <h3>terraform plan</h3>
       <pre className="plan">{detail.plan_text || "plan.txt 가 없습니다."}</pre>
 
@@ -298,6 +327,19 @@ export function PlanDetail({
         <summary>생성된 구성 (main.tf.json)</summary>
         <pre className="plan">{detail.config_json || "main.tf.json 이 없습니다."}</pre>
       </details>
+      </>
+      )}
+
+      {/* The other question. Always rendered on its own view; never on the assessment one, where a
+          confirmation sitting under a restriction picker reads as part of the same decision. */}
+      {view === "passrole" && (
+        <PassroleRequests
+          detail={detail}
+          confirmed={grantTo}
+          onConfirmed={setGrantTo}
+          disabled={busy || decided}
+        />
+      )}
 
       {/* Both values go into the marker and both are checked before anything is applied. Worth
           being able to read them here: if a decision is ever disputed, these are what the applier

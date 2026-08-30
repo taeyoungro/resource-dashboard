@@ -6,6 +6,8 @@ interface Props {
   items: PlanSummary[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** Open the same plan on its PassRole confirmation instead of its assessment. */
+  onSelectPassrole: (id: string) => void;
 }
 
 const stateBadge = (s: PlanSummary["state"]) => {
@@ -23,7 +25,7 @@ const stateBadge = (s: PlanSummary["state"]) => {
   return <span className="badge">변경 없음</span>;
 };
 
-export function PlanList({ items, selectedId, onSelect }: Props) {
+export function PlanList({ items, selectedId, onSelect, onSelectPassrole }: Props) {
   if (items.length === 0) {
     return <div className="empty">저장된 계획이 없습니다.</div>;
   }
@@ -42,6 +44,22 @@ export function PlanList({ items, selectedId, onSelect }: Props) {
                 which the detail panel says where somebody is about to decide. */}
             {it.assessment === "in_progress" && (
               <span className="badge badge-warn">평가 중</span>
+            )}
+            {/* Beside the state, because it is a different question about the same resource and the
+                row is where somebody chooses which one they came for. Shown only where there is a
+                request: a way in to an empty screen teaches people to stop clicking.
+
+                stopPropagation, or the row's own handler would open the assessment underneath. */}
+            {it.passrole_requests > 0 && (
+              <button
+                type="button"
+                className="row-action"
+                onClick={(e) => { e.stopPropagation(); onSelectPassrole(it.plan_id); }}
+                title={`이 역할을 넘길 수 있게 해 달라는 요청 ${it.passrole_requests}건. `
+                  + '승인과는 별개의 결정입니다.'}
+              >
+                PassRole 요청 {it.passrole_requests}
+              </button>
             )}
           </div>
           {/* The resource. It is also what the plan is keyed by now - one governed resource has

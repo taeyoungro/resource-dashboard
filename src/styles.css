@@ -1226,3 +1226,27 @@ dialog.picker.block-path { width: min(44rem, 94vw); }
 /* 한 주체에 대한 판정. .finding 의 테두리를 그대로 쓰고 안쪽만 조금 눕힌다. */
 .rbp-reading { display: flex; flex-direction: column; gap: 4px; }
 .rbp-reading .res-name { font-weight: 600; }
+
+/* The way in to a plan's other question, on the row that already says what state it is in. Small
+   and quiet: it sits beside a badge, and a button that outweighed the badge would read as the
+   row's main action when it is the secondary one. */
+.row-action {
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 10px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+}
+
+.row-action:hover {
+  background: var(--panel-2);
+}
+
+/* Two views of one plan. Indented to the panel rather than the window, so it reads as belonging to
+   the resource named above it and not to the page. */
+.detail-tabs {
+  margin: 10px 0 4px;
+  border-bottom: 1px solid var(--border);
+}

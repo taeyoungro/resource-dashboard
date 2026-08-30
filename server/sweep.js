@@ -187,6 +187,19 @@ export function changesFromPlan(planJson) {
   return changes;
 }
 
+/** The Identity Center user names that asked for PassRole, from the GENERATED document.
+ *
+ * main.tf.json rather than plan.json, because the sweep already reads it for every row and the
+ * value is literal in it: the inspector resolved the tags before generating, so there is no
+ * "(known after apply)" here. plan.json carries the same list, and passroleFromPlan below reads it
+ * for the detail panel, where the services and the target ARN are wanted too.
+ */
+export function requestersFromConfig(document) {
+  const value = document?.output?.passrole_requested_by?.value;
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((v) => typeof v === 'string' && v.trim()))].sort();
+}
+
 /** The PassRole requests this plan carries, from the mirror document's outputs.
  *
  * A user asks by tagging their <service>-* role <their name> = passrole. The inspector reads the
@@ -356,8 +369,15 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
     }
 
     let identity = { accountId: null, resource: null };
+    // Read from the GENERATED document, which this loop already fetches for the identity. The
+    // requesters are a literal list there - the inspector resolved them from the source role's tags
+    // before writing it - so the row can say whether there is a PassRole request to look at without
+    // a second object read per plan.
+    let requesters = [];
     try {
-      identity = identityFromConfig(await getJson(s3, config.stateBucket, configObject.key));
+      const document = await getJson(s3, config.stateBucket, configObject.key);
+      identity = identityFromConfig(document);
+      requesters = requestersFromConfig(document);
     } catch (err) {
       errors.push(`${configObject.key}: ${err.message}`);
     }
@@ -399,6 +419,9 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
       // to withhold the approval itself - see assessmentState().
       assessment: assessmentState(artifacts, requestId, outstandingAssessments),
       assessment_digest_stored: artifacts.has(IMPACT_DIGEST_ARTIFACT),
+      // How many people asked to be able to pass this mirror role. The row shows a way in to the
+      // confirmation screen when there is one, and nothing when there is not.
+      passrole_requests: requesters.length,
       // The last inspection of this resource, when it refused. Null when the record is about the
       // plan that is standing - see refusalFor.
       refusal: refusalFor(refusal, requestId, refusalObject),
