@@ -83,6 +83,8 @@ export interface PlanSummary {
    */
   assessment: AssessmentState;
   assessment_digest_stored: boolean;
+  /** How many people asked to be able to pass this mirror role. Zero on every other kind of plan. */
+  passrole_requests: number;
 }
 
 /**
@@ -151,7 +153,16 @@ export interface PlanDetail {
    * cached assessment from an earlier inspection describes a plan that no longer exists.
    */
   assessment: Impact | null;
-  assessment_source: "pushed" | "stored" | null;
+  /**
+   * Where the assessment on screen came from.
+   *
+   *   pushed / stored   it belongs to the inspection that produced this plan
+   *   earlier           it belongs to a PREVIOUS inspection of the same resource, kept because this
+   *                     plan moves no resource - a passrole tag is the case. Shown so a governed
+   *                     resource that was assessed does not read as unassessed, and carried without
+   *                     a digest so nothing can be composed from it.
+   */
+  assessment_source: "pushed" | "stored" | "earlier" | null;
   /** The querier's own digest, which a restriction has to send back. Never computed by the server. */
   assessment_sha256: string | null;
   /** Which inspection produced this plan, and what the approval marker gets named by. */
