@@ -1644,3 +1644,50 @@ test('a restriction cannot be composed from an earlier assessment', async () => 
     }),
     (e) => e.status === 400 || e.status === 409);
 });
+
+
+test('the analysis runs on an assessment kept because the plan moves nothing', async () => {
+  // The regression this exists for. The detail route was taught to keep an earlier assessment for a
+  // plan that changes no resource; the analysis route was not, so a tagged role showed its
+  // assessment and then refused to analyse it:
+  //   "the stored assessment describes <id> and this plan is <id>; reload the plan"
+  const { route } = harness({
+    assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
+    planOutputs: ASKED,
+    noChanges: true,
+  });
+  const answer = await route['POST /api/plans/:id/analysis']({
+    params: { id: PLAN_ID }, body: { engine: 'rules' },
+  });
+  assert.ok(answer, 'the analysis refused an assessment the detail route had just displayed');
+});
+
+test('the analysis still refuses an assessment for a plan that changes something', async () => {
+  const { route } = harness({
+    assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
+  });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/analysis']({
+      params: { id: PLAN_ID }, body: { engine: 'rules' },
+    }),
+    (e) => e.status === 409 && /reload the plan/.test(e.message));
+});
+
+test('an analysis of an earlier assessment cannot be cited on the decision', async () => {
+  // It names the digest of the assessment it actually read, and the page only sends a citation when
+  // that equals the digest the DECISION carries - which for an earlier assessment is null. So the
+  // two never match and nothing is cited. Checked here because the fix above must not have opened a
+  // way to bind an approval to an assessment it was not made from.
+  const { route } = harness({
+    assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
+    planOutputs: ASKED,
+    noChanges: true,
+  });
+  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  const answer = await route['POST /api/plans/:id/analysis']({
+    params: { id: PLAN_ID }, body: { engine: 'rules' },
+  });
+  assert.equal(detail.assessment_sha256, null);
+  assert.notEqual(answer.impact_sha256, null,
+    'the analysis named no assessment, so the page would send a citation the decision refuses');
+});

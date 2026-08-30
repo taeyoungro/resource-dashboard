@@ -480,10 +480,14 @@ function Card({ finding, block, containment, resourceOf, accountId, showAxis = f
   // open has not changed - only whether it is open. The two facts sit beside each other and the
   // colour follows the second.
   //
-  // `fenced` is green with `full`: its own badge already says the path is blocked, by the PassRole
-  // fence rather than by a written Deny, and a green badge on a red-edged card would be the card
-  // contradicting itself. `none` keeps the grade colour, which is the ordinary case.
-  const cut = containment === "full" || containment === "fenced" ? "contained-full"
+  // Three cut colours, not two, and `fenced` earns its own because it is a different KIND of
+  // answer. `full` and `partial` are what somebody decided about this path; the fence is what the
+  // pipeline writes on its own, for every permission set, whether or not anybody looked. A reader
+  // deciding what still needs doing has to be able to tell "I closed this" from "this was already
+  // closed for me" - and the second is the one whose upper bound moves when an approved mirror role
+  // is attached later. `none` keeps the grade colour, which is the ordinary case.
+  const cut = containment === "full" ? "contained-full"
+    : containment === "fenced" ? "contained-fenced"
     : containment === "partial" ? "contained-partial" : "";
   return (
     <details className={`finding grade-${finding.escalationGrade.toLowerCase()} ${cut}`.trim()}>

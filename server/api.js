@@ -181,6 +181,30 @@ function analysisCitation(claim, impactDigest) {
            impact_sha256: impact };
 }
 
+/**
+ * Whether an assessment from ANOTHER inspection still describes this plan.
+ *
+ * True only when the plan moves no resource. A prefix is overwritten in place by every inspection,
+ * so an assessment from a previous one normally describes a permission set the current plan does
+ * not produce - which is why the request ids are compared at all. That reasoning holds for a plan
+ * that CHANGES something and not for one that changes nothing: a passrole tag starts an inspection
+ * whose plan touches no IAM resource, so its new request id is a different inspection of an
+ * identical permission set.
+ *
+ * One function because two routes need the same answer and they used to disagree. The detail route
+ * was taught this and the analysis route was not, so a tagged role showed its assessment and then
+ * refused to analyse it - "the stored assessment describes <id> and this plan is <id>". Same rule,
+ * one place.
+ *
+ * It never makes an assessment authoritative. What rides on the id matching is the DIGEST, and the
+ * caller withholds that: a restriction is validated against the assessment an approver read, and
+ * this is not that one.
+ */
+function describesPlan(plan, document) {
+  if (!plan?.request_id || document?.request_id === plan.request_id) return true;
+  return (plan.changes ?? []).length === 0;
+}
+
 function decisionMarker({ config, plan, prefix, payload, now, restrictions = [], impactDigest = '',
                          passroleGrantTo = [], analysis = null }) {
   return {
@@ -585,7 +609,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
           assessment = stored.document;
           digest = stored.digest;
           source = 'stored';
-        } else if (stored?.document && plan.changes.length === 0) {
+        } else if (stored?.document && describesPlan(plan, stored.document)) {
           // An assessment from an EARLIER inspection of this resource, kept because this plan moves
           // no resource.
           //
@@ -652,7 +676,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         throw new HttpError(409, `${id} has no stored impact assessment, so there is nothing to `
           + 'analyse. Wait for the assessment or reload.');
       }
-      if (plan.request_id && stored.document.request_id !== plan.request_id) {
+      if (!describesPlan(plan, stored.document)) {
         throw new HttpError(409, `the stored assessment describes ${stored.document.request_id} and `
           + `this plan is ${plan.request_id}; reload the plan`);
       }

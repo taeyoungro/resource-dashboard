@@ -15,6 +15,10 @@
      around the wheel to be told apart and still clearly in the "something was done" family.
      Both clear 4.5:1 on white, which they have to: they are the colour of 11px bold text. */
   --cut-partial: #4f7d1f;
+  /* And the third: closed by the PassRole fence rather than by a decision. A teal rather than a
+     third green, because it is not a degree of the same thing - nobody chose it, and what it bounds
+     changes when an approved mirror role is attached. 5.47:1 on white. */
+  --cut-fence: #0f766e;
 }
 
 * { box-sizing: border-box; }
@@ -809,12 +813,18 @@ dialog.picker button.commit {
    having to know about the other. background is reset for grade-critical, which is the one badge
    that is filled rather than outlined - left alone it would be a red block with green text. */
 .finding.contained-full { border-left-color: var(--ok); }
+.finding.contained-fenced { border-left-color: var(--cut-fence); }
 .finding.contained-partial { border-left-color: var(--cut-partial); }
 
 .finding.contained-full .grade {
   background: transparent;
   color: var(--ok);
   border-color: var(--ok);
+}
+.finding.contained-fenced .grade {
+  background: transparent;
+  color: var(--cut-fence);
+  border-color: var(--cut-fence);
 }
 .finding.contained-partial .grade {
   background: transparent;
@@ -825,6 +835,7 @@ dialog.picker button.commit {
 /* The asset grade badge sits in the same header and is about a different thing entirely - what the
    reached resources are worth - so a cut path must not recolour it. */
 .finding.contained-full .grade.grade-asset,
+.finding.contained-fenced .grade.grade-asset,
 .finding.contained-partial .grade.grade-asset {
   color: var(--danger);
   border-color: var(--border);
