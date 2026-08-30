@@ -81,6 +81,7 @@ export function PlanPage({ state, error, onRefresh }: Props) {
     comment: string,
     restrictions: Restriction[],
     passroleGrantTo: string[],
+    passroleRevokeFrom: string[],
     analysis: RiskAnalysisCitation | null,
   ) => {
     if (!selectedId || !detail) return;
@@ -108,6 +109,9 @@ export function PlanPage({ state, error, onRefresh }: Props) {
         ...(restrictions.length > 0 ? { restrictions } : {}),
         // Whose PassRole request the approver ticked. Absent unless somebody did.
         ...(passroleGrantTo.length > 0 ? { passrole_grant_to: passroleGrantTo } : {}),
+        // And whose grant the approver took back. Absent unless somebody did - and an absence here
+        // withdraws nothing, which is why it has to be sent rather than inferred from the list above.
+        ...(passroleRevokeFrom.length > 0 ? { passrole_revoke_from: passroleRevokeFrom } : {}),
         // The analysis the reviewer had on screen, cited by digest. Sent only when a model answered
         // and the digest it answered about is the one this decision carries - the server refuses a
         // citation naming any other assessment, which is what makes the record answerable rather

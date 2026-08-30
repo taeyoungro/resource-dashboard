@@ -298,6 +298,13 @@ pre.plan {
   line-height: 1.5;
 }
 
+/* A held inline-writer lock. Not one unfinished task among others: while this row exists the
+   permission set it names accepts no further inline work, and the grant the write was meant to
+   limit is already in force. Marked in the same colour as a refusal because it is the same class of
+   fact - something that already went wrong and needs a person, not more waiting. */
+.marker-lock > td:first-child { border-left: 4px solid var(--danger); font-weight: 600; }
+.marker-lock .meta { color: var(--danger); }
+
 /* A refused inspection. Louder than .warn because it is not advice about a decision - it says the
    last thing that happened to this resource failed, and before the inspector recorded it that
    sentence reached nobody. First on the panel, so it is read before the plan under it. */

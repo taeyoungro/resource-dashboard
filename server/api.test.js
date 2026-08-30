@@ -183,7 +183,7 @@ function stubS3(objects) {
 }
 
 function harness({ pushed = null, riskAnalysis = false, assessment = null, planOutputs = null,
-                   noChanges = false,
+                   noChanges = false, refreshFails = false,
                    makeModelClient = async () => { throw new Error('not configured'); },
                  } = {}) {
   const document = assessment ? JSON.stringify(assessment) : ASSESSMENT_JSON;
@@ -223,7 +223,10 @@ function harness({ pushed = null, riskAnalysis = false, assessment = null, planO
     store: {
       state: () => ({ plans: [], markers: [], counts: {}, errors: [] }),
       // Called after a decision is written, so the list stops offering a plan somebody just decided.
-      refresh: async () => ({ plans: [], markers: [], counts: {}, errors: [] }),
+      refresh: async () => {
+        if (refreshFails) throw new Error('ListObjectsV2 timed out');
+        return { plans: [], markers: [], counts: {}, errors: [] };
+      },
     },
     notifications: { recent: () => [], enabled: true },
     markerBodies: { put: () => {}, get: () => null },
@@ -1517,6 +1520,43 @@ test('the review is refused outright when the switch is off', async () => {
 });
 
 
+// ---- the decision survives a failing sweep, and the bound counts what it says it counts --------
+
+test('a sweep that fails after the marker is written does not fail the decision', async () => {
+  // The marker is already in S3 and the applier is already starting, so the decision HAPPENED.
+  // Rethrowing the sweep error made this route answer 500, which reads as "the approval did not go
+  // through" - the reviewer presses again, the second press hits an already-decided plan and comes
+  // back 409, and two contradictory errors now describe an approval that succeeded.
+  const { route, s3 } = harness({ refreshFails: true });
+  const result = await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID }, body: decision(),
+  });
+  assert.ok(result.written, 'the decision did not answer with what it wrote');
+  assert.ok(s3.puts.some((p) => p.key.startsWith('applier/')),
+    'the marker was not written');
+});
+
+test('the restriction bound counts actions, not entries', async () => {
+  // The message says "restricted actions" and one entry carries a list of them, so counting
+  // entries let 200 x N through. The only thing left bounding the request was the writer's byte
+  // check, which runs AFTER the approval - too late to say which list to shorten.
+  const { route, impactSha256 } = harness();
+  const entries = Array.from({ length: 3 }, (_, i) => ({
+    policy: 'mirror-cmp-WebHosting',
+    intent: 'deny_action',
+    actions: Array.from({ length: 100 }, (_, j) => `s3:Action${i}x${j}`),
+    resources: [],
+  }));
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({ restrictions: entries, expected_impact_sha256: impactSha256 }),
+    }),
+    (e) => e.status === 400 && /300/.test(e.message),
+    'three entries carrying a hundred actions each passed a bound of two hundred actions');
+});
+
+
 // ---- confirming a PassRole grant, which is not approving the plan -------------------------------
 
 const ASKED = {
@@ -1586,6 +1626,75 @@ test('a grant on a role no service can assume is refused before the apply, not a
     }),
     (e) => e.status === 409 && /iam:PassedToService/.test(e.message));
 });
+
+test('a withdrawal is the only thing that takes a grant back', async () => {
+  // Leaving somebody unticked removes nothing: the writer keeps every grant a dispatch does not
+  // name. So the marker has to carry the withdrawal explicitly, and an ordinary approval must not
+  // imply one - an approver who confirms bob has said nothing about alice.
+  const { route, s3 } = harness({ planOutputs: ASKED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID }, body: decision({ passrole_revoke_from: ['alice'] }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.deepEqual(marker.passrole_revoke_from, ['alice']);
+  assert.equal('passrole_grant_to' in marker, false);
+});
+
+test('withdrawing from somebody who never asked is allowed, unlike granting', async () => {
+  // The asymmetry is the point. The ordinary reason to withdraw is that the tag is gone, so the
+  // person is no longer among the plan's requesters - requiring them to be would make the only
+  // removal path unusable in exactly the case it exists for.
+  const { route, s3 } = harness({ planOutputs: ASKED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID }, body: decision({ passrole_revoke_from: ['carol'] }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.deepEqual(marker.passrole_revoke_from, ['carol']);
+});
+
+test('a role no service can assume can still have its grants withdrawn', async () => {
+  // Granting is refused there; withdrawing must not be. A role whose trust policy lost its services
+  // is exactly the one whose grants should come off.
+  const { route, s3 } = harness({
+    planOutputs: { ...ASKED, passrole_services: { after: [] } },
+  });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID }, body: decision({ passrole_revoke_from: ['alice'] }),
+  });
+  assert.ok(s3.puts.some((p) => p.key.startsWith('applier/')));
+});
+
+test('confirming and withdrawing the same person in one decision is refused', async () => {
+  const { route } = harness({ planOutputs: ASKED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({ passrole_grant_to: ['alice'], passrole_revoke_from: ['alice'] }),
+    }),
+    (e) => e.status === 400 && /alice/.test(e.message));
+});
+
+test('a denial cannot withdraw either, because nothing runs to write it', async () => {
+  const { route } = harness({ planOutputs: ASKED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({ decision: 'deny', comment: 'no', passrole_revoke_from: ['alice'] }),
+    }),
+    (e) => e.status === 400 && /not applied/.test(e.message));
+});
+
+test('withdrawals of another shape are refused', async () => {
+  for (const broken of ['alice', [''], [null], [{ user_name: 'alice' }]]) {
+    const { route } = harness({ planOutputs: ASKED });
+    await assert.rejects(
+      () => route['POST /api/plans/:id/decision']({
+        params: { id: PLAN_ID }, body: decision({ passrole_revoke_from: broken }),
+      }),
+      (e) => e.status === 400, `accepted passrole_revoke_from=${JSON.stringify(broken)}`);
+  }
+});
+
 
 test('confirmations of another shape are refused', async () => {
   for (const broken of ['alice', [''], [null], [{ user_name: 'alice' }]]) {

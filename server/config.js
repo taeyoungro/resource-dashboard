@@ -208,6 +208,20 @@ export function load() {
     // say "assessment in progress" rather than showing nothing and looking like there is nothing.
     impactPrefix: 'impact/',
 
+    // Written by the applier, deleted by the inline writer. Unlike the other three this object IS A
+    // LOCK: while it exists no further inline work for that permission set can start, so a writer
+    // run that refused the marker itself leaves it behind deliberately and a person has to clear it.
+    //
+    // It was not swept, and that made the worst state in the system the only invisible one. The
+    // administrator approved, the grant went into force, the restriction did not, and every later
+    // decision for that permission set was blocked - with nothing on any screen saying so, because
+    // outcome.json records that state as `dispatched`. The runbook's answer was to remember to run
+    // `aws s3 ls` for a few days after a deploy.
+    //
+    // Keyed <account id>:<permission set name>.json, not by request id - the key is the lock and the
+    // lock is the document. The request id is in the body.
+    inlineWriterPrefix: 'inline_writer/',
+
     // The state bucket has no plan prefix any more. Everything terraform produces for one governed
     // resource lives under <account id>/<resource>/, and the plan artifacts are the plan/ subfolder
     // of that - see event_pipeline generator/twin.py. There is therefore no single prefix to list,

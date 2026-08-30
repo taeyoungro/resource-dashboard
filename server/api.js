@@ -206,7 +206,7 @@ function describesPlan(plan, document) {
 }
 
 function decisionMarker({ config, plan, prefix, payload, now, restrictions = [], impactDigest = '',
-                         passroleGrantTo = [], analysis = null }) {
+                         passroleGrantTo = [], passroleRevokeFrom = [], analysis = null }) {
   return {
     // What the applier is being asked to do, and to what.
     request_id: plan.request_id,
@@ -271,6 +271,10 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
     // grant actually says - which role, conditioned on which services - is read by the applier from
     // the plan's own outputs. This tier says who was confirmed and never what they get.
     ...(passroleGrantTo.length > 0 ? { passrole_grant_to: passroleGrantTo } : {}),
+
+    // And whose it WITHDRAWS. Same carriage, opposite direction, and the only path that removes a
+    // grant: the writer keeps every grant a dispatch does not name, so an absence removes nothing.
+    ...(passroleRevokeFrom.length > 0 ? { passrole_revoke_from: passroleRevokeFrom } : {}),
 
     // What the approver was looking at, if an analysis was run. Advisory, and cited rather than
     // copied - the applier does nothing with it, and a record that cannot be traced to the analysis
@@ -983,10 +987,21 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         if (body.decision !== 'approve') {
           throw new HttpError(400, 'a denial cannot carry a restriction: nothing is being granted');
         }
-        if (restrictions.length > MAX_RESTRICTIONS) {
+        // ACTIONS, not entries. The bound says "restricted actions" and one entry carries a list of
+        // them, so counting entries let 200 x N through - and N is a whole policy's action list
+        // when the picker's 전체 선택 made it. The only thing left bounding the request was the
+        // writer's byte check, which runs AFTER the approval: too late to say which list to shorten.
+        //
+        // A malformed entry counts as one here and is refused by the shape check further down, so
+        // this bound cannot be evaded by sending something that is not a list.
+        const restrictedActions = restrictions.reduce(
+          (total, r) => total + (Array.isArray(r?.actions) ? r.actions.length : 1), 0,
+        );
+        if (restrictedActions > MAX_RESTRICTIONS) {
           throw new HttpError(
             400,
-            `at most ${MAX_RESTRICTIONS} restricted actions per decision. The permission set inline `
+            `at most ${MAX_RESTRICTIONS} restricted actions per decision, and this carries `
+            + `${restrictedActions} across ${restrictions.length} entries. The permission set inline `
             + 'policy quota of 10,240 bytes is reached well before this, so a restriction this wide '
             + 'wants a tag condition instead - one statement whatever it covers.',
           );
@@ -1392,10 +1407,38 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         }
       }
 
+      // Withdrawing one. The only way a grant goes away: the writer keeps every grant a dispatch is
+      // silent about, so leaving somebody off a later confirmation does NOT remove them - and it
+      // must not, because an approver who confirms bob has said nothing about alice.
+      //
+      // Deliberately NOT checked against the plan's requesters. The ordinary reason to withdraw is
+      // that the tag was removed, so the person is no longer among them; requiring it would make the
+      // only removal path unusable in the case it exists for. Withdrawing is the safe direction.
+      const revokeFrom = body.passrole_revoke_from ?? [];
+      if (!Array.isArray(revokeFrom)
+          || revokeFrom.some((u) => typeof u !== 'string' || !u.trim())) {
+        throw new HttpError(400,
+          'passrole_revoke_from must be an array of Identity Center user names');
+      }
+      const withdrawn = [...new Set(revokeFrom.map((u) => u.trim()))].sort();
+      if (withdrawn.length > 0 && body.decision !== 'approve') {
+        // The withdrawal rides on the apply that follows an approval - a denied plan applies
+        // nothing, so there is no run to carry it.
+        throw new HttpError(400,
+          'a denial cannot withdraw a PassRole grant: the plan is not applied, so nothing runs to '
+          + 'write the change. Approve the plan and withdraw in the same decision.');
+      }
+      const contradictory = withdrawn.filter((u) => confirmed.includes(u));
+      if (contradictory.length > 0) {
+        throw new HttpError(400,
+          `${contradictory.join(', ')} is both confirmed and withdrawn in one decision. One `
+          + 'decision says one thing about one person.');
+      }
+
       const marker = decisionMarker({
         config, plan, prefix: planPrefixFromId(id),
         payload: { ...body, reviewer, comment }, now: Date.now(),
-        restrictions, impactDigest, passroleGrantTo: confirmed,
+        restrictions, impactDigest, passroleGrantTo: confirmed, passroleRevokeFrom: withdrawn,
         analysis: body.risk_analysis ? analysisCitation(body.risk_analysis, impactDigest) : null,
       });
       const key = `${config.applierPrefix}${requestId}.json`;
@@ -1413,7 +1456,17 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
 
       // The marker is now the applier's unfinished work. Refresh so the page shows that rather
       // than the row it was just looking at.
-      await store.refresh(`decision on ${id}`);
+      //
+      // Not allowed to fail the decision. The marker is already in S3 and the applier is already
+      // starting, so the decision HAPPENED - and a rethrown sweep error made this route answer 500,
+      // which reads as "the approval did not go through". The reviewer presses again, the second
+      // press hits an already-decided plan and comes back 409, and now two contradictory errors
+      // describe an approval that actually succeeded. The store keeps its previous state and logs
+      // the failure; the next sweep runs anyway.
+      await store.refresh(`decision on ${id}`).catch((err) => {
+        log.warn('decision recorded and the sweep after it failed plan=%s request=%s error=%s '
+          + '- the marker is written and the applier has it', id, requestId, err?.message ?? err);
+      });
       return { written: `s3://${config.markerBucket}/${key}`, marker };
     },
   };

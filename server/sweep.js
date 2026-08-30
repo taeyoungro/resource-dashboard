@@ -280,11 +280,11 @@ async function readMarkerBodies(s3, config, markers, bodies, errors) {
   return { bodies: out, fetched: capped.length, held: markers.length - missing.length };
 }
 
-function describeMarkers(markers, bodies, kind, prefix, nowMs, graceSeconds) {
+function describeMarkers(markers, bodies, kind, prefix, nowMs, graceSeconds, { locks = false } = {}) {
   const rows = [];
   for (const marker of markers) {
-    const requestId = requestIdFromMarkerKey(marker.key, prefix);
-    if (!requestId) continue;
+    const name = requestIdFromMarkerKey(marker.key, prefix);
+    if (!name) continue;
     const body = bodies.get(marker.key) ?? null;
     const ageSeconds = marker.lastModified
       ? Math.max(0, Math.round((nowMs - Date.parse(marker.lastModified)) / 1000))
@@ -292,7 +292,12 @@ function describeMarkers(markers, bodies, kind, prefix, nowMs, graceSeconds) {
     rows.push({
       kind,
       key: marker.key,
-      request_id: requestId,
+      // For the three request-keyed prefixes the name in the key IS the request id. The inline
+      // writer's key is the permission set lock instead, so the request id comes from the body and
+      // is null when the body could not be read - which is honest: the key does not carry one.
+      request_id: locks ? (body?.request_id ?? null) : name,
+      // The document this marker locks. Null on every other kind, because they lock nothing.
+      permission_set: locks ? (body?.permission_set_name ?? name.split(':').pop() ?? null) : null,
       account_id: body?.account_id ?? null,
       resource: body?.resource ?? null,
       request_kind: body?.kind ?? null,
@@ -302,7 +307,12 @@ function describeMarkers(markers, bodies, kind, prefix, nowMs, graceSeconds) {
       age_seconds: ageSeconds,
       // Below the grace period the task is presumed to be running. Saying "failed" about a task
       // that is two minutes into a terraform plan would train everyone to ignore the list.
+      //
+      // For a lock, `failed` means more than a task that did not finish: the permission set is
+      // BLOCKED until somebody deletes the object, and the grant it was meant to limit is already
+      // in force. That is why it is called out separately on the page.
       state: ageSeconds !== null && ageSeconds < graceSeconds ? 'running' : 'failed',
+      blocks_further_writes: locks,
       body_read: body !== null,
       event_count: Array.isArray(body?.events) ? body.events.length : null,
       first_event_at: body?.first_event_at ?? null,
@@ -539,13 +549,16 @@ function planState(manifest, outcome, requestId, decidedRequestIds, refusal) {
 export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}) {
   const errors = [];
 
-  const [inspectorListing, applierListing, impactListing] = await Promise.all([
+  const [inspectorListing, applierListing, impactListing, inlineWriterListing] = await Promise.all([
     listPrefix(s3, config.markerBucket, config.inspectorPrefix),
     listPrefix(s3, config.markerBucket, config.applierPrefix),
     // Listed, never read. This marker says an assessment is outstanding and nothing else, so a
     // GetObject on it would buy nothing - the assessment itself arrives by push or from the plan
     // prefix. Its bodies are therefore not in readMarkerBodies below either.
     listPrefix(s3, config.markerBucket, config.impactPrefix),
+    // Read, because this one's body is the only thing that says which request took the lock and
+    // what it was going to write.
+    listPrefix(s3, config.markerBucket, config.inlineWriterPrefix),
   ]);
 
   // Decide what is a marker once, before anything reads a body. Filtering in describeMarkers and
@@ -559,13 +572,17 @@ export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}
     .filter(isMarker(config.inspectorPrefix)).map(tag('inspector', config.inspectorPrefix));
   const applierMarkers = applierListing
     .filter(isMarker(config.applierPrefix)).map(tag('applier', config.applierPrefix));
+  const inlineWriterMarkers = inlineWriterListing
+    .filter(isMarker(config.inlineWriterPrefix))
+    .map(tag('inline_writer', config.inlineWriterPrefix));
 
   const skipped =
     (inspectorListing.length - inspectorMarkers.length) +
-    (applierListing.length - applierMarkers.length);
+    (applierListing.length - applierMarkers.length) +
+    (inlineWriterListing.length - inlineWriterMarkers.length);
 
   const read = await readMarkerBodies(
-    s3, config, [...inspectorMarkers, ...applierMarkers], bodies, errors,
+    s3, config, [...inspectorMarkers, ...applierMarkers, ...inlineWriterMarkers], bodies, errors,
   );
 
   const markers = [
@@ -573,6 +590,9 @@ export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}
                        now, config.markerGraceSeconds),
     ...describeMarkers(applierMarkers, read.bodies, 'applier', config.applierPrefix,
                        now, config.markerGraceSeconds),
+    ...describeMarkers(inlineWriterMarkers, read.bodies, 'inline_writer',
+                       config.inlineWriterPrefix, now, config.markerGraceSeconds,
+                       { locks: true }),
   ];
   markers.sort((a, b) => (b.age_seconds ?? 0) - (a.age_seconds ?? 0));
 
