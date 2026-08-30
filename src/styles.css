@@ -9,6 +9,12 @@
   --warn: #9a6700;
   --danger: #cf222e;
   --accent: #0969da;
+  /* A path that has been cut. Two shades because there are two answers, and reading them as one
+     would tell somebody a resource-scoped restriction closes what a Resource "*" Deny closes.
+     --ok is the true green already used for "확인"; --cut-partial is a yellow-green, far enough
+     around the wheel to be told apart and still clearly in the "something was done" family.
+     Both clear 4.5:1 on white, which they have to: they are the colour of 11px bold text. */
+  --cut-partial: #4f7d1f;
 }
 
 * { box-sizing: border-box; }
@@ -791,6 +797,38 @@ dialog.picker button.commit {
 .finding.grade-high { border-left-color: var(--danger); }
 .finding.grade-medium { border-left-color: var(--warn); }
 .finding.grade-low { border-left-color: var(--border); }
+
+/* Once a path is CUT, the edge stops carrying the grade and carries that instead.
+   A list of cards is read down its left edge, and the question a reader is answering on the second
+   pass is not "how bad is this" - they have read that - but "which of these have I dealt with".
+   An edge that stays red after the Deny is written cannot answer it.
+
+   The grade badge follows the edge, and the two rules below are why this is written as a card
+   modifier rather than a badge class. The badge's own colour comes from .grade.grade-high and the
+   like; .finding.contained-full .grade is one level more specific, so it wins without either rule
+   having to know about the other. background is reset for grade-critical, which is the one badge
+   that is filled rather than outlined - left alone it would be a red block with green text. */
+.finding.contained-full { border-left-color: var(--ok); }
+.finding.contained-partial { border-left-color: var(--cut-partial); }
+
+.finding.contained-full .grade {
+  background: transparent;
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.finding.contained-partial .grade {
+  background: transparent;
+  color: var(--cut-partial);
+  border-color: var(--cut-partial);
+}
+
+/* The asset grade badge sits in the same header and is about a different thing entirely - what the
+   reached resources are worth - so a cut path must not recolour it. */
+.finding.contained-full .grade.grade-asset,
+.finding.contained-partial .grade.grade-asset {
+  color: var(--danger);
+  border-color: var(--border);
+}
 
 /* Folded shut by default. Thirty-eight cards open at once is a page nobody reads to the end, and
    the reader's first job is not to read one card - it is to see how many there are and at what

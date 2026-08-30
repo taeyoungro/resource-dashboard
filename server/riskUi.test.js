@@ -1306,3 +1306,44 @@ test('a resource is written the same way on both screens', () => {
   assert.ok(/<LabeledResource /.test(targets) && /<TagButton /.test(targets),
             'the risk card prints bare ARNs again');
 });
+
+
+test('a card whose path has been cut is coloured by that, not by the grade', () => {
+  // A list of cards is read down its left edge. On the second pass the question is not "how bad is
+  // this" - that has been read - but "which of these have I dealt with", and an edge that stays red
+  // after the Deny is written cannot answer it.
+  const card = PANEL.slice(PANEL.indexOf('const cut = containment'),
+                           PANEL.indexOf('<summary className="finding-head">'));
+  assert.ok(/containment === "full"/.test(card) && /containment === "fenced"/.test(card),
+            'a fully cut path is not coloured as cut');
+  assert.ok(/containment === "partial"/.test(card), 'a partly cut path is not coloured as cut');
+  assert.ok(card.includes('contained-full') && card.includes('contained-partial'),
+            'the card root carries no containment class, so the CSS has nothing to hook on');
+  // The grade is NOT rewritten. What the path would do if it were open has not changed - only
+  // whether it is open - so the badge still says 높음 and only its colour follows the cut.
+  assert.ok(card.includes('grade-${finding.escalationGrade.toLowerCase()}'),
+            'the card stopped carrying its grade, so the grade colour has nothing to fall back to');
+});
+
+test('the cut colours reach both the edge and the badge, and clear the filled one', () => {
+  for (const cls of ['contained-full', 'contained-partial']) {
+    assert.match(CSS, new RegExp(`\\.finding\\.${cls}\\s*\\{[^}]*border-left-color:`),
+                 `${cls} does not colour the left edge`);
+    const badge = CSS.match(new RegExp(`\\.finding\\.${cls} \\.grade \\{([^}]*)\\}`));
+    assert.ok(badge, `${cls} does not recolour the grade badge, so a green edge sits under a red badge`);
+    // grade-critical is the one badge that is FILLED rather than outlined. Left alone it stays a red
+    // block with green text on it - the card contradicting itself in one element.
+    assert.match(badge[1], /background:\s*transparent/,
+                 `${cls} does not reset the filled 치명 badge`);
+    assert.match(badge[1], /color:/, `${cls} does not set the badge text colour`);
+  }
+  // Two shades, not one: a resource-scoped restriction does not close what a Resource "*" Deny
+  // closes, and one colour for both would say it does.
+  assert.notEqual(CSS.match(/\.finding\.contained-full\s*\{[^}]*border-left-color:\s*([^;]+)/)[1],
+                  CSS.match(/\.finding\.contained-partial\s*\{[^}]*border-left-color:\s*([^;]+)/)[1],
+                  'full and partial containment are the same colour');
+  // The asset grade is about what the reached resources are worth, which cutting the path does not
+  // change. It must not be recoloured with the rest of the header.
+  assert.match(CSS, /\.finding\.contained-full \.grade\.grade-asset[\s\S]{0,120}?\{[^}]*color:/,
+               'the asset grade badge is recoloured by a cut path');
+});

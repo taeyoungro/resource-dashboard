@@ -471,8 +471,22 @@ function Card({ finding, block, containment, resourceOf, accountId, showAxis = f
   showAxis?: boolean;
 }) {
   const model = finding.source === "model";
+  // The card's edge and its grade badge carry the grade until something is DONE about the path, and
+  // then they carry that instead. A cut path is not a high-risk one any more, and leaving it red
+  // means a reader scanning the edge cannot see which cards they have already dealt with - which is
+  // the whole reason the edge is coloured.
+  //
+  // The grade itself is not rewritten. It still says 높음, because what the path would do if it were
+  // open has not changed - only whether it is open. The two facts sit beside each other and the
+  // colour follows the second.
+  //
+  // `fenced` is green with `full`: its own badge already says the path is blocked, by the PassRole
+  // fence rather than by a written Deny, and a green badge on a red-edged card would be the card
+  // contradicting itself. `none` keeps the grade colour, which is the ordinary case.
+  const cut = containment === "full" || containment === "fenced" ? "contained-full"
+    : containment === "partial" ? "contained-partial" : "";
   return (
-    <details className={`finding grade-${finding.escalationGrade.toLowerCase()}`}>
+    <details className={`finding grade-${finding.escalationGrade.toLowerCase()} ${cut}`.trim()}>
       <summary className="finding-head">
         <span className={GRADE_CLASS[finding.escalationGrade]}>
           {GRADE_LABEL[finding.escalationGrade]}
