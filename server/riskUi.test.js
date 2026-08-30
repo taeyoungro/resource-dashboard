@@ -1393,3 +1393,48 @@ test('the panel still renders when every tag was removed and nothing is being as
   assert.match(DETAIL, /requests\.length === 0 && withdrawnTags\.length === 0/,
     'the panel hides itself when there are withdrawals and no requests');
 });
+
+
+// ---- the notification bell ---------------------------------------------------------------------
+
+const BELL = read('components/Notifications.tsx');
+const APP = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const PLAN_PAGE = readFileSync(new URL('../src/components/PlanPage.tsx', import.meta.url), 'utf8');
+
+test('the feed is in the top bar and no longer under the plan list', () => {
+  // It sat below a list long enough to push it off screen, so an announcement arriving while
+  // somebody read a plan was seen at the next scroll or not at all - which spends the only thing
+  // this feed buys over the sweep.
+  assert.match(APP, /<Notifications \/>/, 'the bell is not in the top bar');
+  assert.ok(!/<Notifications/.test(PLAN_PAGE),
+    'the feed is still rendered under the plan list as well');
+  // Left of the key field, which means before it in source order.
+  assert.ok(APP.indexOf('<Notifications />') < APP.indexOf('api-key topbar-key'),
+    'the bell is to the right of the key input');
+});
+
+test('the count is unread rather than total, and opening clears it', () => {
+  // A number that never goes away stops meaning "look at this" and starts meaning "there are
+  // things", which is what the panel itself already said.
+  assert.match(BELL, /seen\.current\.has\(n\.id\)/,
+    'the count is not measured against what was already seen');
+  assert.match(BELL, /setUnread\(0\)/, 'opening the panel does not clear the count');
+  assert.match(BELL, /\{unread > 0 \? <span className="bell-count">\{unread\}<\/span> : null\}/,
+    'the count is shown when there is none, or not shown when there is one');
+});
+
+test('the bell toggles the panel', () => {
+  assert.match(BELL, /const \[open, setOpen\] = useState\(false\)/,
+    'the panel does not start closed');
+  assert.match(BELL, /setOpen\(\(wasOpen\) => \{/, 'the button does not toggle');
+  assert.match(BELL, /\{open \? \(/, 'the panel is not rendered on the open state');
+});
+
+test('a feed that is not arriving says so on the bell itself', () => {
+  // With the panel shut, the bell is the only thing on screen. An error behind it would be a feed
+  // that silently stopped updating.
+  assert.match(BELL, /const broken = Boolean\(error\) \|\| !enabled;/,
+    'the bell does not know the feed is broken');
+  assert.match(BELL, /unread === 0 && broken/,
+    'a broken feed with no unread items shows nothing on the bell');
+});

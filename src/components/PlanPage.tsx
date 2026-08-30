@@ -5,7 +5,6 @@ import type {
 } from "../types";
 import { PlanDetail } from "./PlanDetail";
 import { PlanList } from "./PlanList";
-import { Notifications } from "./Notifications";
 
 interface Props {
   state: SweepState | null;
@@ -185,9 +184,6 @@ export function PlanPage({ state, error, onRefresh }: Props) {
               onSelect={(id) => { setSelectedId(id); setView("assessment"); }}
               onSelectPassrole={(id) => { setSelectedId(id); setView("passrole"); }}
             />
-            {/* Below the plan list, not merged into it. The list is what the buckets say; this is
-                what a machine announced a moment ago and the sweep has not confirmed yet. */}
-            <Notifications />
           </>
         )}
       </aside>

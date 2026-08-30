@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, apiKey } from "./api";
 import { MarkerPage } from "./components/MarkerPage";
+import { Notifications } from "./components/Notifications";
 import { PlanPage } from "./components/PlanPage";
 import { ResourcePolicyPage } from "./components/ResourcePolicyPage";
 import type { SweepState } from "./types";
@@ -90,6 +91,11 @@ export default function App() {
             자원 정책
           </button>
         </div>
+        {/* Left of the key field, and in the top bar rather than under the plan list. It used to
+            sit below a list long enough to push it off screen, so an announcement arriving while
+            somebody read a plan was seen at the next scroll or not at all - which spends the only
+            thing this feed buys over the sweep. */}
+        <Notifications />
         <div className="api-key topbar-key">
           <input
             type="password"
