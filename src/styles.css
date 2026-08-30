@@ -37,8 +37,76 @@ code { font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
 .tabs { display: flex; gap: 4px; }
 .tab { background: transparent; border: 1px solid transparent; padding: 6px 14px; color: var(--muted); }
 .tab.active { color: var(--text); border-color: var(--accent); }
-.topbar-key { margin-left: auto; display: flex; gap: 6px; }
+.topbar-key { display: flex; gap: 6px; }
 .topbar-key input { width: 220px; }
+
+/* The notification bell, immediately left of the key field. margin-left: auto moved here from
+   .topbar-key so the pair is pushed to the right edge together rather than the bell being left
+   behind in the middle of the bar. */
+.bell { position: relative; margin-left: auto; }
+.bell-button {
+  position: relative;
+  padding: 6px 10px;
+  line-height: 1;
+  background: transparent;
+  border-color: transparent;
+}
+.bell-button:hover { border-color: var(--border); }
+.bell-button.open { border-color: var(--accent); background: var(--panel-2); }
+
+/* The unread count. Absolute on the bell rather than beside it, so the button does not change
+   width when a number appears - a control that moves under the cursor as you reach for it is a
+   control you miss. */
+.bell-count {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 1.1rem;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.1rem;
+  text-align: center;
+}
+/* Not a count. The feed is not arriving at all, and the bell is the only thing on screen that
+   could say so while the panel is shut. */
+.bell-count.warn { background: var(--warn); color: #1a1a1a; }
+
+/* Over the page, not in the bar. The bar is one row high and this is a list; expanding it would
+   push the whole layout down every time somebody looked. */
+.bell-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: min(28rem, calc(100vw - 2rem));
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  text-align: left;
+}
+.bell-panel header h2 { margin: 0 0 8px; font-size: 0.95rem; }
+
+/* Present for a screen reader, absent for everything else. The emoji is the whole of the visible
+   label, and an emoji is not a name. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .arn-list { list-style: none; padding: 0; margin: 0; }
 .arn-list li { padding: 4px 0; border-bottom: 1px solid var(--border); }
 /* 위험 카드의 대상 줄. 표기 자체는 영향도 패널과 같은 컴포넌트가 그리므로 여기서는 이름과 태그
