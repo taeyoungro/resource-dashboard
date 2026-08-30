@@ -63,7 +63,11 @@ function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdra
   disabled: boolean;
 }) {
   const requests = detail.passrole?.requested_by ?? [];
-  if (requests.length === 0) return null;
+  const granted = new Set(detail.passrole?.granted_to ?? []);
+  // Tag removed, grant still standing. Not requests - there is nothing to grant - so they get
+  // their own group below and only one thing can be done with them.
+  const withdrawnTags = detail.passrole?.untagged ?? [];
+  if (requests.length === 0 && withdrawnTags.length === 0) return null;
 
   const services = detail.passrole?.services ?? [];
   // No service means no grant can be written: the condition would have to be invented, and an
@@ -92,7 +96,9 @@ function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdra
   return (
     <>
       <h3>
-        PassRole 요청 <span className="muted small">{requests.length}건</span>
+        PassRole <span className="muted small">
+          요청 {requests.length}건{withdrawnTags.length > 0 ? ` · 회수 대기 ${withdrawnTags.length}건` : ""}
+        </span>
       </h3>
       <p className="muted small">
         이 역할을 서비스에 넘길 수 있게 해 달라는 요청입니다. 원본 역할에{" "}
@@ -101,7 +107,7 @@ function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdra
         별개의 결정이고, 아래에서 이름을 고른 사람에게만 부여됩니다.
       </p>
 
-      {!grantable && (
+      {!grantable && requests.length > 0 && (
         <div className="warn-inline">
           이 역할의 신뢰 정책이 어떤 서비스도 맡기지 않습니다. 조건 없는 PassRole 은 역할을
           아무 서비스에나 넘길 수 있게 하므로, 부여할 수 없습니다. 원본 역할의 신뢰 정책을 먼저
@@ -112,49 +118,91 @@ function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdra
       <p className="muted small">
         <strong>고르지 않은 것은 회수가 아닙니다.</strong> 이미 부여된 권한은 그대로 남습니다 —
         지난번에 부여받은 사람을 이번에 고르지 않았다고 해서 그 사람의 권한이 사라지지는 않습니다.
-        되돌리려면 <strong>회수</strong>를 골라야 합니다.
+        되돌리려면 <strong>회수</strong>를 골라야 합니다. 지금 누가 가지고 있는지는 아래
+        <strong>지금 상태</strong> 열에 있습니다.
       </p>
 
-      <table className="policy-table">
-        <thead>
-          <tr>
-            <th>결정</th>
-            <th>요청한 사람</th>
-            <th>넘길 수 있게 되는 서비스</th>
-          </tr>
-        </thead>
-        <tbody>
-          {requests.map((name) => (
-            <tr key={name}>
-              <td>
-                <select
-                  value={choiceOf(name)}
-                  disabled={disabled}
-                  onChange={(e) =>
-                    setChoice(name, e.target.value as "grant" | "none" | "revoke")}
-                >
-                  <option value="none">그대로 두기</option>
-                  <option value="grant" disabled={!grantable}>부여</option>
-                  <option value="revoke">회수</option>
-                </select>
-              </td>
-              <td><code>{name}</code></td>
-              <td className="finding-actions">
-                {services.length === 0
-                  ? <span className="muted">없음</span>
-                  : services.map((s) => <code key={s}>{s}</code>)}
-              </td>
+      {requests.length > 0 && (
+        <table className="policy-table">
+          <thead>
+            <tr>
+              <th>결정</th>
+              <th>요청한 사람</th>
+              <th>지금 상태</th>
+              <th>넘길 수 있게 되는 서비스</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {requests.map((name) => (
+              <tr key={name}>
+                <td>
+                  <select
+                    value={choiceOf(name)}
+                    disabled={disabled}
+                    onChange={(e) =>
+                      setChoice(name, e.target.value as "grant" | "none" | "revoke")}
+                  >
+                    <option value="none">그대로 두기</option>
+                    <option value="grant" disabled={!grantable}>부여</option>
+                    <option value="revoke">회수</option>
+                  </select>
+                </td>
+                <td><code>{name}</code></td>
+                <td>
+                  {granted.has(name)
+                    ? <span className="badge badge-warn">부여됨</span>
+                    : <span className="badge">미부여</span>}
+                </td>
+                <td className="finding-actions">
+                  {services.length === 0
+                    ? <span className="muted">없음</span>
+                    : services.map((s) => <code key={s}>{s}</code>)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
-      <p className="muted small">
-        태그를 이미 뗀 사람은 이 목록에 없고, 그 사람의 권한은 여기서 회수할 수 없습니다. 화면은
-        권한 세트의 인라인 정책을 읽지 못하므로 — 읽을 권한을 갖지 않는 것이 설계입니다 — 지금
-        누구에게 부여되어 있는지 알 수 있는 곳이 없습니다. 태그와 실제 부여를 대조하는 주기 대사가
-        아직 없어서 생기는 공백입니다.
-      </p>
+      {withdrawnTags.length > 0 && (
+        <>
+          <h4>태그가 제거된 사람 <span className="muted small">{withdrawnTags.length}명</span></h4>
+          <p className="muted small">
+            원본 역할에서 태그가 <strong>제거되었는데 권한은 그대로 남아 있는</strong> 사람입니다.
+            태그를 떼는 것이 요청을 거두는 방법이므로, 이것은 회수 요청으로 읽어야 합니다. 여기서
+            회수하지 않으면 권한은 계속 유지됩니다 — 이 화면 말고는 그 짝을 다시 말해 주는 곳이
+            없습니다.
+          </p>
+          <table className="policy-table">
+            <thead>
+              <tr>
+                <th>결정</th>
+                <th>사람</th>
+                <th>지금 상태</th>
+              </tr>
+            </thead>
+            <tbody>
+              {withdrawnTags.map((name) => (
+                <tr key={name} className="marker-lock">
+                  <td>
+                    <select
+                      value={withdrawn.includes(name) ? "revoke" : "none"}
+                      disabled={disabled}
+                      onChange={(e) =>
+                        setChoice(name, e.target.value === "revoke" ? "revoke" : "none")}
+                    >
+                      <option value="none">그대로 두기</option>
+                      <option value="revoke">회수</option>
+                    </select>
+                  </td>
+                  <td><code>{name}</code></td>
+                  <td><span className="badge badge-danger">태그 없이 부여됨</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
 
       <p className="muted small">
         부여 대상:{" "}

@@ -1567,8 +1567,10 @@ const ASKED = {
 test('the requests reach the page so an approver can see what is being asked', async () => {
   const { route } = harness({ planOutputs: ASKED });
   const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
-  assert.deepEqual(detail.passrole,
-    { requested_by: ['alice'], services: ['lambda.amazonaws.com'], target_arn: null });
+  assert.deepEqual(detail.passrole, {
+    requested_by: ['alice'], granted_to: [], untagged: [],
+    services: ['lambda.amazonaws.com'], target_arn: null,
+  });
 });
 
 test('approving the plan grants nothing on its own', async () => {

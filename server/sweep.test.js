@@ -806,6 +806,8 @@ test('the requests are read from the plan outputs, and a value terraform cannot 
     };
     assert.deepEqual(passroleFromPlan(plan), {
       requested_by: ['alice', 'bob'],
+    granted_to: [],
+    untagged: [],
       services: ['lambda.amazonaws.com'],
       target_arn: null,
     });
@@ -822,7 +824,7 @@ test('after_unknown is not read as a value', () => {
   // requests nobody made - and a name on this screen is what an approver ticks.
   assert.deepEqual(
     passroleFromPlan({ output_changes: { passrole_requested_by: { after_unknown: ['alice'] } } }),
-    { requested_by: [], services: [], target_arn: null });
+    { requested_by: [], granted_to: [], untagged: [], services: [], target_arn: null });
 });
 
 test('a plan with no passrole outputs answers empty rather than undefined', () => {
@@ -830,7 +832,7 @@ test('a plan with no passrole outputs answers empty rather than undefined', () =
   // page reads .requested_by.length without checking.
   for (const plan of [null, {}, { output_changes: {} }, { output_changes: { other: {} } }]) {
     assert.deepEqual(passroleFromPlan(plan),
-      { requested_by: [], services: [], target_arn: null });
+      { requested_by: [], granted_to: [], untagged: [], services: [], target_arn: null });
   }
 });
 
@@ -930,4 +932,24 @@ test('the other three kinds are not locks and do not claim to be', async () => {
   assert.equal(row.blocks_further_writes, false);
   assert.equal(row.permission_set, null);
   assert.equal(row.request_id, '644701781058-6666666666666666');
+});
+
+
+test('the two lists the request list cannot answer travel with it', () => {
+  // granted_to says who HOLDS the grant; untagged says whose tag was removed while their grant
+  // stands. Neither is derivable from requested_by - the first is state and the second is a name
+  // that is deliberately NOT in it.
+  const answer = passroleFromPlan({
+    output_changes: {
+      passrole_requested_by: { after: ['alice', 'bob'] },
+      passrole_granted_to: { after: ['bob', 'carol'] },
+      passrole_untagged: { after: ['carol'] },
+      passrole_services: { after: ['lambda.amazonaws.com'] },
+    },
+  });
+  assert.deepEqual(answer.requested_by, ['alice', 'bob']);
+  assert.deepEqual(answer.granted_to, ['bob', 'carol']);
+  assert.deepEqual(answer.untagged, ['carol'], 'the withdrawal is not carried to the page');
+  // carol is granted and untagged, and must NOT read as a request - there is nothing to grant.
+  assert.ok(!answer.requested_by.includes('carol'));
 });

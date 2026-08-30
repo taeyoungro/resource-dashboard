@@ -248,6 +248,25 @@ export interface PassroleRequests {
   /** Identity Center user names read off the source role's tags. Empty on a plan with no request. */
   requested_by: string[];
   /**
+   * Who HOLDS the grant right now, read by the inspector out of those users' permission sets. A
+   * name here and in requested_by is already granted and the decision is whether to leave it; a
+   * name in requested_by only is asking.
+   *
+   * Without this a list of names says nothing about state, so "grant" and "leave alone" are the
+   * same word on the screen.
+   */
+  granted_to: string[];
+  /**
+   * Whose tag was REMOVED while their grant stands. Never in requested_by - there is nothing left
+   * to grant - and offered for withdrawal only.
+   *
+   * A request is a tag and removing it is how the request is withdrawn. The role afterwards does
+   * not carry it, so reading the role's tags saw every request and no withdrawal, and the grant
+   * stayed standing with nothing anywhere naming it. These come from the UntagRole events in the
+   * inspection's own marker, which is the only place a removal exists.
+   */
+  untagged: string[];
+  /**
    * The services the grant may be conditioned on, from the mirror role's trust policy. A role can
    * only be assumed by a service it trusts, so passing it to any other grants nothing. Empty means
    * no grant can be written: the condition would have to be invented.

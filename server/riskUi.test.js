@@ -1351,3 +1351,45 @@ test('the cut colours reach both the edge and the badge, and clear the filled on
   assert.match(CSS, /\.finding\.contained-full \.grade\.grade-asset[\s\S]{0,120}?\{[^}]*color:/,
                'the asset grade badge is recoloured by a cut path');
 });
+
+
+// ---- the two questions a PassRole panel has to answer -------------------------------------------
+
+test('every request row says whether that person already holds the grant', () => {
+  // Without it a list of names says nothing about state, so "부여" and "그대로 두기" are the same
+  // word: an approver cannot tell who is asking from who already has it.
+  assert.match(DETAIL, /granted_to/,
+    'the panel does not read who currently holds the grant');
+  assert.match(DETAIL, /granted\.has\(name\)/,
+    'the grant state is read and not shown per row');
+  assert.match(DETAIL, /부여됨/, 'no row says a person already holds the grant');
+  assert.match(DETAIL, /미부여/, 'no row says a person does not');
+});
+
+test('a tag that was removed while the grant stands gets its own group and a way to revoke', () => {
+  // Removing the tag is how a request is withdrawn. The role afterwards does not carry it, so
+  // reading the role's tags saw every request and no withdrawal - and the grant stayed standing
+  // with nothing anywhere naming it. These names are never in requested_by; there is nothing to
+  // grant, so the only control offered is 회수.
+  assert.match(DETAIL, /passrole\?\.untagged/, 'the withdrawn tags are not read');
+  assert.match(DETAIL, /태그가 제거된 사람/, 'the withdrawn tags have no section of their own');
+  // The guard, not just the strings. This is a regex over source, so a section disabled with a
+  // constant keeps every string in it and every assertion above still passes.
+  assert.match(DETAIL, /\{withdrawnTags\.length > 0 && \(/,
+    'the withdrawn group is not rendered under the condition that it has members');
+  assert.match(DETAIL, /태그 없이 부여됨/, 'the state of a withdrawn tag is not stated');
+  // And no grant option in that table: the block between its header and its close must offer
+  // 회수 without 부여.
+  const block = DETAIL.slice(DETAIL.indexOf('태그가 제거된 사람'));
+  const table = block.slice(0, block.indexOf('</table>'));
+  assert.ok(!/<option value="grant"/.test(table),
+    'a withdrawn tag is offered for granting, and there is no request left to grant');
+  assert.match(table, /<option value="revoke"/);
+});
+
+test('the panel still renders when every tag was removed and nothing is being asked', () => {
+  // requests.length === 0 with withdrawals is the ordinary shape of "somebody untagged the last
+  // request". Returning null there would hide the grants that are still standing.
+  assert.match(DETAIL, /requests\.length === 0 && withdrawnTags\.length === 0/,
+    'the panel hides itself when there are withdrawals and no requests');
+});

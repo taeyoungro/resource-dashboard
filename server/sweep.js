@@ -211,6 +211,17 @@ export function requestersFromConfig(document) {
  * requested_by again - this page is the untrusted tier and its list is a convenience, not the
  * authority.
  *
+ * Two more lists, and they answer questions requested_by cannot:
+ *
+ *   granted_to  who HOLDS the grant right now, read by the inspector out of the permission sets'
+ *               own inline policies. Without it a list of names says nothing about state, so
+ *               "grant" and "leave alone" are the same word on the screen
+ *   untagged    whose tag was REMOVED while their grant stands. A request is a tag and removing it
+ *               is how the request is withdrawn; the role afterwards does not carry it, so reading
+ *               the role's tags saw every request and no withdrawal. These names are not in
+ *               requested_by and must not be - there is nothing to grant. They are offered for
+ *               withdrawal only
+ *
  * target_arn is null on a role that does not exist yet: terraform reports "(known after apply)" and
  * there is no ARN to show until the apply produces one. That is not a reason to withhold the
  * request - the approver is deciding about a role the same plan is creating.
@@ -231,6 +242,8 @@ export function passroleFromPlan(planJson) {
   const arn = after('passrole_target_arn');
   return {
     requested_by: [...new Set(list('passrole_requested_by'))].sort(),
+    granted_to: [...new Set(list('passrole_granted_to'))].sort(),
+    untagged: [...new Set(list('passrole_untagged'))].sort(),
     services: [...new Set(list('passrole_services'))].sort(),
     target_arn: typeof arn === 'string' && arn.trim() ? arn.trim() : null,
   };
