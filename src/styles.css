@@ -392,14 +392,14 @@ pre.plan {
 .refusal .meta { gap: 0.9rem; }
 
 /* An inspection that STOPPED rather than refused. Same block, warn instead of danger, because the
-   two send a person to opposite places: a refusal is theirs to fix and this one is the pipeline's
-   own to retry. Red on a state lock timeout reads as "go and change the resource". */
-.refusal-retrying {
+   two send a person to opposite places: one is theirs to fix, the other is theirs to re-run. Red on
+   a state lock timeout reads as "go and change the resource". */
+.refusal-stopped {
   border-color: var(--warn);
   border-left-color: var(--warn);
   background: rgba(154, 103, 0, 0.08);
 }
-.refusal-retrying > strong { color: var(--warn); }
+.refusal-stopped > strong { color: var(--warn); }
 
 .warn, .warn-inline {
   padding: 0.6rem 0.8rem;

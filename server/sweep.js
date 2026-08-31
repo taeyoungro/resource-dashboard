@@ -51,8 +51,10 @@ const OUTCOME_ARTIFACT = 'outcome.json';
  *   retryable false   a REFUSAL. The run completed and there is nothing to plan. Nothing moves
  *                     until somebody changes the resource
  *   retryable true    an ATTEMPT that stopped - a plan lock held by another run, a throttled call,
- *                     an upload that did not land. The marker is still there and the task will run
- *                     again; nobody has to do anything unless it keeps happening
+ *                     an upload that did not land. Another attempt could go differently, but
+ *                     NOTHING SCHEDULES ONE: the inspector's rule retries cover EventBridge failing
+ *                     to start the task, and once it starts the rule is finished with the event.
+ *                     Both kinds end with a person; this decides which person and doing what
  *
  * The gap the first closes: a refusal is a completed run, so the marker is deleted, so the request
  * used to vanish - the reason existed in CloudWatch and nowhere a person at this page would ever
@@ -646,7 +648,7 @@ function refusalFor(refusal, requestId, object) {
     reason: refusal.reason,
     refused_at: refusal.refused_at ?? object?.lastModified ?? null,
     supersedes_plan: Boolean(requestId),
-    // Whether the pipeline will try again, and therefore whether this is anybody's to act on. The
+    // Whether another attempt could reach a different answer - not whether one is scheduled. The
     // container writes it; false is the right reading for a record stored before the field existed,
     // because every record written then was a verdict - the retryable kind had no writer at all.
     retryable: refusal.retryable === true,
@@ -657,7 +659,7 @@ function refusalFor(refusal, requestId, object) {
  *
  * The kind matters here too and for the same reason it matters on a row that has a plan. There has
  * never been a plan either way, but a refusal says there will not be one until somebody changes the
- * resource, and a retryable failure says the pipeline has not got through yet.
+ * resource, and a stopped attempt says one more inspection might produce it.
  */
 function refusedOnly(planId, refusal, object, artifacts) {
   const colon = planId.indexOf(':');
@@ -670,7 +672,7 @@ function refusedOnly(planId, refusal, object, artifacts) {
     plan_etag: null,
     plan_bytes: null,
     artifacts: [...artifacts.keys()].sort(),
-    state: refusal.retryable === true ? 'retrying' : 'refused',
+    state: refusal.retryable === true ? 'stopped' : 'refused',
     outcome: null,
     assessment: 'unavailable',
     assessment_digest_stored: false,
@@ -813,11 +815,14 @@ function planState(manifest, outcome, requestId, decidedRequestIds, refusal) {
   // attempt to plan the current one did not produce one - so "awaiting decision" would be answering
   // a question nobody asked while the one that was asked went unmentioned.
   //
-  // Two states and not one, because the row is where somebody decides whether to go and look. A
-  // refusal is nobody's decision and everybody's problem: it stays that way until the resource
-  // changes. A retryable failure is the pipeline's own, and calling it 계획 거부됨 sent an
+  // Two states and not one, because the row is where somebody decides whether to go and look,
+  // and the two call for different things. A refusal stays true until the resource changes. A
+  // stopped inspection could go differently on another run - and calling it 계획 거부됨 sent an
   // administrator to edit a resource that a lock timeout had nothing to do with.
-  if (refusal?.supersedes_plan) return refusal.retryable ? 'retrying' : 'refused';
+  //
+  // `stopped` and not `retrying`: nothing re-runs it. A name that says an attempt is under way
+  // would leave somebody waiting for a task that no rule will start.
+  if (refusal?.supersedes_plan) return refusal.retryable ? 'stopped' : 'refused';
   if (manifest?.has_changes === false) return 'no_changes';
   // Decided means an approval marker is sitting in applier/ and the applier has not finished with
   // it yet. It disappears when the applier does, and outcome.json takes its place.
@@ -916,10 +921,11 @@ export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}
       // request that produced nothing and used to leave no trace at all. A number here is what
       // makes "I changed something and nothing happened" answerable at a glance.
       refused: plans.filter((p) => p.state === 'refused').length,
-      // Beside it rather than folded into it. A number here that does not fall on the next sweep is
-      // the shape of a request the pipeline cannot get through, which is a different thing to look
-      // at from a resource somebody has to edit.
-      retrying: plans.filter((p) => p.state === 'retrying').length,
+      // Beside it rather than folded into it. Nothing clears this on its own - a stopped
+      // inspection is not re-run by anything - so a number here is a request that has not reached a
+      // plan and will not until somebody acts. A different thing to look at from a resource that
+      // has to be edited, and the same in one respect: neither resolves itself.
+      stopped: plans.filter((p) => p.state === 'stopped').length,
     },
   };
 }

@@ -301,7 +301,7 @@ test('newest plan first', async () => {
 test('an empty bucket is an empty answer and not an error', async () => {
   const state = await sweep(fakeS3({}), CONFIG, { now: NOW });
   assert.deepEqual(state.counts,
-                   { failed: 0, running: 0, awaiting_decision: 0, refused: 0, retrying: 0 });
+                   { failed: 0, running: 0, awaiting_decision: 0, refused: 0, stopped: 0 });
   assert.deepEqual(state.errors, []);
 });
 
@@ -1531,7 +1531,7 @@ test('an outcome about an earlier inspection does not decide the current plan', 
 
 const LOCK_TIMEOUT = 'plan failed: terraform plan timed out on the state lock';
 
-test('a failed attempt is its own state, not 계획 거부됨', async () => {
+test('a stopped inspection is its own state, not 계획 거부됨', async () => {
   const plan = planFixture('644701781058', 'ps-Taeyoung',
                            { at: ago(600), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
   const fixture = withRefusal(plan, {
@@ -1541,14 +1541,14 @@ test('a failed attempt is its own state, not 계획 거부됨', async () => {
   const state = await sweep(fakeS3({ [BUCKET]: fixture.objects }, fixture.bodies), CONFIG,
                             { now: NOW });
   const [row] = state.plans;
-  assert.equal(row.state, 'retrying',
+  assert.equal(row.state, 'stopped',
                'a lock timeout was reported as 계획 거부됨, which sends somebody to edit a '
                + 'resource that was never broken');
   assert.equal(row.refusal.retryable, true);
   assert.equal(row.refusal.reason, LOCK_TIMEOUT, 'the sentence reaches the page verbatim');
   assert.equal(row.refusal.supersedes_plan, true,
                'it still outranks what the plan says it is waiting for');
-  assert.equal(state.counts.retrying, 1);
+  assert.equal(state.counts.stopped, 1);
   assert.equal(state.counts.refused, 0, 'counted apart, because they are looked at differently');
 });
 
@@ -1585,7 +1585,7 @@ test('a first inspection that stopped is not reported as a resource nobody can p
   const state = await sweep(fakeS3({ [BUCKET]: objects }, bodies), CONFIG, { now: NOW });
   assert.deepEqual(state.errors, [], 'the record was reported as an incomplete upload');
   const [row] = state.plans;
-  assert.equal(row.state, 'retrying');
+  assert.equal(row.state, 'stopped');
   assert.equal(row.refusal.supersedes_plan, false, 'there is no plan for it to supersede');
 });
 

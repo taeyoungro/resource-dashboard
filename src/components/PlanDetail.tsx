@@ -1005,27 +1005,31 @@ export function PlanDetail({
  *                      part nothing said before
  */
 /**
- * Why the last inspection produced no plan — and, separately, whether that is anybody's to act on.
+ * Why the last inspection produced no plan — and what the person reading it should do next.
  *
- * Two kinds behind one artifact. A refusal is a verdict: reading the same resource refuses the same
- * way forever, so the sentence names something a person has to change. A retryable failure is the
- * pipeline's own — a plan lock held by another run, a throttled call, an upload that did not land —
- * and its task is queued to run again.
+ * Two kinds behind one artifact, and the difference is the ACTION, not the severity. A refusal is a
+ * verdict: reading the same resource refuses the same way forever, so the sentence names something
+ * to change. A stopped attempt — a plan lock held by another run, a throttled call, an upload that
+ * did not land — could go differently on another run.
  *
  * They were rendered identically, which was worse than the silence the artifact was written to end:
  * an administrator reading "위 사유가 가리키는 것을 고치고 자원을 다시 변경하십시오" after a state
- * lock timeout goes and edits a resource that was never broken, and the thing that actually needs
- * looking at — a request the pipeline cannot get through — goes unmentioned.
+ * lock timeout goes and edits a resource that was never broken.
+ *
+ * What this must NOT say is that a retry is coming. Nothing re-runs a stopped inspection: the rule's
+ * RetryPolicy covers EventBridge failing to START the task, and once it starts the rule is finished
+ * with the event (opt-stack-ecs-runtime.yaml). Telling somebody to wait is the same failure as
+ * telling them to fix the wrong thing — it ends with nobody acting, which is where this began.
  */
 function RefusalNotice({ refusal, planStored }: { refusal: PlanRefusal; planStored: boolean }) {
-  const retrying = refusal.retryable;
+  const stopped = refusal.retryable;
   return (
-    <div className={retrying ? "refusal refusal-retrying" : "refusal"}>
+    <div className={stopped ? "refusal refusal-stopped" : "refusal"}>
       <strong>
-        {retrying
+        {stopped
           ? (planStored
-            ? "마지막 검사가 끝나지 못해 이 계획은 최신이 아닙니다. 다시 시도됩니다."
-            : "이 자원의 검사가 끝나지 못했습니다. 다시 시도됩니다.")
+            ? "마지막 검사가 끝나지 못해 이 계획은 최신이 아닙니다."
+            : "이 자원의 검사가 끝나지 못해 계획이 만들어지지 않았습니다.")
           : (planStored
             ? "마지막 검사가 거부되어 이 계획은 최신이 아닙니다."
             : "이 자원의 검사가 거부되어 계획이 만들어지지 않았습니다.")}
@@ -1034,21 +1038,24 @@ function RefusalNotice({ refusal, planStored }: { refusal: PlanRefusal; planStor
       <pre className="plan">{refusal.reason}</pre>
       <div className="meta small">
         <span>
-          {retrying ? "실패 시각" : "거부 시각"}:{" "}
+          {stopped ? "멈춘 시각" : "거부 시각"}:{" "}
           {refusal.refused_at ? clock(refusal.refused_at) : "—"}
         </span>
         <span>요청: {refusal.request_id ?? "—"}</span>
         {refusal.kind && <span>유형: {refusal.kind}</span>}
       </div>
-      {retrying ? (
+      {stopped ? (
         <p>
-          <strong>고칠 것이 없습니다</strong> — 자원이 아니라 검사 자체가 멈췄고, 그 작업의 마커가
-          마커 버킷에 남아 있어 다시 실행됩니다.{" "}
+          <strong>자원은 고칠 것이 없을 수 있습니다</strong> — 거부가 아니라 검사가 도중에 멈춘
+          것이고, 한 번 더 돌면 계획이 나올 수 있습니다. 위 사유가 무엇을 기다리다 멈췄는지
+          말합니다.{" "}
+          <strong>다만 자동으로 다시 돌지는 않습니다</strong> — 규칙의 재시도는 작업을 시작하지
+          못한 경우를 덮고, 시작한 뒤 실패한 작업은 그 규칙이 손을 뗍니다. 자원을 다시 변경하면
+          새 검사가 시작됩니다.{" "}
           {planStored
-            ? "아래 계획은 그 이전 검사가 만든 것이므로, 재시도가 성공하면 새 계획이 이 계획을 덮습니다. "
-            : "재시도가 성공하면 계획이 이 자리에 나타납니다. "}
-          같은 사유로 계속 실패하면 그때는 사람이 볼 일입니다 — 위 사유가 무엇을 기다리다 멈췄는지
-          말합니다.
+            ? "그때 만들어지는 계획이 아래 계획을 덮습니다."
+            : "그때 계획이 이 자리에 나타납니다."}{" "}
+          마커 버킷 <code>inspector/</code> 에 이 요청의 마커가 남아 있습니다.
         </p>
       ) : planStored ? (
         <p>
