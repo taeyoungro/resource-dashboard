@@ -1004,22 +1004,53 @@ export function PlanDetail({
  *                      approvable and describes an EARLIER version of the resource, which is the
  *                      part nothing said before
  */
+/**
+ * Why the last inspection produced no plan — and, separately, whether that is anybody's to act on.
+ *
+ * Two kinds behind one artifact. A refusal is a verdict: reading the same resource refuses the same
+ * way forever, so the sentence names something a person has to change. A retryable failure is the
+ * pipeline's own — a plan lock held by another run, a throttled call, an upload that did not land —
+ * and its task is queued to run again.
+ *
+ * They were rendered identically, which was worse than the silence the artifact was written to end:
+ * an administrator reading "위 사유가 가리키는 것을 고치고 자원을 다시 변경하십시오" after a state
+ * lock timeout goes and edits a resource that was never broken, and the thing that actually needs
+ * looking at — a request the pipeline cannot get through — goes unmentioned.
+ */
 function RefusalNotice({ refusal, planStored }: { refusal: PlanRefusal; planStored: boolean }) {
+  const retrying = refusal.retryable;
   return (
-    <div className="refusal">
+    <div className={retrying ? "refusal refusal-retrying" : "refusal"}>
       <strong>
-        {planStored
-          ? "마지막 검사가 거부되어 이 계획은 최신이 아닙니다."
-          : "이 자원의 검사가 거부되어 계획이 만들어지지 않았습니다."}
+        {retrying
+          ? (planStored
+            ? "마지막 검사가 끝나지 못해 이 계획은 최신이 아닙니다. 다시 시도됩니다."
+            : "이 자원의 검사가 끝나지 못했습니다. 다시 시도됩니다.")
+          : (planStored
+            ? "마지막 검사가 거부되어 이 계획은 최신이 아닙니다."
+            : "이 자원의 검사가 거부되어 계획이 만들어지지 않았습니다.")}
       </strong>
       {/* The sentence the container wrote, unchanged. */}
       <pre className="plan">{refusal.reason}</pre>
       <div className="meta small">
-        <span>거부 시각: {refusal.refused_at ? clock(refusal.refused_at) : "—"}</span>
+        <span>
+          {retrying ? "실패 시각" : "거부 시각"}:{" "}
+          {refusal.refused_at ? clock(refusal.refused_at) : "—"}
+        </span>
         <span>요청: {refusal.request_id ?? "—"}</span>
         {refusal.kind && <span>유형: {refusal.kind}</span>}
       </div>
-      {planStored ? (
+      {retrying ? (
+        <p>
+          <strong>고칠 것이 없습니다</strong> — 자원이 아니라 검사 자체가 멈췄고, 그 작업의 마커가
+          마커 버킷에 남아 있어 다시 실행됩니다.{" "}
+          {planStored
+            ? "아래 계획은 그 이전 검사가 만든 것이므로, 재시도가 성공하면 새 계획이 이 계획을 덮습니다. "
+            : "재시도가 성공하면 계획이 이 자리에 나타납니다. "}
+          같은 사유로 계속 실패하면 그때는 사람이 볼 일입니다 — 위 사유가 무엇을 기다리다 멈췄는지
+          말합니다.
+        </p>
+      ) : planStored ? (
         <p>
           아래 계획은 그 이전 검사가 만든 것이고 지금의 자원을 설명하지 않습니다. 그대로 승인할 수는
           있으나, 승인하면 거부된 검사 이전의 spec이 적용됩니다. 위 사유가 가리키는 것을 고치고 자원을

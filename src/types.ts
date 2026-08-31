@@ -74,12 +74,19 @@ export interface PlanSummary {
    * applied            the applier applied it and recorded outcome.json
    * closed             the applier finished with it without applying - a denial
    * no_changes         the twin already matches the spec; nothing to decide
-   * refused            the LAST inspection of this resource produced no plan. Either there has
-   *                    never been one, or the one stored here is older than that inspection - the
-   *                    spec moved on and planning the current version failed. Nobody's decision;
-   *                    somebody has to change the resource
+   * refused            the LAST inspection of this resource produced no plan AND will refuse the
+   *                    same way again. Either there has never been one, or the one stored here is
+   *                    older than that inspection - the spec moved on and planning the current
+   *                    version cannot succeed. Nobody's decision; somebody has to change the
+   *                    resource
+   * retrying           the last inspection produced no plan and STOPPED - a plan lock held by
+   *                    another run, a throttled call, an upload that did not land. Its marker is
+   *                    still in the bucket and the task will run again. Separate from `refused`
+   *                    because calling it that sent an administrator to edit a resource that a
+   *                    lock timeout had nothing to do with
    */
-  state: "awaiting_decision" | "decided" | "applied" | "closed" | "no_changes" | "refused";
+  state: "awaiting_decision" | "decided" | "applied" | "closed" | "no_changes" | "refused"
+    | "retrying";
   /** Why the last inspection produced no plan, when it did not. See PlanRefusal. */
   refusal: PlanRefusal | null;
 
@@ -129,21 +136,35 @@ export interface PlanSummary {
  * and no row.
  */
 export interface PlanRefusal {
-  /** The inspection that was refused. Compared with the plan's own to decide what this means. */
+  /** The inspection this is about. Compared with the plan's own to decide what it means. */
   request_id: string | null;
   kind: string | null;
   /**
-   * The refusal message verbatim, never a code. What makes it actionable is the sentence -
-   * "12 managed policies including the baseline, and the limit is 10" says remove two.
+   * The container's own sentence, verbatim, never a code. What makes it actionable is the sentence
+   * - "12 managed policies including the baseline, and the limit is 10" says remove two;
+   * "plan failed: terraform plan timed out on the state lock" says wait and look again.
    */
   reason: string;
+  /** When the run stopped. Named for the refusal, which came first; it holds both kinds. */
   refused_at: string | null;
   /**
-   * True when a plan IS stored here and this refusal is newer than it. The plan is real and still
+   * True when a plan IS stored here and this record is newer than it. The plan is real and still
    * approvable, and it describes an earlier version of the resource - which is the thing nothing
    * said before, and the reason the state outranks "awaiting decision".
    */
   supersedes_plan: boolean;
+  /**
+   * Whether the pipeline will try this request again — and therefore whether anybody has to act.
+   *
+   * false is a verdict: reading the same resource refuses the same way forever, so the reason
+   * above names something a person has to change. true is an attempt that stopped, with its marker
+   * still in the bucket and the task queued to run again; the right response is to wait, and to
+   * look only if it keeps happening.
+   *
+   * Records written before the inspector recorded the retryable kind carry no field and read as
+   * false, which is correct: every record written then was a verdict.
+   */
+  retryable: boolean;
 }
 
 export type AssessmentState = "ready" | "in_progress" | "unavailable";

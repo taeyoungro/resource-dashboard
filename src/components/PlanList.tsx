@@ -11,10 +11,15 @@ interface Props {
 }
 
 const stateBadge = (s: PlanSummary["state"]) => {
-  // Loudest of the five, and the only one that is nobody's decision to make. A refusal means the
+  // Loudest of the six, and the only one that is nobody's decision to make. A refusal means the
   // last inspection of this resource produced no plan at all - and before the inspector recorded
   // one, that request left no trace anywhere a person at this page would look.
   if (s === "refused") return <span className="badge badge-danger">계획 거부됨</span>;
+  // The same silence one step in, and NOT the same badge. This inspection stopped rather than
+  // refused - a plan lock, a throttle, an upload that did not land - and its task will run again.
+  // Under 계획 거부됨 it read as "go and fix the resource", which is the wrong place entirely; the
+  // only thing to do here is wait, and look if the number does not fall on the next sweep.
+  if (s === "retrying") return <span className="badge badge-warn">검사 재시도 중</span>;
   if (s === "awaiting_decision") return <span className="badge badge-warn">결정 대기</span>;
   if (s === "decided") return <span className="badge badge-ok">적용기로 넘어감</span>;
   if (s === "applied") return <span className="badge badge-ok">적용됨</span>;

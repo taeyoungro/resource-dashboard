@@ -45,12 +45,25 @@ const MANIFEST_ARTIFACT = 'request.json';
 const OUTCOME_ARTIFACT = 'outcome.json';
 
 /**
- * What a REFUSED inspection leaves behind, written by the inspector into the plan prefix.
+ * Why the last inspection of this resource produced no plan, written by the inspector into the plan
+ * prefix. Two kinds, told apart by `retryable`:
  *
- * The gap it closes: a refusal is a completed run, so the marker is deleted, so the request used
- * to vanish - the reason existed in CloudWatch and nowhere a person at this page would ever be.
- * The observed case was a spec role carrying twelve managed policies against a limit of ten: no
+ *   retryable false   a REFUSAL. The run completed and there is nothing to plan. Nothing moves
+ *                     until somebody changes the resource
+ *   retryable true    an ATTEMPT that stopped - a plan lock held by another run, a throttled call,
+ *                     an upload that did not land. The marker is still there and the task will run
+ *                     again; nobody has to do anything unless it keeps happening
+ *
+ * The gap the first closes: a refusal is a completed run, so the marker is deleted, so the request
+ * used to vanish - the reason existed in CloudWatch and nowhere a person at this page would ever
+ * be. The observed case was a spec role carrying twelve managed policies against a limit of ten: no
  * plan, no failure, no row.
+ *
+ * The second closes the same silence one step in. A retryable failure kept its marker, correctly,
+ * but the marker says only THAT - so a lock timeout and a task killed before it ran a line looked
+ * identical here, and the sentence telling them apart was in CloudWatch. The two kinds are rendered
+ * differently because they send a person to opposite places, and telling somebody to fix a resource
+ * that was never broken is worse than the silence was.
  *
  * It carries the request id that produced it, and that is what keeps it from outliving the
  * problem. The inspector holds no delete on the state bucket, so a later successful inspection
@@ -633,10 +646,19 @@ function refusalFor(refusal, requestId, object) {
     reason: refusal.reason,
     refused_at: refusal.refused_at ?? object?.lastModified ?? null,
     supersedes_plan: Boolean(requestId),
+    // Whether the pipeline will try again, and therefore whether this is anybody's to act on. The
+    // container writes it; false is the right reading for a record stored before the field existed,
+    // because every record written then was a verdict - the retryable kind had no writer at all.
+    retryable: refusal.retryable === true,
   };
 }
 
-/** A resource whose first inspection was refused: a reason, and nothing else to decide about. */
+/** A resource whose FIRST inspection produced no plan: a reason, and nothing else to decide about.
+ *
+ * The kind matters here too and for the same reason it matters on a row that has a plan. There has
+ * never been a plan either way, but a refusal says there will not be one until somebody changes the
+ * resource, and a retryable failure says the pipeline has not got through yet.
+ */
 function refusedOnly(planId, refusal, object, artifacts) {
   const colon = planId.indexOf(':');
   return {
@@ -648,7 +670,7 @@ function refusedOnly(planId, refusal, object, artifacts) {
     plan_etag: null,
     plan_bytes: null,
     artifacts: [...artifacts.keys()].sort(),
-    state: 'refused',
+    state: refusal.retryable === true ? 'retrying' : 'refused',
     outcome: null,
     assessment: 'unavailable',
     assessment_digest_stored: false,
@@ -786,11 +808,16 @@ export function writerVerification(dispatched, results, locks) {
 function planState(manifest, outcome, requestId, decidedRequestIds, refusal) {
   const mine = outcomeFor(outcome, requestId);
   if (mine) return mine.applied ? 'applied' : 'closed';
-  // A refusal NEWER than this plan outranks what the plan says it is waiting for. The plan is
+  // A record NEWER than this plan outranks what the plan says it is waiting for. The plan is
   // real and still approvable, but it describes an earlier version of the resource and the last
-  // attempt to plan the current one failed - so "awaiting decision" would be answering a question
-  // nobody asked while the one that was asked went unmentioned.
-  if (refusal?.supersedes_plan) return 'refused';
+  // attempt to plan the current one did not produce one - so "awaiting decision" would be answering
+  // a question nobody asked while the one that was asked went unmentioned.
+  //
+  // Two states and not one, because the row is where somebody decides whether to go and look. A
+  // refusal is nobody's decision and everybody's problem: it stays that way until the resource
+  // changes. A retryable failure is the pipeline's own, and calling it 계획 거부됨 sent an
+  // administrator to edit a resource that a lock timeout had nothing to do with.
+  if (refusal?.supersedes_plan) return refusal.retryable ? 'retrying' : 'refused';
   if (manifest?.has_changes === false) return 'no_changes';
   // Decided means an approval marker is sitting in applier/ and the applier has not finished with
   // it yet. It disappears when the applier does, and outcome.json takes its place.
@@ -889,6 +916,10 @@ export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}
       // request that produced nothing and used to leave no trace at all. A number here is what
       // makes "I changed something and nothing happened" answerable at a glance.
       refused: plans.filter((p) => p.state === 'refused').length,
+      // Beside it rather than folded into it. A number here that does not fall on the next sweep is
+      // the shape of a request the pipeline cannot get through, which is a different thing to look
+      // at from a resource somebody has to edit.
+      retrying: plans.filter((p) => p.state === 'retrying').length,
     },
   };
 }
