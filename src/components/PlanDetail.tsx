@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
-  AssessmentState, Impact as Assessment, PlanDetail as Detail, PlanRefusal, Restriction,
-  RestrictionTemplate, RiskAnalysisCitation,
+  AssessmentState, Impact as Assessment, PassroleWriter, PlanDetail as Detail, PlanRefusal,
+  Restriction, RestrictionTemplate, RiskAnalysisCitation,
 } from "../types";
 import { mergeTemplate, seedFromTemplate } from "../../server/templates.js";
 import { Impact } from "./Impact";
@@ -31,6 +31,12 @@ interface Props {
     passroleRevokeFrom: string[],
     analysis: RiskAnalysisCitation | null,
   ) => void;
+  /**
+   * Send the work orders again, for the people the inline writer did not reach. Not a decision:
+   * nothing about the grant is chosen here, and the only thing this sends is a list of names the
+   * server has already established the writer failed on.
+   */
+  onRetryPassrole: (users: string[], reviewer: string) => void;
 }
 
 const actionClass = (actions: string[]) => {
@@ -216,8 +222,168 @@ function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdra
   );
 }
 
+/**
+ * Did the inline writer do what this decision dispatched? One row per person it named.
+ *
+ * The gap this closes has a shape: an approver confirms PassRole for three people, the applier
+ * writes three work orders and records `dispatched`, and one writer fails. Every screen said the
+ * decision was applied. The person who asked never got the grant, and nothing anywhere said so -
+ * the reason was in CloudWatch and the lock, which nobody reads, was the only trace.
+ *
+ * So the count is the point. `발송 n건 · 적용 n건` is the sentence, and it is worth reading even
+ * when it matches: a decision that dispatched three and applied three is the only finished shape.
+ *
+ * Retry is offered on exactly the rows the applier would act on. A retry overwrites the writer's
+ * LOCK, and taking a lock from a run that is still going would put a second work order under a task
+ * mid-apply - so it is offered only where the writer RECORDED that its run stopped without writing.
+ * A row with no record at all is not retryable and says why: nothing distinguishes a run still going
+ * from a task that died before it could speak.
+ */
+function PassroleWriters({ writers, disabled, onRetry }: {
+  writers: PassroleWriter[];
+  disabled: boolean;
+  onRetry: (users: string[], reviewer: string) => void;
+}) {
+  // Its own, not the decision form's. A retry is a separate act recorded separately - it lands in
+  // outcome.json's `retries` with this name on it - and the decision form below is for a plan this
+  // one has already been decided, so borrowing its field would ask for a name in the wrong place.
+  const [reviewer, setReviewer] = useState("");
+  if (writers.length === 0) return null;
+
+  const applied = writers.filter((w) => w.ok);
+  const retryable = writers.filter((w) => w.retryable);
+  const waiting = writers.filter((w) => !w.ok && !w.retryable);
+
+  const label = (w: PassroleWriter) => {
+    if (w.ok) return <span className="badge badge-ok">적용됨</span>;
+    if (w.state === "failed") return <span className="badge badge-danger">실패</span>;
+    if (w.state === "refused") return <span className="badge badge-danger">거부됨</span>;
+    if (w.locked) return <span className="badge badge-warn">진행 중</span>;
+    return <span className="badge">기록 없음</span>;
+  };
+
+  // Why, in the row, and not only in a summary. A person looking at one name wants that name's
+  // answer - and the three unrecorded shapes are different problems with different next steps.
+  const why = (w: PassroleWriter) => {
+    if (w.reason) return w.reason;
+    if (w.ok) return "";
+    if (w.locked) {
+      return "작성기가 아직 결과를 남기지 않았습니다. 돌고 있는지 죽었는지 구분할 수 없어 재시도를 "
+        + "걸지 않습니다 — 잠금을 뺏으면 적용 중인 작업 위에 지시를 덮어쓰게 됩니다.";
+    }
+    return "작성기의 기록도 잠금도 없습니다. 이 기능이 들어오기 전에 끝난 발송이거나, 객체가 "
+      + "지워진 것입니다.";
+  };
+
+  const retry = (users: string[]) => {
+    const who = reviewer.trim();
+    if (!who) {
+      window.alert("다시 보낸 사람의 이름을 입력하세요. 기록에 그대로 남습니다.");
+      return;
+    }
+    if (!window.confirm(
+      `${users.join(", ")} 의 작업 지시를 다시 보냅니다.\n\n계획을 다시 적용하지는 않습니다. `
+      + "적용기가 그때 기록해 둔 출력값으로 작업 지시만 새로 쓰고, 인라인 작성기가 다시 돕니다.",
+    )) return;
+    onRetry(users, who);
+  };
+
+  return (
+    <>
+      <h4>
+        인라인 작성기 <span className="muted small">
+          발송 {writers.length}건 · 적용 {applied.length}건
+          {retryable.length > 0 ? ` · 실패 ${retryable.length}건` : ""}
+          {waiting.length > 0 ? ` · 미확인 ${waiting.length}건` : ""}
+        </span>
+      </h4>
+      <p className="muted small">
+        위에서 고른 결정은 사람마다 작업 지시 하나로 나가고, 그것을 받아 권한 세트의 인라인 정책에
+        문장을 쓰는 것은 <strong>다른 컨테이너</strong>입니다.{" "}
+        <strong>발송은 적용이 아닙니다</strong> — 적용 완료라고 적힌 결정이라도 여기서 적용 건수가
+        발송 건수보다 적으면, 그만큼은 승인만 되고 권한은 들어가지 않은 것입니다.
+      </p>
+
+      {retryable.length > 0 && (
+        <div className="warn-inline">
+          {retryable.map((w) => w.user_name).join(", ")} 의 문장이 쓰이지 않았습니다. 승인은
+          기록되어 있고 권한은 들어가지 않은 상태입니다.
+        </div>
+      )}
+
+      <table className="policy-table">
+        <thead>
+          <tr>
+            <th>사람</th>
+            <th>동작</th>
+            <th>작성기</th>
+            <th>원인</th>
+            <th>다시 보내기</th>
+          </tr>
+        </thead>
+        <tbody>
+          {writers.map((w) => (
+            <tr key={w.key || w.user_name} className={w.ok ? undefined : "marker-lock"}>
+              <td><code>{w.user_name}</code></td>
+              <td>{w.action === "revoke" ? "회수" : "부여"}{w.retried ? " (재시도)" : ""}</td>
+              <td>
+                {label(w)}
+                {w.finished_at
+                  ? <div className="muted small">{clock(w.finished_at)}</div>
+                  : null}
+              </td>
+              <td className="small">{why(w) || <span className="muted">—</span>}</td>
+              <td>
+                {w.retryable
+                  ? (
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => retry([w.user_name])}
+                    >
+                      다시 보내기
+                    </button>
+                  )
+                  : <span className="muted small">—</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {retryable.length > 0 && (
+        <div className="decision">
+          <div className="row">
+            <input
+              placeholder="다시 보낸 사람 (기록에 그대로 남습니다)"
+              value={reviewer}
+              onChange={(e) => setReviewer(e.target.value)}
+            />
+            {retryable.length > 1 && (
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => retry(retryable.map((w) => w.user_name))}
+              >
+                실패한 {retryable.length}건 모두 다시 보내기
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <p className="muted small">
+        다시 보내면 <strong>계획을 다시 적용하지 않습니다.</strong> 적용은 이미 끝났고 저장된 계획
+        파일은 두 번 돌지 않습니다 — 적용기는 그때 기록해 둔 출력값으로 작업 지시만 새로
+        씁니다. 잠금을 넘겨받는 것은 작성기가 <strong>그 실행은 끝났고 쓰지 못했다</strong>고 남긴
+        경우뿐입니다.
+      </p>
+    </>
+  );
+}
+
 export function PlanDetail({
-  detail, decided, busy, assessmentState, view, onView, onDecide,
+  detail, decided, busy, assessmentState, view, onView, onDecide, onRetryPassrole,
 }: Props) {
   const [reviewer, setReviewer] = useState("");
   const [comment, setComment] = useState("");
@@ -419,14 +585,25 @@ export function PlanDetail({
       {/* The other question. Always rendered on its own view; never on the assessment one, where a
           confirmation sitting under a restriction picker reads as part of the same decision. */}
       {view === "passrole" && (
-        <PassroleRequests
-          detail={detail}
-          confirmed={grantTo}
-          onConfirmed={setGrantTo}
-          withdrawn={revokeFrom}
-          onWithdrawn={setRevokeFrom}
-          disabled={busy || decided}
-        />
+        <>
+          <PassroleRequests
+            detail={detail}
+            confirmed={grantTo}
+            onConfirmed={setGrantTo}
+            withdrawn={revokeFrom}
+            onWithdrawn={setRevokeFrom}
+            disabled={busy || decided}
+          />
+          {/* What became of the LAST decision's work orders. Below the requests, because a request
+              is about what to do next and this is about whether what was decided actually
+              happened - and the second is the one that goes unread if it is not put in front of
+              somebody who came here for the first. */}
+          <PassroleWriters
+            writers={detail.passrole_writers ?? []}
+            disabled={busy}
+            onRetry={onRetryPassrole}
+          />
+        </>
       )}
 
       {/* Both values go into the marker and both are checked before anything is applied. Worth

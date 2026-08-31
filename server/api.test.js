@@ -156,10 +156,14 @@ function stubS3(objects) {
       const name = command.constructor.name;
       const input = command.input ?? {};
       if (name.startsWith('ListObjects')) {
+        // Filtered, because two prefixes in two buckets are now listed for one plan and an
+        // unfiltered listing would answer both with everything.
         return {
-          Contents: Object.keys(objects).map((key) => ({
-            Key: key, Size: objects[key].length, LastModified: new Date(0),
-          })),
+          Contents: Object.keys(objects)
+            .filter((key) => key.startsWith(input.Prefix ?? ''))
+            .map((key) => ({
+              Key: key, Size: objects[key].length, LastModified: new Date(0),
+            })),
         };
       }
       if (name.startsWith('GetObject')) {
@@ -183,7 +187,7 @@ function stubS3(objects) {
 }
 
 function harness({ pushed = null, riskAnalysis = false, assessment = null, planOutputs = null,
-                   noChanges = false, refreshFails = false,
+                   noChanges = false, refreshFails = false, outcome = null, markers = {},
                    makeModelClient = async () => { throw new Error('not configured'); },
                  } = {}) {
   const document = assessment ? JSON.stringify(assessment) : ASSESSMENT_JSON;
@@ -203,11 +207,18 @@ function harness({ pushed = null, riskAnalysis = false, assessment = null, planO
     }),
     [`${PREFIX}impact.json`]: document,
     [`${PREFIX}impact.sha256`]: sha,
+    // What the applier recorded, when a test is about a plan that has been applied. Absent by
+    // default: a prefix with one of these is a plan nobody may decide about again.
+    ...(outcome ? { [`${PREFIX}outcome.json`]: JSON.stringify(outcome) } : {}),
+    // The inline writer's locks and results, in the marker bucket. Same namespace in this stub as
+    // the state bucket, which is harmless because every read of them is prefixed.
+    ...markers,
   });
   const route = routes({
     config: {
       markerBucket: 'opt-solution-markers', stateBucket: 'state',
       applierPrefix: 'applier/', planSuffix: 'plan/', release: 'test',
+      inlineWriterPrefix: 'inline_writer/', inlineResultPrefix: 'inline_result/',
       region: 'us-east-1',
       // What this deployment's own resources are called, for the risk analysis. Defaults here
       // rather than undefined so controlPlane() is exercised the way it runs.
@@ -1801,4 +1812,212 @@ test('an analysis of an earlier assessment cannot be cited on the decision', asy
   assert.equal(detail.assessment_sha256, null);
   assert.notEqual(answer.impact_sha256, null,
     'the analysis named no assessment, so the page would send a citation the decision refuses');
+});
+
+// ---- sending the work orders again -------------------------------------------------------------
+//
+// A retry is not a decision. Which role, which services, and whether the act is a grant or a
+// withdrawal were all settled when the plan was approved; this route authors a list of NAMES, and
+// every one has to be a name the inline writer actually failed on.
+//
+// The narrowness is the point. A retry overwrites the writer's LOCK - the one object in the system
+// that says an execution of a permission set is outstanding - so the applier reads the writer's own
+// record before taking one, and this route refuses any name that record does not mark retryable.
+// Two checks over the same fact, because this tier is the one that is not trusted and the object it
+// writes starts a container.
+
+const RETRY_LOCK = (user) => `inline_writer/${ACCOUNT}:${ACCOUNT}-${user}.json`;
+const RETRY_RESULT = (user) => `inline_result/${ACCOUNT}:${ACCOUNT}-${user}.json`;
+const DISPATCHED = (user, action = 'grant') => ({
+  user_name: user, action, permission_set: `${ACCOUNT}-${user}`, key: RETRY_LOCK(user),
+  retry: false,
+});
+
+/** A plan that was applied, dispatching alice (which failed) and bob (which landed). */
+function applied({ dispatch = [DISPATCHED('alice'), DISPATCHED('bob')], results = {},
+                   locks = [RETRY_LOCK('alice')] } = {}) {
+  const markers = {};
+  for (const [user, body] of Object.entries({
+    alice: { state: 'failed', ok: false, reason: 'terraform apply failed: exit 1' },
+    bob: { state: 'written', ok: true, reason: '' },
+    ...results,
+  })) markers[RETRY_RESULT(user)] = JSON.stringify(body);
+  for (const key of locks) markers[key] = JSON.stringify({ request_id: REQUEST });
+  return harness({
+    outcome: {
+      schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice',
+      decision: 'approve', reviewer: 'kim', applied: true, detail: 'Apply complete!',
+      inline_state: 'dispatched', passrole_dispatch: dispatch, retries: [],
+    },
+    markers,
+  });
+}
+
+const retry = (extra = {}) => ({ users: ['alice'], reviewer: 'someone', ...extra });
+
+test('a retry names the failed target and nothing about the grant itself', async () => {
+  const { route, s3 } = applied();
+  const answer = await route['POST /api/plans/:id/passrole-retry']({
+    params: { id: PLAN_ID }, body: retry(),
+  });
+  assert.ok(answer.written);
+
+  const put = s3.puts.find((p) => p.key.startsWith('applier/'));
+  const marker = JSON.parse(put.body);
+  assert.equal(marker.passrole_retry, true);
+  assert.equal(marker.retry_of, REQUEST, 'the retry does not say which decision it re-dispatches');
+  assert.deepEqual(marker.passrole_grant_to, ['alice']);
+  assert.equal('restrictions' in marker, false, 'a retry carrying a restriction is refused by the '
+               + 'applier - the retry path applies nothing and writes no fence');
+  assert.equal(marker.decision, 'approve');
+});
+
+test('a retry gets its own request id, so two of them are two objects', async () => {
+  const { route, s3 } = applied();
+  await route['POST /api/plans/:id/passrole-retry']({ params: { id: PLAN_ID }, body: retry() });
+  await route['POST /api/plans/:id/passrole-retry']({ params: { id: PLAN_ID }, body: retry() });
+
+  const keys = s3.puts.filter((p) => p.key.startsWith('applier/')).map((p) => p.key);
+  assert.equal(keys.length, 2);
+  assert.notEqual(keys[0], keys[1],
+                  'the second retry replaced the first, whose work order somebody is waiting on');
+  for (const key of keys) {
+    assert.match(key, /^applier\/\d{12}-[0-9a-f]{16}\.json$/);
+    assert.notEqual(key, `applier/${REQUEST}.json`,
+                    'a retry named after the decision it retries collides with the decision');
+  }
+});
+
+test('a retry repeats the act it is retrying and never the opposite one', async () => {
+  const { route, s3 } = applied({
+    dispatch: [DISPATCHED('alice', 'revoke')],
+    results: { alice: { state: 'failed', ok: false, reason: 'AccessDenied' } },
+  });
+  await route['POST /api/plans/:id/passrole-retry']({ params: { id: PLAN_ID }, body: retry() });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.deepEqual(marker.passrole_revoke_from, ['alice']);
+  assert.equal('passrole_grant_to' in marker, false,
+               'a failed withdrawal was retried as a grant, putting back what somebody removed');
+});
+
+test('a writer that finished cannot be retried', async () => {
+  const { route } = applied();
+  await assert.rejects(
+    () => route['POST /api/plans/:id/passrole-retry']({
+      params: { id: PLAN_ID }, body: retry({ users: ['bob'] }),
+    }),
+    (err) => err.status === 409 && /이미 부여가 적용되어 있다/.test(err.message),
+  );
+});
+
+test('a lock with no result cannot be retried, and the message says why', async () => {
+  // The case the gate exists for: a run still going and a task killed before it ran any code leave
+  // the identical object. Taking that lock would put a second work order under a live apply.
+  const { route } = applied({
+    dispatch: [DISPATCHED('carol')], results: {}, locks: [RETRY_LOCK('carol')],
+  });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/passrole-retry']({
+      params: { id: PLAN_ID }, body: retry({ users: ['carol'] }),
+    }),
+    (err) => err.status === 409 && /결과를 남기지 않았다/.test(err.message),
+  );
+});
+
+test('a retry cannot name somebody this decision never dispatched', async () => {
+  // Otherwise the route would be a way to grant PassRole to anyone, with no plan and no approval
+  // behind it - the applier would refuse it, but only after a marker had started a container.
+  const { route } = applied();
+  await assert.rejects(
+    () => route['POST /api/plans/:id/passrole-retry']({
+      params: { id: PLAN_ID }, body: retry({ users: ['mallory'] }),
+    }),
+    (err) => err.status === 409 && /발송한 대상이 아니다/.test(err.message),
+  );
+});
+
+test('a retry needs a name and at least one target', async () => {
+  const { route } = applied();
+  for (const [body, why] of [
+    [retry({ reviewer: '' }), 'reviewer'],
+    [retry({ users: [] }), 'no target'],
+    [retry({ users: ['  '] }), 'blank name'],
+    [retry({ users: 'alice' }), 'not an array'],
+  ]) {
+    await assert.rejects(
+      () => route['POST /api/plans/:id/passrole-retry']({ params: { id: PLAN_ID }, body }),
+      (err) => err.status === 400, why,
+    );
+  }
+});
+
+test('a plan with no recorded outcome has no work orders to send again', async () => {
+  const { route } = harness({});
+  await assert.rejects(
+    () => route['POST /api/plans/:id/passrole-retry']({ params: { id: PLAN_ID }, body: retry() }),
+    (err) => err.status === 409 && /no recorded outcome/.test(err.message),
+  );
+});
+
+test('a decision that was not applied has nothing to send', async () => {
+  const { route } = harness({
+    outcome: {
+      schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice',
+      decision: 'deny', reviewer: 'kim', applied: false, detail: 'denied',
+      passrole_dispatch: [], retries: [],
+    },
+  });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/passrole-retry']({ params: { id: PLAN_ID }, body: retry() }),
+    (err) => err.status === 409 && /closed without applying/.test(err.message),
+  );
+});
+
+test('a retry that is written survives a sweep that is not', async () => {
+  // Same reasoning as the decision route. The marker is in S3 and the applier is starting, so a
+  // rethrown sweep error would answer 500 for a retry that actually happened - and the person
+  // presses again, taking a lock over twice.
+  const base = applied();
+  const { route, s3 } = harness({
+    refreshFails: true,
+    outcome: {
+      schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice',
+      decision: 'approve', reviewer: 'kim', applied: true, detail: 'Apply complete!',
+      inline_state: 'dispatched', passrole_dispatch: [DISPATCHED('alice')], retries: [],
+    },
+    markers: {
+      [RETRY_RESULT('alice')]: JSON.stringify({ state: 'failed', ok: false, reason: 'x' }),
+      [RETRY_LOCK('alice')]: JSON.stringify({ request_id: REQUEST }),
+    },
+  });
+  assert.ok(base);
+  const answer = await route['POST /api/plans/:id/passrole-retry']({
+    params: { id: PLAN_ID }, body: retry(),
+  });
+  assert.ok(answer.written);
+  assert.ok(s3.puts.some((p) => p.key.startsWith('applier/')));
+});
+
+test('the page renders the writer verification and offers retry only where the server would', () => {
+  // Structural, because the runner cannot load the .tsx - and because every test above proves the
+  // SERVER refuses a name the writer did not fail on, while saying nothing about whether the page
+  // ever shows a person that a grant was not written. That is the gap this whole panel exists to
+  // close, and it would close silently if the component stopped rendering.
+  const detail = readFileSync(
+    new URL('../src/components/PlanDetail.tsx', import.meta.url), 'utf8',
+  );
+  assert.match(detail, /<PassroleWriters/,
+               'the writer verification is no longer rendered, so a dispatched grant that was '
+               + 'never written reads as applied again');
+  assert.match(detail, /writers=\{detail\.passrole_writers \?\? \[\]\}/,
+               'the panel is fed something other than the server\'s verification');
+  // The button is offered on w.retryable and nothing else. Offering it on "not ok" would put it on
+  // rows where the applier refuses to take the lock - a run still going, or one that recorded
+  // nothing - and every press would come back 409.
+  assert.match(detail, /\{w\.retryable\s*\n?\s*\?/,
+               'retry is offered on something other than retryable');
+
+  const page = readFileSync(new URL('../src/components/PlanPage.tsx', import.meta.url), 'utf8');
+  assert.match(page, /onRetryPassrole=\{retryPassrole\}/, 'the retry handler is not wired up');
+  assert.match(page, /api\.retryPassrole\(/, 'the handler does not call the retry route');
 });

@@ -222,6 +222,18 @@ export function load() {
     // lock is the document. The request id is in the body.
     inlineWriterPrefix: 'inline_writer/',
 
+    // What the inline writer DID with a work order, written by it on every run that reached a
+    // conclusion and keyed the same way as the lock above - so the pair is found by name.
+    //
+    // The lock says a run did not finish and cannot say why. That was the gap: an approver
+    // confirmed PassRole for three people, the applier dispatched three work orders, outcome.json
+    // said `dispatched`, and one writer failed. The screen said applied. The person who asked never
+    // got the grant and nothing anywhere said so.
+    //
+    // Read, never written. The instance role holds s3:GetObject on the whole marker bucket and
+    // PutObject on applier/ alone, so this prefix is readable here and writable only by the writer.
+    inlineResultPrefix: 'inline_result/',
+
     // The state bucket has no plan prefix any more. Everything terraform produces for one governed
     // resource lives under <account id>/<resource>/, and the plan artifacts are the plan/ subfolder
     // of that - see event_pipeline generator/twin.py. There is therefore no single prefix to list,

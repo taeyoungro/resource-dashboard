@@ -10,7 +10,7 @@
 // decision is recorded with whatever name was given, and CloudTrail records the role, so the
 // gap is between the two and is worth knowing about rather than being reassured out of.
 
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { NotificationError, parse as parseNotification } from './notifications.js';
@@ -203,6 +203,22 @@ function analysisCitation(claim, impactDigest) {
 function describesPlan(plan, document) {
   if (!plan?.request_id || document?.request_id === plan.request_id) return true;
   return (plan.changes ?? []).length === 0;
+}
+
+/**
+ * A fresh request id in the listener's shape: <12 digit account>-<16 hex>.
+ *
+ * Minted here rather than reusing the plan's, and the reason is the marker's other meaning. While
+ * an approval marker exists, that applier task did not complete - so naming a retry after the
+ * decision it retries would put a second retry under the same key as the first, silently replacing
+ * a work order somebody is still waiting on. A distinct id gives each attempt its own object, its
+ * own row when it fails, and its own entry in the record.
+ *
+ * Random rather than counted: nothing here holds a counter, and two administrators retrying the
+ * same plan in the same second must not collide.
+ */
+function retryRequestId(accountId) {
+  return `${accountId}-${randomBytes(8).toString('hex')}`;
 }
 
 function decisionMarker({ config, plan, prefix, payload, now, restrictions = [], impactDigest = '',
@@ -1466,6 +1482,144 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       await store.refresh(`decision on ${id}`).catch((err) => {
         log.warn('decision recorded and the sweep after it failed plan=%s request=%s error=%s '
           + '- the marker is written and the applier has it', id, requestId, err?.message ?? err);
+      });
+      return { written: `s3://${config.markerBucket}/${key}`, marker };
+    },
+
+    /**
+     * Send the work orders again, for the people the inline writer did not reach.
+     *
+     * Not a decision. Everything a grant says - which role, conditioned on which services, for whom
+     * - was decided when the plan was approved, and this changes none of it: the applier reads the
+     * outputs the apply recorded and writes the same work order again. What this route authors is
+     * a list of names, and every one of them has to be a name the writer already failed on.
+     *
+     * That is the whole gate, and it is narrow on purpose. A retry overwrites the inline writer's
+     * LOCK, which is the one thing in the system that says "an execution of this permission set is
+     * outstanding". So the applier reads the writer's own record before taking one, and this route
+     * refuses to name anybody that record does not mark retryable - two checks over the same fact,
+     * because this tier is the one that is not trusted and the marker it writes starts a container.
+     */
+    'POST /api/plans/:id/passrole-retry': async ({ params, body }) => {
+      const id = planId(params.id);
+      const reviewer = String(body.reviewer ?? '').trim();
+      if (!reviewer) throw new HttpError(400, 'reviewer is required');
+      if (reviewer.length > MAX_REVIEWER) throw new HttpError(400, 'reviewer is too long');
+      const comment = String(body.comment ?? '').trim();
+      if (comment.length > MAX_COMMENT) throw new HttpError(400, 'comment is too long');
+
+      const users = body.users ?? [];
+      if (!Array.isArray(users) || users.some((u) => typeof u !== 'string' || !u.trim())) {
+        throw new HttpError(400, 'users must be an array of Identity Center user names');
+      }
+      const named = [...new Set(users.map((u) => u.trim()))].sort();
+      if (named.length === 0) {
+        throw new HttpError(400, 'a retry names the people whose work order is to be sent again');
+      }
+
+      // Read the bucket rather than trusting what the page was showing. A writer that finished
+      // between the page rendering and this request must not be dispatched again - the lock would
+      // be taken over on a run that succeeded, and the applier refuses that anyway, so refusing
+      // here is where the reason can be read.
+      const plan = await readPlan(s3, config, id);
+      if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
+      if (!plan.outcome) {
+        throw new HttpError(
+          409,
+          `${id} has no recorded outcome, so no work orders were dispatched for it. A retry sends `
+          + 'the work orders of a decision that was applied.',
+        );
+      }
+      if (!plan.outcome.applied) {
+        throw new HttpError(409, `${id} was closed without applying, so there is nothing to send`);
+      }
+
+      const writers = new Map((plan.passrole_writers ?? []).map((w) => [w.user_name, w]));
+      const unknown = named.filter((u) => !writers.has(u));
+      if (unknown.length > 0) {
+        throw new HttpError(
+          409,
+          `${unknown.join(', ')} — 이 결정이 발송한 대상이 아니다. 재시도는 이미 나간 작업 지시를 `
+          + '다시 보내는 것이고, 새로 부여하려면 자원을 다시 바꿔 계획을 받아 승인한다.',
+        );
+      }
+      const settled = named.filter((u) => !writers.get(u).retryable);
+      if (settled.length > 0) {
+        // Three shapes land here and the message names which. A finished writer must not be
+        // re-dispatched; a running one must not have its lock taken; one that left no record at all
+        // is the case nothing can tell apart from a running one, which is why it is refused too.
+        const why = settled.map((u) => {
+          const writer = writers.get(u);
+          if (writer.ok) return `${u}: 이미 부여가 적용되어 있다`;
+          if (writer.state === null && writer.locked) {
+            return `${u}: 작성기가 아직 결과를 남기지 않았다. 돌고 있는지 죽었는지 구분할 수 없어 `
+              + '잠금을 뺏지 않는다';
+          }
+          return `${u}: 작성기의 기록이 ${writer.state ?? '없음'}이라 재시도 대상이 아니다`;
+        });
+        throw new HttpError(409, why.join(' / '));
+      }
+
+      // Split by what the original work order was. A retry repeats the act, and repeating a
+      // withdrawal as a grant would put back the very thing somebody removed.
+      const granted = named.filter((u) => writers.get(u).action === 'grant');
+      const revoked = named.filter((u) => writers.get(u).action === 'revoke');
+
+      // From the plan id in the URL, which PLAN_ID already checked, and NOT from the plan's
+      // main.tf.json. The prefix that was just read was built from this same value, so the account
+      // in the marker is by construction the account whose record this retry is about - and the
+      // applier refuses a marker whose prefix and account disagree.
+      const [accountId, resource] = id.split(':');
+      const requestId = retryRequestId(accountId);
+      const marker = {
+        request_id: requestId,
+        plan_id: plan.plan_id,
+        account_id: accountId,
+        resource,
+        decision: 'approve',
+
+        // What makes this a re-dispatch rather than a decision. The applier applies nothing on this
+        // path and refuses a marker that carries a restriction, names nobody, or denies.
+        passrole_retry: true,
+        // Which recorded outcome is being re-dispatched. The applier compares it against the
+        // outcome standing in the prefix and does nothing if a later decision has replaced it.
+        retry_of: plan.request_id,
+
+        reviewer,
+        comment,
+        decided_at: new Date().toISOString(),
+
+        // Carried because the applier's parse requires them, and true of the plan this retry is
+        // about. Nothing on the retry path reads them: no plan file is downloaded and no apply is
+        // run, so they are the record of which plan this was, not a binding to a file.
+        changes_sha256: plan.changes_sha256,
+        plan: {
+          bucket: config.stateBucket,
+          prefix: planPrefixFromId(id),
+          tfplan_sha256: plan.plan_file_sha256,
+        },
+
+        ...(granted.length > 0 ? { passrole_grant_to: granted } : {}),
+        ...(revoked.length > 0 ? { passrole_revoke_from: revoked } : {}),
+
+        issued_by: { component: 'opt-SolutionDashboard', release: config.release },
+        schema: 1,
+      };
+
+      const key = `${config.applierPrefix}${requestId}.json`;
+      const bytes = await putJson(s3, config.markerBucket, key, marker);
+      markerBodies.put('applier', requestId, marker, 'written-here');
+
+      log.info('passrole retry plan=%s request=%s retry_of=%s reviewer=%s granted=%s revoked=%s '
+        + 'key=s3://%s/%s bytes=%d',
+        id, requestId, plan.request_id, reviewer, granted.join(',') || '-',
+        revoked.join(',') || '-', config.markerBucket, key, bytes);
+
+      // Same reasoning as the decision route: the marker is written and the applier is starting, so
+      // a failing sweep must not answer 500 and make a retry that happened read as one that did not.
+      await store.refresh(`passrole retry on ${id}`).catch((err) => {
+        log.warn('retry written and the sweep after it failed plan=%s request=%s error=%s',
+          id, requestId, err?.message ?? err);
       });
       return { written: `s3://${config.markerBucket}/${key}`, marker };
     },

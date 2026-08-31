@@ -531,7 +531,89 @@ function outcomeFor(outcome, requestId) {
     // and the link falls back to the Identity Center console home.
     permission_set_arn: typeof outcome.outputs?.permission_set_arn === 'string'
       ? outcome.outputs.permission_set_arn : null,
+
+    // What the applier said about the work it handed to the inline writer. `dispatched` is the
+    // state that used to be the end of the story and is not: it means the work order was written,
+    // not that the writer did anything with it.
+    inline_state: typeof outcome.inline_state === 'string' ? outcome.inline_state : null,
+    inline_detail: typeof outcome.inline_detail === 'string' ? outcome.inline_detail : '',
+
+    // How many attempts it took. Empty on every decision that needed one.
+    retries: Array.isArray(outcome.retries) ? outcome.retries : [],
   };
+}
+
+/**
+ * Did the inline writer do what this decision dispatched, for each person it named?
+ *
+ * The count is the question. An approver confirms PassRole for three people, the applier writes
+ * three work orders, and outcome.json records `dispatched` - which was the whole of what any screen
+ * could say. One writer failing left a grant that was approved, recorded as sent, never written,
+ * and reported nowhere.
+ *
+ * Three inputs, and each answers something the others cannot:
+ *
+ *   passrole_dispatch   무엇인가   이 결정이 발송한 작업 지시 목록. "몇 명분을 보냈는가"
+ *                       어디 있나  상태 버킷 opt-org-policy-terraform-state 의
+ *                                  <계정>/<자원>/plan/outcome.json, 키 passrole_dispatch
+ *                       누가 쓰나  적용기 하나
+ *   inline_result/…     무엇인가   작성기가 그 지시로 무엇을 했는가. written·refused·failed 와 사유
+ *                       어디 있나  마커 버킷 opt-solution-markers 의
+ *                                  inline_result/<계정>:<권한 세트>.json
+ *                       누가 쓰나  인라인 작성기 하나
+ *   inline_writer/…     무엇인가   그 권한 세트에 대해 아직 끝나지 않은 실행이 있는가 (곧 잠금)
+ *                       어디 있나  같은 버킷의 inline_writer/<계정>:<권한 세트>.json
+ *                       누가 쓰나  적용기가 쓰고 작성기가 지운다
+ *
+ * The result and the lock together give four states, and only one of them is finished:
+ *
+ *   written              the grant is in force. The lock is gone
+ *   failed               the run stopped and did not write. The lock is HELD, and this is the one
+ *                        state a retry is offered for - the applier may take a lock over exactly
+ *                        when this record says the run holding it stopped
+ *   refused              the inputs can never produce a different answer. The lock was released,
+ *                        and retrying is possible but pointless until whatever was refused changes
+ *   running / unknown    no result. Either the writer has not finished, or it died before it could
+ *                        record anything. The lock says which, and neither is retryable: nothing
+ *                        establishes the run has stopped
+ */
+export function writerVerification(dispatched, results, locks) {
+  return (Array.isArray(dispatched) ? dispatched : [])
+    .filter((entry) => entry && typeof entry.user_name === 'string' && entry.user_name.trim())
+    .map((entry) => {
+      const key = typeof entry.key === 'string' ? entry.key : '';
+      const result = results.get(key) ?? null;
+      const locked = locks.has(key);
+      const state = typeof result?.state === 'string' ? result.state : null;
+      return {
+        user_name: entry.user_name,
+        action: entry.action === 'revoke' ? 'revoke' : 'grant',
+        permission_set: typeof entry.permission_set === 'string' ? entry.permission_set : null,
+        key,
+        // Whether this dispatch came from a retry rather than the original decision.
+        retried: entry.retry === true,
+
+        // Null when the writer left no record. Distinct from every state it can record, because
+        // "not finished yet" and "finished and failed" call for different things from a person.
+        state,
+        // The whole of what a person gets about a failure. CloudWatch has the traceback; this is
+        // the sentence, and it is why the failure is on the screen at all.
+        reason: typeof result?.reason === 'string' ? result.reason : '',
+        finished_at: result?.finished_at ?? null,
+
+        // The lock. Held with no result is a run still going or a task that died before it could
+        // say anything - the two look identical here, which is exactly why neither is retryable.
+        locked,
+
+        // One boolean the page renders on. Only a recorded `written` counts: a missing lock proves
+        // nothing on its own, because a refusal releases the lock without writing.
+        ok: state === 'written',
+        // The applier takes a lock over only when the writer recorded that its run stopped. Both
+        // states qualify; `failed` is the one this exists for, and `refused` covers a release that
+        // itself failed.
+        retryable: state === 'failed' || state === 'refused',
+      };
+    });
 }
 
 /** What this plan is waiting for, if anything.
@@ -738,6 +820,37 @@ export async function readPlan(s3, config, planId) {
 
   const identity = identityFromConfig(configJson);
   const requestId = typeof manifest?.request_id === 'string' ? manifest.request_id : null;
+  const mine = outcomeFor(outcome, requestId);
+
+  // What became of the work orders this decision dispatched, read here rather than carried over
+  // from the sweep - the sweep runs on an interval and this reads the bucket as it is when somebody
+  // opens the page. That gap is exactly when it matters: an approver who just confirmed a grant
+  // opens the plan to see whether it landed.
+  //
+  // Nothing is read at all unless the record names work orders, so a plan that granted nobody -
+  // which is most of them - costs the same as before.
+  const dispatched = mine ? (outcome?.passrole_dispatch ?? []) : [];
+  let writers = [];
+  if (Array.isArray(dispatched) && dispatched.length > 0) {
+    const keys = [...new Set(dispatched
+      .map((entry) => (typeof entry?.key === 'string' ? entry.key : ''))
+      .filter(Boolean))];
+    const [results, locked] = await Promise.all([
+      Promise.all(keys.map((key) => getJson(
+        s3, config.markerBucket, `${config.inlineResultPrefix}${key.slice(
+          config.inlineWriterPrefix.length)}`,
+      ).then((document) => [key, document]).catch(() => [key, null]))),
+      // One listing for every lock, rather than a head per target. The prefix holds one object per
+      // permission set with unfinished inline work, which is a handful at most.
+      listPrefix(s3, config.markerBucket, config.inlineWriterPrefix).catch(() => []),
+    ]);
+    writers = writerVerification(
+      dispatched,
+      new Map(results.filter(([, document]) => document)),
+      new Set(locked.map((object) => object.key)),
+    );
+  }
+
   return {
     plan_id: planId,
     // From request.json, not from the key. A plan is keyed by the governed resource; the request
@@ -750,7 +863,12 @@ export async function readPlan(s3, config, planId) {
 
     // What the applier did, if it has finished with this plan. Terminal: a plan with an outcome
     // has been dealt with and is not awaiting anything.
-    outcome: outcomeFor(outcome, requestId),
+    outcome: mine,
+
+    // And what the INLINE WRITER did with each work order that decision dispatched. Empty on every
+    // plan that granted nobody. See writerVerification: `dispatched` in the outcome above means the
+    // work order was written, and this is the only thing that says whether the grant was.
+    passrole_writers: writers,
 
     // Why the last inspection produced no plan, when it produced none. Null when nothing was
     // refused, and null when the record describes the inspection that produced the plan standing
