@@ -14,7 +14,7 @@ import {
   changesFromPlan, identityFromConfig, isDigest, passroleFromPlan, planIdFromKey,
   requestersFromConfig,
   planPrefixFromId, readPlan,
-  requestIdFromMarkerKey, sweep, writerVerification,
+  requestIdFromMarkerKey, sweep, unavailableFromConfig, writerVerification,
 } from './sweep.js';
 
 const CONFIG = {
@@ -806,8 +806,9 @@ test('the requests are read from the plan outputs, and a value terraform cannot 
     };
     assert.deepEqual(passroleFromPlan(plan), {
       requested_by: ['alice', 'bob'],
-    granted_to: [],
-    untagged: [],
+      granted_to: [],
+      untagged: [],
+      unavailable: [],
       services: ['lambda.amazonaws.com'],
       target_arn: null,
     });
@@ -824,7 +825,8 @@ test('after_unknown is not read as a value', () => {
   // requests nobody made - and a name on this screen is what an approver ticks.
   assert.deepEqual(
     passroleFromPlan({ output_changes: { passrole_requested_by: { after_unknown: ['alice'] } } }),
-    { requested_by: [], granted_to: [], untagged: [], services: [], target_arn: null });
+    { requested_by: [], granted_to: [], untagged: [], unavailable: [], services: [],
+      target_arn: null });
 });
 
 test('a plan with no passrole outputs answers empty rather than undefined', () => {
@@ -832,7 +834,8 @@ test('a plan with no passrole outputs answers empty rather than undefined', () =
   // page reads .requested_by.length without checking.
   for (const plan of [null, {}, { output_changes: {} }, { output_changes: { other: {} } }]) {
     assert.deepEqual(passroleFromPlan(plan),
-      { requested_by: [], granted_to: [], untagged: [], services: [], target_arn: null });
+      { requested_by: [], granted_to: [], untagged: [], unavailable: [], services: [],
+        target_arn: null });
   }
 });
 
@@ -1123,4 +1126,98 @@ test('a result that cannot be read leaves the row unknown rather than failing th
   assert.equal(detail.passrole_writers.length, 1);
   assert.equal(detail.passrole_writers[0].state, null);
   assert.equal(detail.passrole_writers[0].retryable, false);
+});
+
+// ---- an ask that cannot be granted -------------------------------------------------------------
+//
+// The state this closes: a spec role is tagged `<user> = passrole`, the inspector resolves the tag,
+// decides no grant can be written, and records why in passrole_unavailable. Nothing read it. Both
+// the row's badge and the detail panel are driven by passrole_requested_by, which an ungrantable ask
+// is kept OUT of on purpose - a name there is one an approver may confirm - so the plan showed no
+// PassRole badge, no PassRole tab, and no panel. The person who tagged the role saw silence and had
+// no way to tell "refused" from "not looked at yet".
+
+const UNAVAILABLE = [
+  { user_name: 'carol', permission_set: '718100330247-carol',
+    why: 'no permission set named 718100330247-carol' },
+  { user_name: 'dave', permission_set: '718100330247-dave',
+    why: 'no Identity Center user by that name' },
+];
+
+test('an ungrantable ask is read off the plan with the reason the inspector gave', () => {
+  const answer = passroleFromPlan({
+    output_changes: {
+      passrole_requested_by: { after: [] },
+      passrole_unavailable: { after: UNAVAILABLE },
+      passrole_services: { after: ['lambda.amazonaws.com'] },
+    },
+  });
+  assert.deepEqual(answer.requested_by, [], 'an ungrantable ask must never be offerable');
+  assert.equal(answer.unavailable.length, 2);
+  assert.equal(answer.unavailable[0].user_name, 'carol');
+  assert.equal(answer.unavailable[0].permission_set, '718100330247-carol');
+  assert.match(answer.unavailable[1].why, /no Identity Center user/,
+               'the reason is the inspector\'s own sentence, and the two causes differ');
+});
+
+test('the reason is carried verbatim, because the two causes need different fixes', () => {
+  // "no Identity Center user by that name" means the tag key is wrong. "no permission set named X"
+  // means the user is real and has no document to write the grant into. Collapsing them into one
+  // message would send somebody to the wrong place.
+  const [wrongName, noSet] = unavailableFromConfig({
+    output: { passrole_unavailable: { value: [UNAVAILABLE[1], UNAVAILABLE[0]] } },
+  });
+  assert.equal(wrongName.why, 'no Identity Center user by that name');
+  assert.equal(noSet.why, 'no permission set named 718100330247-carol');
+});
+
+test('a malformed unavailable entry is dropped rather than rendered', () => {
+  const answer = unavailableFromConfig({
+    output: { passrole_unavailable: { value: [
+      UNAVAILABLE[0], null, { permission_set: 'x' }, { user_name: '   ' }, 'alice',
+    ] } },
+  });
+  assert.deepEqual(answer.map((e) => e.user_name), ['carol']);
+});
+
+test('an entry with no reason still names the person', () => {
+  // Written by an inspector older than the `why` field. The name is the part that must survive:
+  // without it the row says a number and points at nobody.
+  const [entry] = unavailableFromConfig({
+    output: { passrole_unavailable: { value: [{ user_name: 'carol' }] } },
+  });
+  assert.equal(entry.user_name, 'carol');
+  assert.equal(entry.why, '');
+  assert.equal(entry.permission_set, null);
+});
+
+test('a plan with no unavailable output answers empty rather than undefined', () => {
+  for (const document of [null, {}, { output: {} }, { output: { passrole_unavailable: {} } },
+                          { output: { passrole_unavailable: { value: 'nope' } } }]) {
+    assert.deepEqual(unavailableFromConfig(document), []);
+  }
+});
+
+test('the row counts an ungrantable ask, because a silent row is how one went unnoticed', async () => {
+  const requestId = '644701781058-bbbbbbbbbbbbbbbb';
+  const plan = planFixture('644701781058', 'lambda-TestInspectorRunTask2',
+                           { at: ago(600), requestId });
+  // The generated document carries BOTH outputs. requested_by is empty - that is the whole shape
+  // of the bug - and unavailable names the person who asked.
+  plan.bodies[`${BUCKET}/${plan.prefix}main.tf.json`] = {
+    terraform: { backend: { s3: { bucket: BUCKET,
+                                  key: '644701781058/lambda-TestInspectorRunTask2/terraform.tfstate' } } },
+    output: {
+      passrole_requested_by: { value: [] },
+      passrole_unavailable: { value: [UNAVAILABLE[0]] },
+    },
+  };
+  const s3 = fakeS3({ [BUCKET]: plan.objects, 'opt-solution-markers': [] }, plan.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  const row = state.plans.find((p) => p.resource === 'lambda-TestInspectorRunTask2');
+  assert.ok(row, 'the plan is not in the sweep at all');
+  assert.equal(row.passrole_requests, 0, 'an ungrantable ask must not read as offerable');
+  assert.equal(row.passrole_unavailable, 1,
+               'the row says nothing about the ask, so the plan looks like one nobody asked about');
 });
