@@ -1493,3 +1493,38 @@ test('the row badge separates them too, because that is where somebody decides t
   assert.ok(!/재시도 중/.test(rendered),
             'the badge says an attempt is under way, and nothing re-runs a stopped inspection');
 });
+
+// ---- the retry is a person's decision, not a rule ------------------------------------------------
+//
+// Re-putting the object automatically would run forever on a deterministic failure: the task fails,
+// the object is re-put, the rule fires, the task fails. The reason is on screen precisely so that a
+// person decides whether running it again is the right answer - often something has to be fixed
+// first, and sometimes no number of attempts clears it.
+//
+// So the panel must say that nothing retries on its own, and it must name who pressed it.
+
+const FAILURES = readFileSync(new URL('../src/components/TaskFailures.tsx', import.meta.url), 'utf8');
+
+test('the failures panel says nothing is retried on its own', () => {
+  assert.match(FAILURES, /자동으로 다시 돌리지/,
+               'the panel does not say that nothing retries by itself, so a person who reads it '
+               + 'may wait for something that will never happen');
+  assert.match(FAILURES, /api\.retryTask/, 'the retry is not reachable from the panel');
+});
+
+test('a retry names the person, and the button says what it will do', () => {
+  assert.match(FAILURES, /reviewer\.trim\(\)/, 'the retry is anonymous');
+  assert.match(FAILURES, /window\.confirm/,
+               'a button that re-runs a container in an account fires on one click');
+  // The confirmation has to say the object is written back unchanged. A person who thinks the
+  // dashboard composes the marker would read this button as far more dangerous than it is - and
+  // one who thinks it fixes something would press it expecting a different outcome.
+  assert.match(FAILURES, /읽은 그대로 다시 쓰입니다/);
+});
+
+test('a failure with nothing to re-put offers no button', () => {
+  // A task started by hand carries no overrides, so there is no object whose write starts it. The
+  // row is still worth showing; the button is not.
+  assert.match(FAILURES, /!entry\.retryable \?/,
+               'every row offers a retry, including ones the server would refuse with a 409');
+});

@@ -101,6 +101,27 @@ export function digest(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/**
+ * Write bytes back, unchanged.
+ *
+ * Its one caller re-puts an object it just read, to re-run the container the object's rule starts.
+ * Bytes rather than a parsed body on purpose: what restarts the task is the write event and not the
+ * contents, so this tier has no reason to author what a container will act on - and every reason
+ * not to, because the applier's check that an approval came from here can only keep meaning
+ * something while this cannot invent one.
+ *
+ * No ContentType. The object already has one from whoever wrote it first, and asserting a different
+ * one here would be this tier deciding something about an object it does not own.
+ */
+export async function putBytes(s3, bucket, key, bytes) {
+  try {
+    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes }));
+  } catch (err) {
+    throw new S3Error(`put s3://${bucket}/${key} failed: ${err.message}`, err);
+  }
+  return bytes.length;
+}
+
 export async function putJson(s3, bucket, key, body) {
   const payload = Buffer.from(JSON.stringify(body, null, 2) + '\n', 'utf-8');
   try {

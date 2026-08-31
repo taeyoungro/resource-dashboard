@@ -1399,3 +1399,18 @@ dialog.picker.block-path { width: min(44rem, 94vw); }
   margin: 10px 0 4px;
   border-bottom: 1px solid var(--border);
 }
+
+/* Containers that stopped badly. Warn rather than danger: a failed task is something to look at and
+   decide about, and the decision is often "not now" - a resource somebody has to fix is the red one
+   on this page. */
+.task-failures {
+  padding: 0.8rem 0.9rem;
+  margin: 0.8rem 0;
+  border: 1px solid var(--warn);
+  border-left: 4px solid var(--warn);
+  border-radius: 6px;
+  background: rgba(154, 103, 0, 0.08);
+}
+.task-failures > h3 { margin: 0 0 0.4rem; color: var(--warn); font-size: 0.95rem; }
+.task-failures p { margin: 0.4rem 0; }
+.task-failures .decision { margin-top: 0.6rem; }

@@ -1,6 +1,7 @@
 import type {
   BucketList, BucketReview, DecisionPayload, DecisionResult, NotificationFeed,
   PassroleRetryPayload, PassroleRevokePayload, PlanDetail, RiskAnalysisAnswer, SweepState,
+  TaskFailureFeed,
 } from "./types";
 
 // Same origin. The server that serves this page is the server that answers these calls, so there
@@ -56,6 +57,23 @@ export const api = {
    *  which is a machine's credential and never reaches this page. */
   notifications: async (): Promise<NotificationFeed> =>
     handle(await fetch(`${BASE}/notifications`, { headers: headers() })),
+
+  /** Containers that stopped badly, newest first. Reported by the notifier with the ingest key;
+   *  read here with the dashboard's own, because reading is not reporting. */
+  taskFailures: async (): Promise<TaskFailureFeed> =>
+    handle(await fetch(`${BASE}/task-failures`, { headers: headers() })),
+
+  /**
+   * Run a failed container again by re-putting the object that started it.
+   *
+   * A decision, so it takes the dashboard's own key and a name — not the ingest key the report
+   * arrived under. Nothing here composes what gets written: the server reads the object and writes
+   * back what it read, and the role it runs as holds neither ecs:RunTask nor iam:PassRole.
+   */
+  retryTask: async (id: string, reviewer: string): Promise<{ retried: string; key: string }> =>
+    handle(await fetch(`${BASE}/task-failures/retry`, {
+      method: "POST", headers: headers(), body: JSON.stringify({ id, reviewer }),
+    })),
 
   /** Every bucket in this account. 503 when the review is not turned on for this deployment. */
   buckets: async (): Promise<BucketList> =>
