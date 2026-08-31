@@ -1457,19 +1457,39 @@ test('the notice branches on the kind rather than telling everyone to fix the re
   assert.match(block, /refusal\.retryable/,
                'RefusalNotice reads one text for both kinds, so a lock timeout tells somebody to '
                + 'go and change a resource that had nothing to do with it');
-  // The verdict's instruction must not be what a retryable failure shows.
-  const [retrying, verdict] = block.split(') : planStored ? (');
+  // The verdict's instruction must not be what a stopped attempt shows.
+  const [stopped, verdict] = block.split(') : planStored ? (');
   assert.ok(verdict?.includes('자원을'), 'the slice did not split the two branches');
-  assert.ok(!retrying.includes('자원을 다시 변경하십시오'),
-            'the retryable branch still tells the administrator to change the resource');
-  assert.ok(retrying.includes('고칠 것이 없습니다'),
-            'the retryable branch does not say the one thing that distinguishes it');
+  assert.ok(!stopped.includes('자원을 다시 변경하십시오'),
+            'the stopped branch still tells the administrator to change the resource');
+});
+
+test('the stopped branch does not promise a retry that nothing performs', () => {
+  // The failure this pins is the one that shipped: 「다시 시도됩니다」 on a screen where nothing
+  // re-runs the inspection. The rule's RetryPolicy covers EventBridge failing to START the task -
+  // once it starts, the rule is finished with the event (opt-stack-ecs-runtime.yaml). Telling
+  // somebody to wait ends with nobody acting, which is the silence this whole artifact exists to
+  // end, reached by a different route.
+  const block = PLAN.slice(PLAN.indexOf('function RefusalNotice('),
+                           PLAN.indexOf('function RestrictionTemplates('));
+  const [stopped] = block.split(') : planStored ? (');
+  assert.ok(!/다시 시도됩니다|재시도가 성공하면|다시 실행됩니다/.test(stopped),
+            'the stopped branch says an attempt is coming, and none is');
+  assert.ok(stopped.includes('자동으로 다시 돌지는 않습니다'),
+            'the stopped branch does not say the one thing a person has to know to act');
+  assert.ok(stopped.includes('자원을 다시 변경하면'),
+            'nothing tells the reader how a new inspection is started');
 });
 
 test('the row badge separates them too, because that is where somebody decides to look', () => {
-  assert.match(LIST, /s === "retrying"/,
-               'a failed attempt falls through to 계획 거부됨 on the list');
+  assert.match(LIST, /s === "stopped"/,
+               'a stopped inspection falls through to 계획 거부됨 on the list');
   const badge = LIST.slice(LIST.indexOf('const stateBadge'), LIST.indexOf('export function PlanList'));
-  assert.ok(!/s === "retrying"[\s\S]{0,120}badge-danger/.test(badge),
-            'the retrying badge is the refusal colour, which is the reading it exists to avoid');
+  assert.ok(!/s === "stopped"[\s\S]{0,200}badge-danger/.test(badge),
+            'the stopped badge is the refusal colour, which is the reading it exists to avoid');
+  // Comment lines dropped first: what a person reads is the JSX, and the comment beside it names
+  // the wording it rejects. Matching the comment would fail on the explanation for the fix.
+  const rendered = badge.split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
+  assert.ok(!/재시도 중/.test(rendered),
+            'the badge says an attempt is under way, and nothing re-runs a stopped inspection');
 });

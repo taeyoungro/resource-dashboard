@@ -79,14 +79,16 @@ export interface PlanSummary {
    *                    older than that inspection - the spec moved on and planning the current
    *                    version cannot succeed. Nobody's decision; somebody has to change the
    *                    resource
-   * retrying           the last inspection produced no plan and STOPPED - a plan lock held by
+   * stopped            the last inspection produced no plan and STOPPED - a plan lock held by
    *                    another run, a throttled call, an upload that did not land. Its marker is
-   *                    still in the bucket and the task will run again. Separate from `refused`
-   *                    because calling it that sent an administrator to edit a resource that a
-   *                    lock timeout had nothing to do with
+   *                    still in the bucket. Another inspection could succeed, but nothing starts
+   *                    one: the rule's retries cover EventBridge failing to start the task, not a
+   *                    task that started and failed. Separate from `refused` because calling it
+   *                    that sent an administrator to edit a resource a lock timeout had nothing to
+   *                    do with — and NOT called `retrying`, which would leave them waiting instead
    */
   state: "awaiting_decision" | "decided" | "applied" | "closed" | "no_changes" | "refused"
-    | "retrying";
+    | "stopped";
   /** Why the last inspection produced no plan, when it did not. See PlanRefusal. */
   refusal: PlanRefusal | null;
 
@@ -154,12 +156,14 @@ export interface PlanRefusal {
    */
   supersedes_plan: boolean;
   /**
-   * Whether the pipeline will try this request again — and therefore whether anybody has to act.
+   * Whether another attempt could reach a different answer — NOT whether one is scheduled.
    *
    * false is a verdict: reading the same resource refuses the same way forever, so the reason
    * above names something a person has to change. true is an attempt that stopped, with its marker
-   * still in the bucket and the task queued to run again; the right response is to wait, and to
-   * look only if it keeps happening.
+   * still in the bucket; one more inspection could produce a plan, and nothing will start one on
+   * its own.
+   *
+   * Both kinds therefore end with a person. What this decides is which person and doing what.
    *
    * Records written before the inspector recorded the retryable kind carry no field and read as
    * false, which is correct: every record written then was a verdict.

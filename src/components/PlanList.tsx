@@ -16,10 +16,13 @@ const stateBadge = (s: PlanSummary["state"]) => {
   // one, that request left no trace anywhere a person at this page would look.
   if (s === "refused") return <span className="badge badge-danger">계획 거부됨</span>;
   // The same silence one step in, and NOT the same badge. This inspection stopped rather than
-  // refused - a plan lock, a throttle, an upload that did not land - and its task will run again.
-  // Under 계획 거부됨 it read as "go and fix the resource", which is the wrong place entirely; the
-  // only thing to do here is wait, and look if the number does not fall on the next sweep.
-  if (s === "retrying") return <span className="badge badge-warn">검사 재시도 중</span>;
+  // refused - a plan lock, a throttle, an upload that did not land - so one more run could produce
+  // a plan. Under 계획 거부됨 it read as "go and fix the resource", which is the wrong place.
+  //
+  // 「멈춤」 and not 「재시도 중」: nothing re-runs it. The rule's retries cover EventBridge failing
+  // to START the task, so a task that started and failed is finished as far as the rule cares.
+  // A badge saying an attempt is under way would leave somebody waiting instead of acting.
+  if (s === "stopped") return <span className="badge badge-warn">검사 멈춤</span>;
   if (s === "awaiting_decision") return <span className="badge badge-warn">결정 대기</span>;
   if (s === "decided") return <span className="badge badge-ok">적용기로 넘어감</span>;
   if (s === "applied") return <span className="badge badge-ok">적용됨</span>;
