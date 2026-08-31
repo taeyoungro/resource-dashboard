@@ -139,9 +139,14 @@ function allowOnlyVerdictsOf(
   };
 }
 
-/** Which services the PassRole fence will name. Its statements are in the same document. */
-function fenceServicesOf(grants: Assessment["passrole_grants"]): string[] {
-  return [...new Set((grants ?? []).flatMap((g) => g.services))].filter(Boolean).sort();
+/** The grants the PassRole fence is composed from. Its statements are in the same document.
+ *
+ * The GRANTS and not a flat service list, because the Sid now names the attachment that opened the
+ * hole - ampLambdaFullAccessFence - and a list of services cannot say which policy a statement came
+ * from. The preview has to compose what the writer will, byte for byte.
+ */
+function fenceGrantsOf(grants: Assessment["passrole_grants"]): Assessment["passrole_grants"] {
+  return (grants ?? []).filter((g) => !g.unconditioned && (g.services ?? []).length > 0);
 }
 
 /**
@@ -187,21 +192,21 @@ const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {
  * server/inlinePreview.js composes it, and a fixture test pins that module byte-for-byte against
  * generator/restriction.py. A preview that differs from what gets written would be worse than none.
  */
-function InlinePreview({ restrictions, accountId, fenceServices, nested, createdFormats }: {
+function InlinePreview({ restrictions, accountId, fenceGrants, nested, createdFormats }: {
   restrictions: Restriction[];
   accountId: string;
-  fenceServices: string[];
+  fenceGrants: Assessment["passrole_grants"];
   nested: (action: string) => boolean;
   createdFormats: (action: string) => string[];
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const active = restrictions.filter((r) => r.actions.length > 0);
   const { document: composed, bytes } = useMemo(() => {
-    const doc = composeInline(active, { accountId, fenceServices, nested, createdFormats });
+    const doc = composeInline(active, { accountId, fenceGrants, nested, createdFormats });
     return { document: doc, bytes: inlineBytes(doc) };
-  }, [active, accountId, fenceServices, nested, createdFormats]);
+  }, [active, accountId, fenceGrants, nested, createdFormats]);
 
-  if (active.length === 0 && fenceServices.length === 0) return null;
+  if (active.length === 0 && (fenceGrants ?? []).length === 0) return null;
   const over = bytes > INLINE_LIMIT;
 
   return (
@@ -222,9 +227,10 @@ function InlinePreview({ restrictions, accountId, fenceServices, nested, created
           <p className="muted small">
             지금 고른 것으로 작성될 문서다. 승인하면 인라인 작성기가 결정을 다시 조립해 쓰므로 이것은
             <strong> 미리보기</strong>이고, 작성기가 거부하면 그 이유를 말한다.
-            {fenceServices.length > 0 && (
-              <> {" "}<code>PassRoleAllowlistFence*</code> 문장은 파이프라인이 붙이는 것으로,
-              승인된 mirror 역할이 늘면 더 커진다.</>
+            {(fenceGrants ?? []).length > 0 && (
+              <> {" "}<code>*Fence</code> 문장은 파이프라인이 붙이는 것으로, 이름이
+              그것을 만든 정책을 가리킨다(<code>ampLambdaFullAccessFence</code>). 승인된 mirror
+              역할이 늘면 더 커진다.</>
             )}
           </p>
           <p className={over ? "error" : "muted small"}>
@@ -365,7 +371,7 @@ function VirtualResourceTest({ document }: { document: InlineDocument }) {
  * excerpt that is a valid standalone policy is a wrong answer somebody can screenshot.
  */
 function PolicyInlinePreview({
-  policy, name, restrictions, accountId, fenceServices, policyFenceServices, nested, createdFormats,
+  policy, name, restrictions, accountId, fenceGrants, policyFenceServices, nested, createdFormats,
 }: {
   policy: string;
   /** The policy as a person names it. The identifier is an ARN for an AWS managed policy. */
@@ -373,7 +379,7 @@ function PolicyInlinePreview({
   /** EVERY restriction, not this policy's. The whole document is what this is read out of. */
   restrictions: Restriction[];
   accountId: string;
-  fenceServices: string[];
+  fenceGrants: Assessment["passrole_grants"];
   /** The services this policy's own PassRole grant names. Its fence statements, if it earns any. */
   policyFenceServices: string[];
   nested: (action: string) => boolean;
@@ -382,9 +388,9 @@ function PolicyInlinePreview({
   const dialog = useRef<HTMLDialogElement>(null);
   const view = useMemo(
     () => policyContribution(restrictions, policy,
-                             { accountId, fenceServices, policyFenceServices, nested,
+                             { accountId, fenceGrants, policyFenceServices, nested,
                                createdFormats }),
-    [restrictions, policy, accountId, fenceServices, policyFenceServices, nested, createdFormats],
+    [restrictions, policy, accountId, fenceGrants, policyFenceServices, nested, createdFormats],
   );
 
   // Statements this policy does not have to itself, for either reason: another policy put a
@@ -397,7 +403,7 @@ function PolicyInlinePreview({
   const overLimit = view.total > INLINE_LIMIT;
   /** How many statements the WHOLE document has, so the empty state can tell its two cases apart. */
   const totalStatements = restrictions.filter((r) => (r.actions ?? []).length > 0).length
-    + fenceServices.length;
+    + (fenceGrants ?? []).length;
   // Whether removing this policy entirely would bring the document back under. `without` is the
   // document without it, so this is answerable rather than a guess - and the two answers are
   // different jobs for the approver reading them.
@@ -584,8 +590,8 @@ export function Impact({
   // inline inside restrictable.map it was a new identity on every render, so every policy block
   // recomposed the whole document twice per keystroke in a tag field - 2N document compositions and
   // a serialise of every statement, for a value that changes only when the assessment does.
-  const fenceServices = useMemo(
-    () => fenceServicesOf(assessment.passrole_grants), [assessment.passrole_grants],
+  const fenceGrants = useMemo(
+    () => fenceGrantsOf(assessment.passrole_grants), [assessment.passrole_grants],
   );
 
   /**
@@ -657,7 +663,7 @@ export function Impact({
         <InlinePreview
           restrictions={restrictions}
           accountId={assessment.account_id}
-          fenceServices={fenceServices}
+          fenceGrants={fenceGrants}
           nested={nestedActions(assessment.action_reference ?? null)}
           createdFormats={createdFormatsOf(assessment.action_reference ?? null)}
         />
@@ -677,7 +683,7 @@ export function Impact({
           omitted={assessment.coverage.action_lists_omitted ?? []}
           passroleGrant={(assessment.passrole_grants ?? [])
             .find((g) => g.identifier === policy.identifier) ?? null}
-          fenceServices={fenceServices}
+          fenceGrants={fenceGrants}
           tagWriters={tagWriters}
         />
       ))}
@@ -730,7 +736,7 @@ function PolicyBlock({
   referenceError,
   omitted,
   passroleGrant,
-  fenceServices,
+  fenceGrants,
   tagWriters,
 }: {
   policy: ImpactPolicy;
@@ -747,7 +753,7 @@ function PolicyBlock({
   passroleGrant: ImpactPassRoleGrant | null;
   /** Bytes the fence will spend in the inline document, counted against the restriction budget. */
   /** Services the PassRole fence names. Its statements share the document and the quota. */
-  fenceServices: string[];
+  fenceGrants: Assessment["passrole_grants"];
   /** Every tag-writing action on the WHOLE permission set - see the memo that builds it. */
   tagWriters: string[];
 }) {
@@ -900,7 +906,7 @@ function PolicyBlock({
           name={policyName(policy.identifier)}
           restrictions={restrictions}
           accountId={accountId}
-          fenceServices={fenceServices}
+          fenceGrants={fenceGrants}
           policyFenceServices={policyFenceServices}
           nested={nested}
           createdFormats={createdFormats}

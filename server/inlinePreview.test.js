@@ -21,14 +21,25 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
-  INLINE_LIMIT, composeInline, creationExemption, inlineBytes, policyContribution, readable,
-  readableStatements,
+  INLINE_LIMIT, composeInline, creationExemption, fenceSid, inlineBytes, policyContribution,
+  readable, readableStatements,
   serialise, subResource,
 } from './inlinePreview.js';
 
 const FIXTURES = JSON.parse(
   readFileSync(new URL('./fixtures/inline-preview.json', import.meta.url), 'utf8'),
 );
+
+/**
+ * The shape a fence is composed from: the attachment that opened the hole, in the assessment's
+ * passrole_grants form. `identifier` and `source` are what the Sid is made of, `services` is what
+ * the statements are made of - one per service, because NotResource is per service.
+ */
+const LAMBDA_GRANT = {
+  identifier: 'arn:aws:iam::aws:policy/AWSLambda_FullAccess',
+  source: 'aws_managed',
+  services: ['lambda.amazonaws.com'],
+};
 
 /**
  * The one thing the JavaScript cannot work out for itself: whether an action operates BELOW the
@@ -49,11 +60,29 @@ const createdOf = (c) => {
   return (action) => map[action] ?? [];
 };
 
+test('the fence Sid is the name the Python derived, edges included', () => {
+  // The Sid is the one part of the fence a composed case cannot pin on its own: a case exercises
+  // the two or three policy names it happens to carry, and the rule has edges no realistic case
+  // reaches - the absorbed AWS/cmp prefix, the separators IAM refuses, an identifier that survives
+  // stripping as nothing, a grant with no `source` where the ARN has to answer. So the fixture
+  // carries the Python's fence_sid() over a table of those, and this demands the same string. A
+  // preview naming a statement differently from the writer is the screenshot somebody approves.
+  const table = FIXTURES.fence_sids ?? [];
+  assert.ok(table.length > 0, 'the fixture carries no fence names - regenerate it');
+  for (const row of table) {
+    assert.equal(fenceSid(row.identifier, row.source), row.sid,
+                 `${JSON.stringify(row.identifier)} (${row.source}): the preview and `
+                 + 'generator/restriction.py name the fence differently');
+  }
+  // And every one of them is a Sid IAM will take.
+  for (const row of table) assert.match(row.sid, /^[0-9A-Za-z]+$/, row.sid);
+});
+
 test('every fixture composes to the bytes the container composed', () => {
   for (const c of FIXTURES.cases) {
     const document = composeInline(c.restrictions, {
       accountId: c.account_id ?? FIXTURES.account_id,
-      fenceServices: c.fence_services ?? [],
+      fenceGrants: c.fence_grants ?? [],
       nested: nestedOf(c),
       createdFormats: createdOf(c),
     });
@@ -138,10 +167,10 @@ test('the order the administrator ticked things in does not change the document'
 test('the fence is in the document, because it spends the same quota', () => {
   // An approver who reads the preview must not find a statement in the deployed version that the
   // preview did not have - and the fence is the one the pipeline adds on its own.
-  const withFence = composeInline([], { accountId: '718100330247',
-                                        fenceServices: ['lambda.amazonaws.com'] });
+  const withFence = composeInline([], { accountId: '718100330247', fenceGrants: [LAMBDA_GRANT] });
   assert.equal(withFence.Statement.length, 1);
-  assert.match(withFence.Statement[0].Sid, /^PassRoleAllowlistFence/);
+  // And the Sid says which attachment opened the hole, not just that a fence is there.
+  assert.equal(withFence.Statement[0].Sid, 'ampLambdaFullAccessFence');
   assert.equal(composeInline([], { accountId: '1' }).Statement.length, 0);
 });
 
@@ -288,7 +317,7 @@ test('the fence is in neither byte figure and comes back on its own', () => {
   ];
   const options = {
     accountId: '718100330247',
-    fenceServices: ['ec2.amazonaws.com', 'lambda.amazonaws.com'],
+    fenceGrants: [{ ...LAMBDA_GRANT, services: ['ec2.amazonaws.com', 'lambda.amazonaws.com'] }],
     policyFenceServices: ['lambda.amazonaws.com'],
   };
   const view = policyContribution(restrictions, 'A', options);
@@ -395,18 +424,18 @@ test('a falsy fence service cannot select a statement that is not a fence', () =
   ];
   const view = policyContribution(restrictions, 'A', {
     accountId: '1',
-    fenceServices: ['lambda.amazonaws.com'],
+    fenceGrants: [LAMBDA_GRANT],
     policyFenceServices: [undefined, '', null],
   });
   assert.deepEqual(view.fence, [], 'a falsy entry selected statements that are not fences');
   // The real thing still works beside it.
   const real = policyContribution(restrictions, 'A', {
     accountId: '1',
-    fenceServices: ['lambda.amazonaws.com'],
+    fenceGrants: [LAMBDA_GRANT],
     policyFenceServices: [undefined, 'lambda.amazonaws.com'],
   });
   assert.equal(real.fence.length, 1);
-  assert.match(real.fence[0].Sid, /^PassRoleAllowlistFence/);
+  assert.equal(real.fence[0].Sid, 'ampLambdaFullAccessFence');
 });
 
 // ---- what the call CREATES is exempted, or the statement is a total deny in disguise ------------

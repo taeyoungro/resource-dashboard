@@ -1,5 +1,72 @@
 {
  "account_id": "718100330247",
+ "fence_sids": [
+  {
+   "identifier": "arn:aws:iam::aws:policy/AWSLambda_FullAccess",
+   "source": "aws_managed",
+   "sid": "ampLambdaFullAccessFence"
+  },
+  {
+   "identifier": "arn:aws:iam::aws:policy/AmazonECS_FullAccess",
+   "source": "aws_managed",
+   "sid": "ampAmazonECSFullAccessFence"
+  },
+  {
+   "identifier": "AWSLambda_FullAccess",
+   "source": "aws_managed",
+   "sid": "ampLambdaFullAccessFence"
+  },
+  {
+   "identifier": "arn:aws:iam::aws:policy/AWSLambda_FullAccess",
+   "source": null,
+   "sid": "ampLambdaFullAccessFence"
+  },
+  {
+   "identifier": "arn:aws:iam::718100330247:policy/cmp-testpolicy",
+   "source": null,
+   "sid": "cmpTestpolicyFence"
+  },
+  {
+   "identifier": "cmp-testpolicy",
+   "source": "customer_managed",
+   "sid": "cmpTestpolicyFence"
+  },
+  {
+   "identifier": "cmp-Web_Hosting",
+   "source": "customer_managed",
+   "sid": "cmpWebHostingFence"
+  },
+  {
+   "identifier": "cmp-3tier",
+   "source": "customer_managed",
+   "sid": "cmp3tierFence"
+  },
+  {
+   "identifier": "cmp-web.hosting+v2",
+   "source": "customer_managed",
+   "sid": "cmpWebhostingv2Fence"
+  },
+  {
+   "identifier": "cmp-a b c",
+   "source": "customer_managed",
+   "sid": "cmpAbcFence"
+  },
+  {
+   "identifier": "cmp-한글",
+   "source": "customer_managed",
+   "sid": "cmpUnnamedFence"
+  },
+  {
+   "identifier": "---",
+   "source": "customer_managed",
+   "sid": "cmpUnnamedFence"
+  },
+  {
+   "identifier": "",
+   "source": "aws_managed",
+   "sid": "ampUnnamedFence"
+  }
+ ],
  "cases": [
   {
    "label": "두 동작이 같은 자원 — 접힌다",
@@ -162,18 +229,32 @@
    "virtual": []
   },
   {
-   "label": "울타리만 (서비스 둘)",
+   "label": "울타리만 (정책 둘)",
    "restrictions": [],
-   "fence_services": [
-    "lambda.amazonaws.com",
-    "ec2.amazonaws.com"
-   ],
    "account_id": "718100330247",
-   "bytes": 465,
-   "serialised": "{\"Statement\":[{\"Action\":\"iam:PassRole\",\"Condition\":{\"StringEquals\":{\"iam:PassedToService\":\"ec2.amazonaws.com\"}},\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:iam::718100330247:role/mirror-denyrole\"],\"Sid\":\"PassRoleAllowlistFence1\"},{\"Action\":\"iam:PassRole\",\"Condition\":{\"StringEquals\":{\"iam:PassedToService\":\"lambda.amazonaws.com\"}},\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:iam::718100330247:role/mirror-denyrole\"],\"Sid\":\"PassRoleAllowlistFence2\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 460,
+   "serialised": "{\"Statement\":[{\"Action\":\"iam:PassRole\",\"Condition\":{\"StringEquals\":{\"iam:PassedToService\":\"lambda.amazonaws.com\"}},\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:iam::718100330247:role/mirror-denyrole\"],\"Sid\":\"ampLambdaFullAccessFence\"},{\"Action\":\"iam:PassRole\",\"Condition\":{\"StringEquals\":{\"iam:PassedToService\":\"ec2.amazonaws.com\"}},\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:iam::718100330247:role/mirror-denyrole\"],\"Sid\":\"cmpEc2runnerFence\"}],\"Version\":\"2012-10-17\"}",
    "nested_actions": [],
    "created_formats": {},
-   "virtual": []
+   "virtual": [],
+   "fence_grants": [
+    {
+     "identifier": "arn:aws:iam::aws:policy/AWSLambda_FullAccess",
+     "source": "aws_managed",
+     "services": [
+      "lambda.amazonaws.com"
+     ],
+     "unconditioned": false
+    },
+    {
+     "identifier": "cmp-ec2-runner",
+     "source": "customer_managed",
+     "services": [
+      "ec2.amazonaws.com"
+     ],
+     "unconditioned": false
+    }
+   ]
   },
   {
    "label": "객체에 작용하는 동작 — 버킷 안쪽까지 나온다",
