@@ -1670,15 +1670,18 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       const plan = await readPlan(s3, config, id);
       if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
 
+      // The LIVE holders - the inspector's snapshot with the inline writer's record of what its
+      // runs left standing laid over it. Reading the snapshot alone is what made a grant made since
+      // the last inspection unrevokable: the screen offered nobody, and a request naming somebody
+      // anyway was refused here with a list that did not have them in it.
       const holders = new Set(plan.passrole?.granted_to ?? []);
       const notHeld = named.filter((u) => !holders.has(u));
       if (notHeld.length > 0) {
         throw new HttpError(
           409,
           `${notHeld.join(', ')} — 이 역할의 PassRole 을 가지고 있지 않습니다. 회수는 미러 역할의 `
-          + `태그가 기록한 보유자에게만 할 수 있고, 이 계획이 기록한 보유자는 `
-          + `${[...holders].sort().join(', ') || '없음'} 입니다. 목록이 오래됐다면 원본 역할을 `
-          + '다시 검사하십시오.',
+          + `태그가 기록했거나 인라인 작성기가 문서에서 확인한 보유자에게만 할 수 있고, 지금 `
+          + `보유자는 ${[...holders].sort().join(', ') || '없음'} 입니다.`,
         );
       }
       // The mirror role has to exist for there to be a statement to remove. A plan that only

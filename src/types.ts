@@ -321,7 +321,30 @@ export interface PlanDetail {
    * somebody touched the role.
    */
   passrole_withdrawals: PassroleWithdrawal[];
+  /** Where each name in `passrole.granted_to` came from. See PassroleLive. */
+  passrole_live: PassroleLive;
   artifacts: string[];
+}
+
+/**
+ * How the live holder list was arrived at — the inspector's snapshot, and what the inline writer
+ * has recorded since.
+ *
+ * The distinction an approver acts on is `unknown`: a person the writer was asked about and whose
+ * run could not answer is not the same as one nobody has touched. The first calls for a retry, the
+ * second for a decision.
+ */
+export interface PassroleLive {
+  /** The live set. Identical to `passrole.granted_to`. */
+  holders: string[];
+  /** What the plan's own `passrole_granted_to` said — the state when the plan was generated. */
+  snapshot: string[];
+  /** In force since, confirmed by the writer's record of the document it applied. */
+  confirmed: string[];
+  /** In the snapshot and no longer in force. A withdrawal no inspection has seen yet. */
+  released: string[];
+  /** Touched by a work order whose writer has no answer — a run that failed, or has not finished. */
+  unknown: string[];
 }
 
 /**
@@ -357,12 +380,18 @@ export interface PassroleRequests {
   /** Identity Center user names read off the source role's tags. Empty on a plan with no request. */
   requested_by: string[];
   /**
-   * Who HOLDS the grant right now, read by the inspector out of those users' permission sets. A
-   * name here and in requested_by is already granted and the decision is whether to leave it; a
-   * name in requested_by only is asking.
+   * Who HOLDS the grant right now. A name here and in requested_by is already granted and the
+   * decision is whether to leave it; a name in requested_by only is asking.
    *
    * Without this a list of names says nothing about state, so "grant" and "leave alone" are the
    * same word on the screen.
+   *
+   * LIVE, not the plan's own output. The inspector's `passrole_granted_to` is a snapshot taken
+   * while the plan was generated, and every grant happens after that — so this list was the
+   * pre-grant state until an unrelated event caused a new inspection, and the holders table that
+   * renders from it (the only screen that can revoke) showed nobody. The server lays the inline
+   * writer's own record of what its runs left standing over the snapshot; `passrole_live` says
+   * which names came from where.
    */
   granted_to: string[];
   /**
