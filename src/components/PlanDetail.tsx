@@ -74,7 +74,14 @@ function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdra
   disabled: boolean;
 }) {
   const requests = detail.passrole?.requested_by ?? [];
+  // The LIVE holders, not the plan's own output. See passroleLive.js on the server: the inspector's
+  // list is what was true when the plan was generated, and granting happens afterwards, so this
+  // column said 미부여 about a grant that was already in force and stayed wrong until an unrelated
+  // event caused a new inspection.
   const granted = new Set(detail.passrole?.granted_to ?? []);
+  const live = detail.passrole_live;
+  const confirmedLive = new Set(live?.confirmed ?? []);
+  const unknownLive = new Set(live?.unknown ?? []);
   // Tag removed, grant still standing. Not requests - there is nothing to grant - so they get
   // their own group below and only one thing can be done with them.
   const withdrawnTags = detail.passrole?.untagged ?? [];
@@ -168,6 +175,15 @@ function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdra
                   {granted.has(name)
                     ? <span className="badge badge-warn">부여됨</span>
                     : <span className="badge">미부여</span>}
+                  {/* Where the answer came from. An approver choosing between 재시도 and 회수 is
+                      choosing on this, and without it a grant the writer confirmed and one the
+                      inspector saw look identical - as does one nobody can currently vouch for. */}
+                  {confirmedLive.has(name) && (
+                    <span className="muted small"> 작성기 확인</span>
+                  )}
+                  {unknownLive.has(name) && (
+                    <span className="muted small"> 작성기 미확인</span>
+                  )}
                 </td>
                 <td className="finding-actions">
                   {services.length === 0
@@ -461,6 +477,7 @@ function PassroleHolders({ detail, disabled, onRevoke }: {
   const [picked, setPicked] = useState<string[]>([]);
 
   const holders = detail.passrole?.granted_to ?? [];
+  const live = detail.passrole_live;
   const history = detail.passrole_withdrawals ?? [];
   if (holders.length === 0 && history.length === 0) return null;
 
@@ -499,6 +516,29 @@ function PassroleHolders({ detail, disabled, onRevoke }: {
         태그를 오래전에 뗀 사람은 위 어느 표에도 나오지 않고 권한만 남아 있습니다.{" "}
         <strong>여기서는 계획 승인 없이 바로 회수합니다.</strong>
       </p>
+      {/* 이 목록이 검사 시점의 스냅샷만 읽던 동안, 승인 직후에 부여된 사람은 여기 나오지 않았고
+          - 이 표가 회수의 유일한 입구이므로 - 실제로 서 있는 부여를 회수할 방법이 없었다. */}
+      {(live?.confirmed ?? []).length > 0 && (
+        <p className="muted small">
+          이 중 <code>{live.confirmed.join(", ")}</code> 은(는) 이 계획을 검사한 뒤에 부여되었고,
+          인라인 작성기가 <strong>문서에 서 있는 것을 확인</strong>한 것입니다. 다음 검사가 돌기
+          전이므로 계획 자체의 출력값에는 아직 없습니다.
+        </p>
+      )}
+      {(live?.released ?? []).length > 0 && (
+        <p className="muted small">
+          <code>{live.released.join(", ")}</code> 은(는) 검사 시점에는 보유자였고 지금은 아닙니다 —
+          회수가 반영되었습니다. 회수 대상 목록에서 빠져 있는 이유입니다.
+        </p>
+      )}
+      {(live?.unknown ?? []).length > 0 && (
+        <div className="warn-inline">
+          <code>{live.unknown.join(", ")}</code> 에 대해서는 작성기가 대답하지 못했습니다 — 실행이
+          아직 끝나지 않았거나 실패했습니다. 여기 보이는 상태는 <strong>검사 시점의 것</strong>이며
+          지금 무엇이 서 있는지는 확인되지 않았습니다. 회수보다 먼저 아래 「작성기」 구역에서
+          재시도를 보십시오.
+        </div>
+      )}
 
       {holders.length > 0 && !exists && (
         <div className="warn-inline">

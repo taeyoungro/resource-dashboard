@@ -18,6 +18,7 @@
 // writes outcome.json into the plan prefix before it deletes the marker, and one record replaces
 // the other - so a plan that has been dealt with says so, and says by whom.
 
+import { liveGrants, mirrorRoleFromConfig } from './passroleLive.js';
 import { digest, getBytes, getJson, listPrefix } from './s3.js';
 
 const MARKER_SUFFIX = '.json';
@@ -410,6 +411,9 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
   }
 
   const plans = [];
+  // What each row needs in order to have its holder count brought up to date, gathered here and
+  // resolved in one pass afterwards - see countLiveGrants.
+  const staged = [];
   for (const { planId, artifacts } of byPlan.values()) {
     const prefix = planPrefixFromId(planId);
     const plan = artifacts.get(PLAN_ARTIFACT);
@@ -455,12 +459,18 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
     let requesters = [];
     let unavailable = [];
     let holders = [];
+    // The role the grant is ON, by name. Literal in the generated document, which this loop already
+    // reads - the plan's ARN is "(known after apply)" on a role the plan creates. It is what joins
+    // this row to the inline writer's record of what its runs left standing; without it the
+    // snapshot below stands unchanged, which is the honest answer rather than a guess.
+    let mirrorRoleName = null;
     try {
       const document = await getJson(s3, config.stateBucket, configObject.key);
       identity = identityFromConfig(document);
       requesters = requestersFromConfig(document);
       unavailable = unavailableFromConfig(document);
       holders = holdersFromConfig(document);
+      mirrorRoleName = mirrorRoleFromConfig(document);
     } catch (err) {
       errors.push(`${configObject.key}: ${err.message}`);
     }
@@ -511,16 +521,84 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
       // disappeared and the plan looked like one carrying no request.
       passrole_unavailable: unavailable.length,
       // And how many hold it now. Not a request and not a decision - a live fact about the
-      // resource, and the way in to the only screen that can take a grant back.
+      // resource, and the way in to the only screen that can take a grant back. Filled in below
+      // rather than here: the inspector's snapshot alone is what it was BEFORE the grant, and the
+      // rest of the answer is in the marker bucket.
       passrole_granted: holders.length,
       // The last inspection of this resource, when it refused. Null when the record is about the
       // plan that is standing - see refusalFor.
       refusal: refusalFor(refusal, requestId, refusalObject),
     });
+    staged.push({
+      row: plans[plans.length - 1],
+      prefix,
+      snapshot: holders,
+      mirrorRoleName,
+      // From the RAW outcome, guarded by the match - outcomeFor narrows to what the row renders
+      // and does not carry the work orders. Guarded because an outcome about an earlier inspection
+      // describes a plan that is no longer standing, and the inspection that replaced it refreshed
+      // the snapshot beside it.
+      dispatched: outcomeFor(outcome, requestId) ? (outcome?.passrole_dispatch ?? []) : [],
+      hasWithdrawals: artifacts.has(WITHDRAWAL_ARTIFACT),
+    });
   }
+
+  await countLiveGrants(s3, config, staged, errors);
 
   plans.sort((a, b) => (b.planned_at ?? '').localeCompare(a.planned_at ?? ''));
   return plans;
+}
+
+/** Bring every row's holder count up to date, in one pass over the marker bucket.
+ *
+ * The count on a row and the list on the plan page have to be the same fact, or an approver opens
+ * a row saying nobody holds anything and finds two people to revoke. So both go through
+ * liveGrants(); this is the part that gathers what it needs for many rows at once.
+ *
+ * Bounded by DECISIONS APPLIED SINCE THE LAST INSPECTION rather than by the number of plans. A row
+ * whose outcome is about an earlier inspection contributes nothing and needs nothing read: the
+ * inspection that replaced it refreshed the snapshot beside it, so the snapshot is already the
+ * answer. Most sweeps read nothing here at all.
+ */
+async function countLiveGrants(s3, config, staged, errors) {
+  const withWithdrawals = staged.filter((entry) => entry.hasWithdrawals);
+  await Promise.all(withWithdrawals.map(async (entry) => {
+    try {
+      const document = await getJson(
+        s3, config.stateBucket, `${entry.prefix}${WITHDRAWAL_ARTIFACT}`);
+      entry.withdrawals = Array.isArray(document?.actions) ? document.actions : [];
+    } catch (err) {
+      errors.push(`${entry.prefix}${WITHDRAWAL_ARTIFACT}: ${err.message}`);
+    }
+  }));
+
+  const wanted = new Set();
+  for (const entry of staged) {
+    if (!entry.mirrorRoleName) continue;
+    for (const key of dispatchKeys(entry.dispatched)) wanted.add(key);
+    for (const action of entry.withdrawals ?? []) {
+      for (const key of dispatchKeys(action?.dispatched)) wanted.add(key);
+    }
+  }
+  // One read per permission set, shared by every row that names it. Two roles granted to the same
+  // person are two rows and one object, because the object describes the permission set.
+  const results = new Map(
+    (await Promise.all([...wanted].map((key) => getJson(
+      s3, config.markerBucket,
+      `${config.inlineResultPrefix}${key.slice(config.inlineWriterPrefix.length)}`,
+    ).then((document) => [key, document]).catch(() => [key, null]))))
+      .filter(([, document]) => document),
+  );
+
+  for (const entry of staged) {
+    entry.row.passrole_granted = liveGrants({
+      snapshot: entry.snapshot,
+      dispatched: entry.dispatched,
+      withdrawals: entry.withdrawals ?? [],
+      results,
+      mirrorRoleName: entry.mirrorRoleName,
+    }).holders.length;
+  }
 }
 
 /**
@@ -645,6 +723,17 @@ function outcomeFor(outcome, requestId) {
  *                        record anything. The lock says which, and neither is retryable: nothing
  *                        establishes the run has stopped
  */
+/** The lock keys a list of dispatch records names, deduplicated by the caller.
+ *
+ * One shape read from two places - outcome.json's passrole_dispatch and passrole.json's own
+ * `dispatched` - because a work order is a work order however the decision behind it was made.
+ */
+export function dispatchKeys(dispatched) {
+  return (Array.isArray(dispatched) ? dispatched : [])
+    .map((entry) => (typeof entry?.key === 'string' ? entry.key : ''))
+    .filter(Boolean);
+}
+
 export function writerVerification(dispatched, results, locks) {
   return (Array.isArray(dispatched) ? dispatched : [])
     .filter((entry) => entry && typeof entry.user_name === 'string' && entry.user_name.trim())
@@ -904,12 +993,18 @@ export async function readPlan(s3, config, planId) {
   // Nothing is read at all unless the record names work orders, so a plan that granted nobody -
   // which is most of them - costs the same as before.
   const dispatched = mine ? (outcome?.passrole_dispatch ?? []) : [];
+  // And the work orders a STANDALONE withdrawal wrote, which have no plan decision behind them and
+  // so appear in no outcome. Read for the same reason as the dispatches above and joined the same
+  // way: both are work orders on this resource's grant, and the writer's record is what says
+  // whether either landed.
+  const withdrawalActions = Array.isArray(withdrawals?.actions) ? withdrawals.actions : [];
   let writers = [];
-  if (Array.isArray(dispatched) && dispatched.length > 0) {
-    const keys = [...new Set(dispatched
-      .map((entry) => (typeof entry?.key === 'string' ? entry.key : ''))
-      .filter(Boolean))];
-    const [results, locked] = await Promise.all([
+  let results = new Map();
+  const keys = [...new Set(
+    [...dispatchKeys(dispatched), ...withdrawalActions.flatMap((a) => dispatchKeys(a?.dispatched))],
+  )];
+  if (keys.length > 0) {
+    const [documents, locked] = await Promise.all([
       Promise.all(keys.map((key) => getJson(
         s3, config.markerBucket, `${config.inlineResultPrefix}${key.slice(
           config.inlineWriterPrefix.length)}`,
@@ -918,12 +1013,25 @@ export async function readPlan(s3, config, planId) {
       // permission set with unfinished inline work, which is a handful at most.
       listPrefix(s3, config.markerBucket, config.inlineWriterPrefix).catch(() => []),
     ]);
+    results = new Map(documents.filter(([, document]) => document));
     writers = writerVerification(
-      dispatched,
-      new Map(results.filter(([, document]) => document)),
-      new Set(locked.map((object) => object.key)),
+      dispatched, results, new Set(locked.map((object) => object.key)),
     );
   }
+
+  // The snapshot, brought up to date. passroleFromPlan reads what the inspector saw while
+  // generating the plan; every grant and every withdrawal happens after that and touches no plan
+  // artifact, so the panel showed the pre-grant state until an unrelated event caused a new
+  // inspection - and the holders table, which is the only screen that can take a grant back,
+  // showed nobody. See passroleLive.js.
+  const passrole = passroleFromPlan(planJson);
+  const live = liveGrants({
+    snapshot: passrole.granted_to,
+    dispatched,
+    withdrawals: withdrawalActions,
+    results,
+    mirrorRoleName: mirrorRoleFromConfig(configJson),
+  });
 
   return {
     plan_id: planId,
@@ -971,8 +1079,14 @@ export async function readPlan(s3, config, planId) {
     plan_text: planText,
     config_json: configJson ? JSON.stringify(configJson, null, 2) : '',
     changes: changesFromPlan(planJson),
-    // Who asked to be able to pass this mirror role, and to which services. Requests, not grants.
-    passrole: passroleFromPlan(planJson),
+    // Who asked to be able to pass this mirror role, and to which services. Requests, not grants -
+    // except granted_to, which IS a grant and is the live one: the inspector's snapshot with the
+    // inline writer's own record of what its runs left standing laid over it.
+    passrole: { ...passrole, granted_to: live.holders },
+    // Where each of those names came from, so the panel can say so. An approver deciding between
+    // "retry" and "revoke" needs to know whether a grant is one the writer confirmed, one the
+    // inspector saw, or one whose writer could not answer.
+    passrole_live: live,
     // What has been taken back on this resource with no plan decision behind it, oldest first.
     // Read unmatched to any request id on purpose: a withdrawal outlives the plan it was made
     // beside, and matching it to one would make it vanish on the next inspection.

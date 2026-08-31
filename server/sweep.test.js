@@ -83,27 +83,54 @@ const BUCKET = 'opt-org-policy-terraform-state';
  * prefix, not two. Every test that used to spell out plans/<request id>/ was spelling out the bug.
  */
 function planFixture(account, resource,
-                     { at, requestId, hasChanges = true, digest, outcome, requestedBy } = {}) {
+                     { at, requestId, hasChanges = true, digest, outcome, requestedBy,
+                       grantedTo, mirrorRoleName, withdrawals } = {}) {
   const prefix = `${account}/${resource}/plan/`;
   const names = ['tfplan', 'main.tf.json', 'plan.json', 'plan.txt', 'changes.sha256',
                  'request.json'];
   if (outcome) names.push('outcome.json');
+  if (withdrawals) names.push('passrole.json');
   const objects = names.map((n) => ({ key: `${prefix}${n}`, lastModified: at }));
   const bodies = {
     [`${BUCKET}/${prefix}main.tf.json`]: {
       terraform: { backend: { s3: { bucket: BUCKET,
                                     key: `${account}/${resource}/terraform.tfstate` } } },
-      ...(requestedBy ? { output: { passrole_requested_by: { value: requestedBy } } } : {}),
+      // The mirror role's NAME is literal in the generated document - it is what joins a plan to
+      // the inline writer's record of what its runs left standing.
+      ...(mirrorRoleName
+        ? { resource: { aws_iam_role: { mirror: { name: mirrorRoleName } } } }
+        : {}),
+      ...(requestedBy || grantedTo
+        ? { output: {
+          ...(requestedBy ? { passrole_requested_by: { value: requestedBy } } : {}),
+          ...(grantedTo ? { passrole_granted_to: { value: grantedTo } } : {}),
+        } }
+        : {}),
     },
     [`${BUCKET}/${prefix}tfplan`]: 'binary plan',
     [`${BUCKET}/${prefix}plan.txt`]: 'terraform will do things',
-    [`${BUCKET}/${prefix}plan.json`]: { resource_changes: [] },
+    [`${BUCKET}/${prefix}plan.json`]: {
+      resource_changes: [],
+      ...(grantedTo || mirrorRoleName
+        ? { output_changes: {
+          ...(grantedTo ? { passrole_granted_to: { after: grantedTo } } : {}),
+          ...(mirrorRoleName
+            ? { passrole_target_arn: { after: `arn:aws:iam::${account}:role/${mirrorRoleName}` } }
+            : {}),
+        } }
+        : {}),
+    },
     [`${BUCKET}/${prefix}changes.sha256`]: `${digest ?? 'd'.repeat(64)}\n`,
     [`${BUCKET}/${prefix}request.json`]: {
       schema: 1, request_id: requestId, account_id: account, resource, has_changes: hasChanges,
       planned_at: at,
     },
   };
+  if (withdrawals) {
+    bodies[`${BUCKET}/${prefix}passrole.json`] = {
+      schema: 1, account_id: account, resource, actions: withdrawals,
+    };
+  }
   if (outcome) {
     bodies[`${BUCKET}/${prefix}outcome.json`] = {
       schema: 1, request_id: requestId, account_id: account, resource,
@@ -1317,4 +1344,170 @@ test('a plan with no withdrawal record answers empty rather than undefined', asy
   const detail = await readPlan(s3, { ...CONFIG, inlineResultPrefix: 'inline_result/' },
                                 '644701781058:cmp-WebHosting');
   assert.deepEqual(detail.passrole_withdrawals, []);
+});
+
+// ---- the grant that was in force and read as a request -----------------------------------------
+//
+// Reported from a running system: a spec role is tagged, the grant is approved, the applier tags
+// the mirror role and the inline writer writes the statement - and the dashboard keeps saying
+// PassRole 요청 with 지금 상태 미부여. Attaching another tag corrects it, because that is what
+// causes a new inspection and a new snapshot.
+//
+// passrole_granted_to is that snapshot. It is a terraform output of the plan, written by the
+// inspector while GENERATING the plan, and every grant happens afterwards - so it describes the
+// state before the thing the screen is being asked about. Nothing may rewrite it either: the saved
+// plan file's digest is what an approval binds to.
+//
+// The cost was not only a wrong badge. The holders table renders from the same list and it is the
+// only screen that can revoke, so a grant plainly visible in the inline policy and on the mirror
+// role's tag could not be taken back.
+
+const MIRROR_ROLE = 'mirror-lambda-TestInspectorRunTask2';
+const MIRROR_ARN = `arn:aws:iam::644701781058:role/${MIRROR_ROLE}`;
+const LIVE_CONFIG = { ...CONFIG, inlineResultPrefix: 'inline_result/' };
+
+/** A plan whose decision granted `user`, with the writer's record of what it left standing. */
+function grantedFixture(inForce, { grantedTo = [], user = 'Taeyoung' } = {}) {
+  const requestId = '644701781058-1111111111111111';
+  const plan = planFixture('644701781058', 'lambda-TestInspectorRunTask2', {
+    at: ago(600), requestId, mirrorRoleName: MIRROR_ROLE, grantedTo,
+    requestedBy: [user],
+    outcome: { inline_state: 'dispatched', passrole_dispatch: [SENT(user)] },
+  });
+  return fakeS3(
+    { [BUCKET]: plan.objects, 'opt-solution-markers': [] },
+    { ...plan.bodies,
+      [`opt-solution-markers/${RESULT(user)}`]: {
+        state: 'written', ok: true, reason: '', passrole_in_force: inForce,
+      } },
+  );
+}
+
+test('a grant the writer put in force is a holder before the next inspection', async () => {
+  const detail = await readPlan(grantedFixture([MIRROR_ARN]), LIVE_CONFIG,
+                                '644701781058:lambda-TestInspectorRunTask2');
+  assert.deepEqual(detail.passrole.granted_to, ['Taeyoung'],
+                   'the grant was in force and the panel called it a request');
+  assert.deepEqual(detail.passrole_live.snapshot, [],
+                   "and the plan's own output is kept, not overwritten");
+  assert.deepEqual(detail.passrole_live.confirmed, ['Taeyoung']);
+});
+
+test('the revoke route accepts the person that grant made a holder', async () => {
+  // The half of the bug that had no workaround. The route re-reads the bucket rather than trusting
+  // the page, so it refused with a holder list that did not have them in it either.
+  const detail = await readPlan(grantedFixture([MIRROR_ARN]), LIVE_CONFIG,
+                                '644701781058:lambda-TestInspectorRunTask2');
+  const holders = new Set(detail.passrole.granted_to);
+  assert.ok(holders.has('Taeyoung'), 'POST passrole-revoke would answer 409 for a live grant');
+  assert.ok(detail.passrole.target_arn, 'and the role has to exist for a statement to be removed');
+});
+
+test('a grant on another role does not make a holder here', async () => {
+  const detail = await readPlan(
+    grantedFixture(['arn:aws:iam::644701781058:role/mirror-lambda-Other']), LIVE_CONFIG,
+    '644701781058:lambda-TestInspectorRunTask2');
+  assert.deepEqual(detail.passrole.granted_to, []);
+});
+
+test('a writer that failed leaves the snapshot standing rather than emptying it', async () => {
+  // The direction that matters. Reading "no answer" as "nothing held" is how a live grant leaves
+  // the screen and becomes unrevokable, which is the state this whole change exists to end.
+  const requestId = '644701781058-2222222222222222';
+  const plan = planFixture('644701781058', 'lambda-TestInspectorRunTask2', {
+    at: ago(600), requestId, mirrorRoleName: MIRROR_ROLE, grantedTo: ['alice'],
+    outcome: { passrole_dispatch: [SENT('alice')] },
+  });
+  const s3 = fakeS3(
+    { [BUCKET]: plan.objects, 'opt-solution-markers': [{ key: LOCK('alice'), lastModified: ago(60) }] },
+    { ...plan.bodies,
+      [`opt-solution-markers/${RESULT('alice')}`]: {
+        state: 'failed', ok: false, reason: 'terraform apply failed: exit 1',
+        passrole_in_force: null,
+      } },
+  );
+  const detail = await readPlan(s3, LIVE_CONFIG, '644701781058:lambda-TestInspectorRunTask2');
+  assert.deepEqual(detail.passrole.granted_to, ['alice']);
+  assert.deepEqual(detail.passrole_live.unknown, ['alice'],
+                   'and the panel says the answer is unverified rather than presenting it as now');
+  assert.equal(detail.passrole_writers[0].retryable, true);
+});
+
+test('a withdrawal with no plan decision behind it takes the holder off', async () => {
+  const requestId = '644701781058-3333333333333333';
+  const plan = planFixture('644701781058', 'lambda-TestInspectorRunTask2', {
+    at: ago(600), requestId, mirrorRoleName: MIRROR_ROLE, grantedTo: ['Taeyoung'],
+    withdrawals: [{
+      request_id: '644701781058-4444444444444444', action: 'revoke', users: ['Taeyoung'],
+      mirror_role_arn: MIRROR_ARN, reviewer: 'kim', comment: '', detail: '',
+      dispatched: [{ user_name: 'Taeyoung', key: LOCK('Taeyoung') }],
+      finished_at: ago(60),
+    }],
+  });
+  const s3 = fakeS3(
+    { [BUCKET]: plan.objects, 'opt-solution-markers': [] },
+    { ...plan.bodies,
+      [`opt-solution-markers/${RESULT('Taeyoung')}`]: {
+        state: 'written', ok: true, reason: '', passrole_in_force: [],
+      } },
+  );
+  const detail = await readPlan(s3, LIVE_CONFIG, '644701781058:lambda-TestInspectorRunTask2');
+  assert.deepEqual(detail.passrole.granted_to, [],
+                   'a revoked grant stayed on the screen until the next inspection');
+  assert.deepEqual(detail.passrole_live.released, ['Taeyoung']);
+  // And the row, which reads passrole.json only where the artifact is there - so a resource nobody
+  // has revoked on costs nothing, and one that has been is not left counting a holder it lost.
+  const state = await sweep(s3, LIVE_CONFIG, { now: NOW });
+  const row = state.plans.find((p) => p.plan_id === '644701781058:lambda-TestInspectorRunTask2');
+  assert.equal(row.passrole_granted, 0);
+});
+
+test('the row count and the panel are the same fact', async () => {
+  // Or an approver opens a row saying nobody holds anything and finds somebody to revoke.
+  const s3 = grantedFixture([MIRROR_ARN]);
+  const state = await sweep(s3, LIVE_CONFIG, { now: NOW });
+  const row = state.plans.find((p) => p.plan_id === '644701781058:lambda-TestInspectorRunTask2');
+  assert.equal(row.passrole_granted, 1);
+  const detail = await readPlan(s3, LIVE_CONFIG, '644701781058:lambda-TestInspectorRunTask2');
+  assert.equal(detail.passrole.granted_to.length, row.passrole_granted);
+});
+
+test('a sweep over plans that dispatched nothing reads no result objects', async () => {
+  // The cost is bounded by decisions applied since the last inspection, not by the number of plans.
+  const plan = planFixture('644701781058', 'cmp-WebHosting', {
+    at: ago(600), requestId: '644701781058-5555555555555555',
+  });
+  const s3 = fakeS3({ [BUCKET]: plan.objects, 'opt-solution-markers': [] }, plan.bodies);
+  await sweep(s3, LIVE_CONFIG, { now: NOW });
+  assert.ok(!s3.gets.some((key) => key.startsWith('inline_result/')),
+            'the marker bucket was read for a resource with no grant activity');
+});
+
+test('an outcome about an earlier inspection does not decide the current plan', async () => {
+  // A new inspection replaced the plan in place and rewrote request.json with its own id. Its
+  // snapshot is the complete answer - the inspector re-read the mirror role's tags to produce it -
+  // and an old decision's work orders must not be laid over a list that already accounts for them.
+  // `untagged` is where a grant standing without its tag belongs, and it comes from that same
+  // inspection.
+  const plan = planFixture('644701781058', 'lambda-TestInspectorRunTask2', {
+    at: ago(600), requestId: '644701781058-7777777777777777',
+    mirrorRoleName: MIRROR_ROLE, grantedTo: [],
+    outcome: { passrole_dispatch: [SENT('Taeyoung')] },
+  });
+  // The outcome names the PREVIOUS inspection.
+  plan.bodies[`${BUCKET}/${plan.prefix}outcome.json`].request_id = '644701781058-6666666666666666';
+  const s3 = fakeS3(
+    { [BUCKET]: plan.objects, 'opt-solution-markers': [] },
+    { ...plan.bodies,
+      [`opt-solution-markers/${RESULT('Taeyoung')}`]: {
+        state: 'written', ok: true, reason: '', passrole_in_force: [MIRROR_ARN],
+      } },
+  );
+
+  const state = await sweep(s3, LIVE_CONFIG, { now: NOW });
+  const row = state.plans.find((p) => p.plan_id === '644701781058:lambda-TestInspectorRunTask2');
+  assert.equal(row.passrole_granted, 0, 'a superseded decision decided the row');
+  const detail = await readPlan(s3, LIVE_CONFIG, '644701781058:lambda-TestInspectorRunTask2');
+  assert.deepEqual(detail.passrole.granted_to, []);
+  assert.deepEqual(detail.passrole_writers, [], 'and the writers column is about this plan too');
 });
