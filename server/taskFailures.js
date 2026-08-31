@@ -11,12 +11,26 @@
 //   누가 쓰나  opt-SolutionTaskFailureNotifier 하나. EventBridge 가 건네준 사건을 그대로 옮긴다
 //   누가 읽나  마커 화면(어느 마커가 왜 실패했는가)과 재실행 경로(무엇을 다시 넣을 것인가)
 //
-// Why memory rather than a bucket
-// -------------------------------
+// Why a file on this host rather than a bucket
+// --------------------------------------------
 // The durable half is already durable: the marker is in S3 and the sweep finds it whatever happens
-// here. What this adds is the REASON, and losing it on a restart costs a sentence rather than a
-// fact - the row still says a task did not finish. Writing it to S3 would make the dashboard an
-// author of bucket state, which is the thing this tier is built not to be.
+// here. What this adds is the REASON, so losing it costs a sentence rather than a fact - the row
+// still says a task did not finish, it just stops saying why.
+//
+// A restart used to lose it, and restarts are not rare: every deploy is one. So it is written to
+// the directory systemd makes for this service, and read back at startup.
+//
+// NOT to S3, and the reason has moved since this file was written. It used to be "the dashboard
+// must not author bucket state", which is no longer literally true - this tier writes approval
+// markers, and re-puts objects to re-run a task. What is still true is narrower and is the thing
+// worth keeping: it cannot fabricate or erase a CONTAINER's record of what it did. A dashboard-owned
+// note in a dashboard-owned place does not touch that. What decided it instead is the bucket: the
+// marker bucket has versioning and lifecycle expiry deliberately OFF, so an object meant to be
+// overwritten again and again would be the only one there playing by different rules.
+//
+// What that gives up, stated: the host. An instance replaced loses these reasons, exactly as it
+// loses the journal. That is one problem, not two, and it is fixed by shipping host state off the
+// box rather than by making this one record special.
 //
 // Why the retry is a person pressing a button
 // -------------------------------------------
@@ -24,6 +38,9 @@
 // the object is re-put, the rule fires, the task fails. A person reads the reason and decides
 // whether re-running is the right answer at all - often something has to be fixed first, and
 // sometimes no number of attempts clears it.
+
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** The marker prefixes whose objects start a task when they are written. */
 const MARKER_PREFIXES = ['inspector/', 'applier/', 'impact/', 'inline_writer/'];
@@ -47,7 +64,43 @@ const MARKER_KEY = /^[a-z_]+\/[^/]+\.json$/;
 const MAX_TEXT = 512;
 const MAX_REPORTS = 200;
 
+/** The file's own version. A shape this does not recognise is dropped, not guessed at. */
+const FILE_SCHEMA = 1;
+
 export class TaskFailureError extends Error {}
+
+/**
+ * One stored row, or null if the file has something this cannot render.
+ *
+ * Checked even though this process wrote it. Not because the file is hostile - anyone who can edit
+ * it already owns the host - but because a truncated write, a half-full disk or a version of this
+ * code that wrote a different shape must cost one row rather than the startup. A dashboard that
+ * refuses to boot over its own scratch file is worse than one that forgets a sentence.
+ */
+function storedEntry(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+  const lastSeen = Number.isFinite(raw.last_seen) ? raw.last_seen : null;
+  if (!id || lastSeen === null) return null;
+  const str = (value) => (typeof value === 'string' && value.trim() ? value.trim() : null);
+  return {
+    id,
+    task_arn: str(raw.task_arn) ?? id,
+    task_definition_arn: str(raw.task_definition_arn),
+    cluster_arn: str(raw.cluster_arn),
+    stop_code: str(raw.stop_code),
+    stopped_reason: str(raw.stopped_reason),
+    stopped_at: str(raw.stopped_at),
+    exit_codes: Array.isArray(raw.exit_codes) ? raw.exit_codes.filter(Number.isInteger) : [],
+    marker_bucket: str(raw.marker_bucket),
+    marker_key: str(raw.marker_key),
+    first_seen: Number.isFinite(raw.first_seen) ? raw.first_seen : lastSeen,
+    last_seen: lastSeen,
+    attempts: Number.isInteger(raw.attempts) && raw.attempts > 0 ? raw.attempts : 1,
+    retried_at: Number.isFinite(raw.retried_at) ? raw.retried_at : null,
+    retried_by: str(raw.retried_by),
+  };
+}
 
 function text(value, field, { required = true, max = MAX_TEXT } = {}) {
   if (value === undefined || value === null) {
@@ -131,8 +184,69 @@ export function retryTarget(report, config) {
  * report with no marker is kept under its task arn, which is unique per attempt - those really are
  * separate failures with nothing joining them.
  */
-export function makeTaskFailures({ limit = MAX_REPORTS } = {}) {
+export function makeTaskFailures({ limit = MAX_REPORTS, dir = null, log = null } = {}) {
   const byKey = new Map();
+  // Null when the unit provisioned nowhere to write, which is the case in tests and in a developer's
+  // checkout. Everything below then behaves exactly as it did before any of this existed.
+  const file = dir ? join(dir, 'task-failures.json') : null;
+  const tmp = file ? `${file}.tmp` : null;
+
+  /** Read what the last run left, once. A file that is not there is the normal first boot. */
+  function load() {
+    if (!file) return;
+    let raw;
+    try {
+      raw = readFileSync(file, 'utf8');
+    } catch (err) {
+      if (err.code !== 'ENOENT') log?.warn?.('task failures could not be read: %s', err.message);
+      return;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      log?.warn?.('task failures file is not JSON, starting empty: %s', err.message);
+      return;
+    }
+    if (parsed?.schema !== FILE_SCHEMA || !Array.isArray(parsed.entries)) {
+      log?.warn?.('task failures file is schema %s, not %s - starting empty',
+                  parsed?.schema, FILE_SCHEMA);
+      return;
+    }
+    // Oldest first, so the Map's insertion order comes out as the last-seen order that list()
+    // reverses. Sorted rather than trusted: the file is written in that order, and a read that
+    // depends on the writer having got it right is a read that breaks quietly when it did not.
+    const entries = parsed.entries.map(storedEntry).filter(Boolean)
+      .sort((a, b) => a.last_seen - b.last_seen);
+    for (const entry of entries.slice(-limit)) byKey.set(entry.id, entry);
+    log?.info?.('task failures restored %d of %d from %s',
+                byKey.size, parsed.entries.length, file);
+  }
+
+  /**
+   * Write what is held, atomically, and never let a failure reach the caller.
+   *
+   * Temp file then rename, because the alternative - truncating the real file and writing into it -
+   * leaves half a file behind exactly when the machine is having the kind of day that makes this
+   * record worth having.
+   *
+   * A failed write is logged and swallowed. The report has already been accepted into memory and
+   * the marker is already in S3, so refusing the notifier over a full disk would turn a lost
+   * sentence into a lost fact and fill the dead-letter queue doing it.
+   */
+  function save() {
+    if (!file) return;
+    try {
+      writeFileSync(tmp, `${JSON.stringify({
+        schema: FILE_SCHEMA, entries: [...byKey.values()],
+      })}\n`);
+      renameSync(tmp, file);
+    } catch (err) {
+      log?.warn?.('task failures could not be saved to %s: %s', file, err.message);
+    }
+  }
+
+  load();
 
   return {
     record(report, now) {
@@ -154,6 +268,7 @@ export function makeTaskFailures({ limit = MAX_REPORTS } = {}) {
       byKey.delete(id);
       byKey.set(id, entry);
       while (byKey.size > limit) byKey.delete(byKey.keys().next().value);
+      save();
       return entry;
     },
 
@@ -163,6 +278,9 @@ export function makeTaskFailures({ limit = MAX_REPORTS } = {}) {
       if (!entry) return null;
       const next = { ...entry, retried_at: now, retried_by: reviewer };
       byKey.set(id, next);
+      // Saved too. Who pressed it and when is the half of this record a person is answerable for,
+      // and losing it to a restart is how the same failure gets retried twice by two people.
+      save();
       return next;
     },
 

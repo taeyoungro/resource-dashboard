@@ -10,8 +10,10 @@ Group=opt-dashboard
 WorkingDirectory=/opt/opt-dashboard
 
 # Credentials come from the instance profile. There is no credentials file and no key in the
-# environment, so a compromise of this host yields a role that can list and read two buckets and
-# write one prefix - no ecs:RunTask, no iam:PassRole, and no delete anywhere.
+# environment, so a compromise of this host yields a role that can list and read two buckets, write
+# an approval marker, and re-put an object that already exists to run its task again - no
+# ecs:RunTask, no iam:PassRole, and NO DELETE ANYWHERE. That last one is what bounds the re-put:
+# this role can say a run is outstanding and can never say one finished.
 EnvironmentFile=/etc/opt-dashboard/dashboard.env
 ExecStart=/usr/bin/node /opt/opt-dashboard/server/index.js
 
@@ -32,9 +34,17 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 
-# No ReadWritePaths. This process writes nothing to disk - the state it cares about is in S3 and
-# the log goes to the journal - so a writable path would only be somewhere for something else to
-# end up.
+# One writable directory, and no ReadWritePaths beyond it. systemd creates /var/lib/opt-dashboard,
+# owns it to this service's user, and leaves it there across restarts and deploys - which is the
+# whole reason it is used rather than a path named here: nothing else on the box becomes writable,
+# and the code takes the path from $STATE_DIRECTORY rather than knowing one.
+#
+# What goes in it is task-failures.json and nothing else: why containers stopped badly, which
+# arrives from opt-SolutionTaskFailureNotifier and is otherwise lost on every deploy. It is not
+# governance state. Every fact this dashboard acts on is still in S3 - the marker says a task did
+# not finish, and that survives this file being empty, absent or deleted.
+StateDirectory=opt-dashboard
+StateDirectoryMode=0700
 
 # The instance metadata service is how the role is obtained, so it has to stay reachable. Nothing
 # else outbound is needed beyond S3.
