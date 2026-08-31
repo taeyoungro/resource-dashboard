@@ -390,7 +390,7 @@ test('the preview says it is a preview, and shows the fence', () => {
                              IMPACT.indexOf('function PolicyInlinePreview('));
   assert.ok(block.length > 0 && block.length < IMPACT.length, 'the slice caught the wrong component');
   assert.ok(block.includes('미리보기'), 'the preview no longer says the writer is the authority');
-  assert.ok(block.includes('fenceServices'),
+  assert.ok(block.includes('fenceGrants'),
             'the fence is not in the preview, so the deployed document would have a statement the '
             + 'approver never saw');
   assert.ok(block.includes('INLINE_LIMIT'), 'the quota is not shown beside the size');
@@ -601,13 +601,13 @@ test('every composition on the page carries the creation-exemption patterns', ()
 });
 
 test('the per-policy view is not recomposed on every keystroke', () => {
-  // Its memo takes fenceServices as a dependency. Called inline inside restrictable.map that is a
+  // Its memo takes fenceGrants as a dependency. Called inline inside restrictable.map that is a
   // fresh array identity every render, so the memo never hit: each of N policy blocks recomposed
   // the whole document twice - and serialised every statement - on each character typed into a tag
   // field. The value changes only when the assessment does.
-  assert.match(IMPACT, /const fenceServices = useMemo\(\s*\(\) => fenceServicesOf\(assessment\.passrole_grants\), \[assessment\.passrole_grants\],\s*\)/,
-               'fenceServices is not memoised, so the per-policy memo never caches');
-  assert.ok(!/fenceServices=\{fenceServicesOf\(/.test(IMPACT),
+  assert.match(IMPACT, /const fenceGrants = useMemo\(\s*\(\) => fenceGrantsOf\(assessment\.passrole_grants\), \[assessment\.passrole_grants\],\s*\)/,
+               'fenceGrants is not memoised, so the per-policy memo never caches');
+  assert.ok(!/fenceGrants=\{fenceGrantsOf\(/.test(IMPACT),
             'a fresh array is still being passed down');
   // The other two array-valued dependencies of the same memo, for the same reason.
   assert.match(IMPACT, /const policyFenceServices = useMemo\(/);

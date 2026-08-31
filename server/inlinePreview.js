@@ -21,7 +21,30 @@ export const INLINE_LIMIT = 10240;
 
 /** Statement identifiers the administrator's restriction owns. The writer replaces these by prefix. */
 const ADMIN_DENY_SID = 'AdminDeny';
-const PASSROLE_FENCE_SID = 'PassRoleAllowlistFence';
+// Every fence Sid ends with this, and the name before it says which ATTACHMENT opened the hole:
+// ampLambdaFullAccessFence for AWSLambda_FullAccess, cmpTestpolicyFence for cmp-testpolicy. It used
+// to be PassRoleAllowlistFence<n>, numbered over the services, which named no attachment at all.
+// Byte-identical with generator/restriction.py fence_sid() - see the note at the top of this file.
+const PASSROLE_FENCE_SUFFIX = 'Fence';
+const FENCE_SID_STRIP = /[^0-9A-Za-z]+/g;
+
+/** The Sid an attachment's fence carries: [amp|cmp]<PolicyName>Fence. */
+export function fenceSid(identifier, source) {
+  const name = String(identifier ?? '').trim();
+  const bare = name.includes('/') ? name.slice(name.lastIndexOf('/') + 1) : name;
+  // source is the authority; the ARN answers when it is absent, because an AWS managed policy filed
+  // under cmp would carry the wrong origin AND the AWS the prefix exists to absorb.
+  const known = (source === 'aws_managed' || source === 'customer_managed')
+    ? source
+    : (name.includes('::aws:policy/') ? 'aws_managed' : 'customer_managed');
+  const prefix = known === 'aws_managed' ? 'amp' : 'cmp';
+  // The prefix already says it: AWSLambda_FullAccess under amp, cmp-testpolicy under cmp.
+  const redundant = prefix === 'amp' ? 'aws' : 'cmp';
+  const trimmed = bare.toLowerCase().startsWith(redundant) ? bare.slice(redundant.length) : bare;
+  let stripped = trimmed.replace(FENCE_SID_STRIP, '');
+  if (/^[A-Za-z]/.test(stripped)) stripped = stripped[0].toUpperCase() + stripped.slice(1);
+  return `${prefix}${stripped || 'Unnamed'}${PASSROLE_FENCE_SUFFIX}`;
+}
 
 /**
  * The bytes the API sees, and the bytes the quota counts.
@@ -213,15 +236,44 @@ function fold(built) {
  * have. The exemption list here is the placeholder alone - approved mirror ARNs are added by the
  * grant flow and widen it, which is one reason the size is an estimate and the writer measures.
  */
-export function fenceStatements(services, accountId) {
-  const named = [...new Set(services ?? [])].filter(Boolean).sort();
-  return named.map((service, index) => ({
-    Sid: `${PASSROLE_FENCE_SID}${index + 1}`,
-    Effect: 'Deny',
-    Action: 'iam:PassRole',
-    NotResource: [`arn:aws:iam::${accountId}:role/mirror-denyrole`],
-    Condition: { StringEquals: { 'iam:PassedToService': service } },
-  }));
+export function fenceStatements(grants, accountId) {
+  // One statement per (attachment, service), keyed by the Sid the attachment implies - the same
+  // shape passrole_fence() composes. Per service and not per attachment because the writer's
+  // NotResource is per service, so folding two services into one statement would let a role
+  // approved for one be passed to the other.
+  const pairs = new Set();
+  for (const grant of grants ?? []) {
+    if (!grant || grant.unconditioned) continue;
+    const sid = fenceSid(grant.identifier, grant.source);
+    for (const service of grant.services ?? []) {
+      const text = String(service ?? '').trim();
+      if (text) pairs.add(`${sid}\u0000${text}`);
+    }
+  }
+
+  const bySid = new Map();
+  for (const pair of [...pairs].sort()) {
+    const [sid, service] = pair.split('\u0000');
+    if (!bySid.has(sid)) bySid.set(sid, []);
+    bySid.get(sid).push(service);
+  }
+
+  const out = [];
+  for (const sid of [...bySid.keys()].sort()) {
+    const services = bySid.get(sid);
+    services.forEach((service, index) => {
+      out.push({
+        // Numbered only where one attachment grants to more than one service. The ordinary policy
+        // names one and its statement is ampLambdaFullAccessFence with nothing after it.
+        Sid: services.length === 1 ? sid : `${sid}${index + 1}`,
+        Effect: 'Deny',
+        Action: 'iam:PassRole',
+        NotResource: [`arn:aws:iam::${accountId}:role/mirror-denyrole`],
+        Condition: { StringEquals: { 'iam:PassedToService': service } },
+      });
+    });
+  }
+  return out;
 }
 
 /**
@@ -233,7 +285,7 @@ export function fenceStatements(services, accountId) {
  * spend a single 10,240 character quota.
  */
 export function composeInline(restrictions,
-                              { accountId, fenceServices = [], nested = () => false,
+                              { accountId, fenceGrants = [], nested = () => false,
                                 createdFormats = () => [] } = {}) {
   const built = [];
   for (const restriction of restrictions ?? []) {
@@ -244,7 +296,7 @@ export function composeInline(restrictions,
   }
   return {
     Version: '2012-10-17',
-    Statement: [...fold(built), ...fenceStatements(fenceServices, accountId)],
+    Statement: [...fold(built), ...fenceStatements(fenceGrants, accountId)],
   };
 }
 

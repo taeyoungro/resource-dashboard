@@ -1,6 +1,6 @@
 // Types for inlinePreview.js - shared with src the same way arn.d.ts is.
 
-import type { Restriction } from "../src/types";
+import type { ImpactPassRoleGrant, Restriction } from "../src/types";
 
 /** The permission set inline policy quota - the 10,240 one, not the 32,768 the API accepts. */
 export declare const INLINE_LIMIT: number;
@@ -22,8 +22,17 @@ export interface InlineDocument {
 /** The bytes the API sees and the quota counts: keys sorted, no whitespace. */
 export declare function serialise(value: unknown): string;
 
-/** The PassRole fence as the writer will compose it, with the placeholder as the whole allowlist. */
-export declare function fenceStatements(services: string[], accountId: string): InlineStatement[];
+/** The Sid an attachment's fence carries: [amp|cmp]<PolicyName>Fence. */
+export declare function fenceSid(identifier: string, source?: string): string;
+
+/** The PassRole fence as the writer will compose it, with the placeholder as the whole allowlist.
+ *
+ * The GRANTS and not a service list: the Sid names the attachment that opened the hole, and a flat
+ * list of services cannot say which policy a statement came from.
+ */
+export declare function fenceStatements(
+  grants: ImpactPassRoleGrant[], accountId: string,
+): InlineStatement[];
 
 /**
  * The whole inline document these restrictions become - across EVERY policy, because the permission
@@ -36,7 +45,7 @@ export declare function composeInline(
   restrictions: Restriction[],
   options: {
     accountId: string;
-    fenceServices?: string[];
+    fenceGrants?: ImpactPassRoleGrant[];
     /**
      * Whether an action operates BELOW the resource an index can hold, so the picked ARN is a
      * container and the statement needs what is inside it. Impact.tsx builds it from the
@@ -112,7 +121,7 @@ export declare function policyContribution(
   policy: string,
   options: {
     accountId: string;
-    fenceServices?: string[];
+    fenceGrants?: ImpactPassRoleGrant[];
     nested?: (action: string) => boolean;
     /** Same as composeInline's - the attribution key must match the fold's key, exemptions included. */
     createdFormats?: (action: string) => string[];

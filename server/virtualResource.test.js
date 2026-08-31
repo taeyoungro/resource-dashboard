@@ -35,7 +35,7 @@ const createdOf = (c) => {
 
 const documentOf = (c) => composeInline(c.restrictions, {
   accountId: c.account_id ?? FIXTURES.account_id,
-  fenceServices: c.fence_services ?? [],
+  fenceGrants: c.fence_grants ?? [],
   nested: nestedOf(c),
   createdFormats: createdOf(c),
 });
