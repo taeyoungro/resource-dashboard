@@ -391,6 +391,16 @@ pre.plan {
 .refusal pre.plan { margin: 0.5rem 0; white-space: pre-wrap; }
 .refusal .meta { gap: 0.9rem; }
 
+/* An inspection that STOPPED rather than refused. Same block, warn instead of danger, because the
+   two send a person to opposite places: a refusal is theirs to fix and this one is the pipeline's
+   own to retry. Red on a state lock timeout reads as "go and change the resource". */
+.refusal-retrying {
+  border-color: var(--warn);
+  border-left-color: var(--warn);
+  background: rgba(154, 103, 0, 0.08);
+}
+.refusal-retrying > strong { color: var(--warn); }
+
 .warn, .warn-inline {
   padding: 0.6rem 0.8rem;
   margin: 0.6rem 0;

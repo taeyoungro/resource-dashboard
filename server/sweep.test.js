@@ -300,7 +300,8 @@ test('newest plan first', async () => {
 
 test('an empty bucket is an empty answer and not an error', async () => {
   const state = await sweep(fakeS3({}), CONFIG, { now: NOW });
-  assert.deepEqual(state.counts, { failed: 0, running: 0, awaiting_decision: 0, refused: 0 });
+  assert.deepEqual(state.counts,
+                   { failed: 0, running: 0, awaiting_decision: 0, refused: 0, retrying: 0 });
   assert.deepEqual(state.errors, []);
 });
 
@@ -679,13 +680,17 @@ test('the fetch cap counts only what was not already held', async () => {
 
 const REFUSAL = '12 managed policies including the baseline, and the limit is 10';
 
-const withRefusal = (fixture, { at, requestId, reason = REFUSAL, kind = 'ps_role' }) => {
+const withRefusal = (fixture,
+                    { at, requestId, reason = REFUSAL, kind = 'ps_role', retryable }) => {
   const objects = [...fixture.objects, { key: `${fixture.prefix}refusal.json`, lastModified: at }];
   const bodies = {
     ...fixture.bodies,
     [`${BUCKET}/${fixture.prefix}refusal.json`]: {
       schema: 1, request_id: requestId, account_id: '644701781058', resource: 'ps-Taeyoung',
       kind, reason, refused_at: at,
+      // Omitted rather than false when the caller says nothing, so the cases below run against a
+      // record written before the field existed - which is every record already in the bucket.
+      ...(retryable === undefined ? {} : { retryable }),
     },
   };
   return { ...fixture, objects, bodies };
@@ -1510,4 +1515,90 @@ test('an outcome about an earlier inspection does not decide the current plan', 
   const detail = await readPlan(s3, LIVE_CONFIG, '644701781058:lambda-TestInspectorRunTask2');
   assert.deepEqual(detail.passrole.granted_to, []);
   assert.deepEqual(detail.passrole_writers, [], 'and the writers column is about this plan too');
+});
+
+// ---- an inspection that STOPPED rather than refused ---------------------------------------------
+//
+// The second silence, one step in from the first. A run that reached the member account and then
+// failed - a plan lock held by another run, a throttled call, an upload that did not land - keeps
+// its marker, which is right: the task did not complete. But the marker says only THAT, so a lock
+// timeout and a task killed before it ran a line produced the same thing on this page, and the
+// sentence telling them apart was in CloudWatch under a task id nobody had.
+//
+// The inspector now records those too, into the same artifact, with retryable true. What the two
+// kinds must NOT share is the rendering: telling somebody to go and fix a resource that a state
+// lock had nothing to do with is worse than the silence was.
+
+const LOCK_TIMEOUT = 'plan failed: terraform plan timed out on the state lock';
+
+test('a failed attempt is its own state, not 계획 거부됨', async () => {
+  const plan = planFixture('644701781058', 'ps-Taeyoung',
+                           { at: ago(600), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
+  const fixture = withRefusal(plan, {
+    at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa2',
+    reason: LOCK_TIMEOUT, retryable: true,
+  });
+  const state = await sweep(fakeS3({ [BUCKET]: fixture.objects }, fixture.bodies), CONFIG,
+                            { now: NOW });
+  const [row] = state.plans;
+  assert.equal(row.state, 'retrying',
+               'a lock timeout was reported as 계획 거부됨, which sends somebody to edit a '
+               + 'resource that was never broken');
+  assert.equal(row.refusal.retryable, true);
+  assert.equal(row.refusal.reason, LOCK_TIMEOUT, 'the sentence reaches the page verbatim');
+  assert.equal(row.refusal.supersedes_plan, true,
+               'it still outranks what the plan says it is waiting for');
+  assert.equal(state.counts.retrying, 1);
+  assert.equal(state.counts.refused, 0, 'counted apart, because they are looked at differently');
+});
+
+test('a verdict is still a verdict, and a record written before the field is one', async () => {
+  // Every record already in the bucket has no `retryable` at all, and every one of them was a
+  // verdict - the retryable kind had no writer until now. Reading a missing field as "retryable"
+  // would turn all of them into "wait, it will fix itself".
+  const plan = planFixture('644701781058', 'ps-Taeyoung',
+                           { at: ago(600), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
+  for (const over of [{}, { retryable: false }]) {
+    const fixture = withRefusal(plan, {
+      at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa2', ...over,
+    });
+    const state = await sweep(fakeS3({ [BUCKET]: fixture.objects }, fixture.bodies), CONFIG,
+                              { now: NOW });
+    assert.equal(state.plans[0].state, 'refused', JSON.stringify(over));
+    assert.equal(state.plans[0].refusal.retryable, false, JSON.stringify(over));
+  }
+});
+
+test('a first inspection that stopped is not reported as a resource nobody can plan', async () => {
+  // No plan has ever been produced here either, and the difference still matters: a refusal says
+  // there will not be one until somebody changes the resource, and this says the pipeline has not
+  // got through yet.
+  const prefix = '644701781058/ps-Newbie/plan/';
+  const objects = [{ key: `${prefix}refusal.json`, lastModified: ago(60) }];
+  const bodies = {
+    [`${BUCKET}/${prefix}refusal.json`]: {
+      schema: 1, request_id: '644701781058-bbbbbbbbbbbbbbb1', account_id: '644701781058',
+      resource: 'ps-Newbie', kind: 'ps_role', reason: LOCK_TIMEOUT, refused_at: ago(60),
+      retryable: true,
+    },
+  };
+  const state = await sweep(fakeS3({ [BUCKET]: objects }, bodies), CONFIG, { now: NOW });
+  assert.deepEqual(state.errors, [], 'the record was reported as an incomplete upload');
+  const [row] = state.plans;
+  assert.equal(row.state, 'retrying');
+  assert.equal(row.refusal.supersedes_plan, false, 'there is no plan for it to supersede');
+});
+
+test('the panel carries the kind, because the two say opposite things to a person', async () => {
+  const plan = planFixture('644701781058', 'ps-Taeyoung',
+                           { at: ago(600), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
+  const fixture = withRefusal(plan, {
+    at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa2',
+    reason: LOCK_TIMEOUT, retryable: true,
+  });
+  const detail = await readPlan(fakeS3({ [BUCKET]: fixture.objects }, fixture.bodies), CONFIG,
+                                '644701781058:ps-Taeyoung');
+  assert.equal(detail.refusal.retryable, true,
+               'the panel cannot tell a verdict from an attempt, so it renders one text for both');
+  assert.equal(detail.plan_stored, true);
 });

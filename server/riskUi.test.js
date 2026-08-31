@@ -1438,3 +1438,38 @@ test('a feed that is not arriving says so on the bell itself', () => {
   assert.match(BELL, /unread === 0 && broken/,
     'a broken feed with no unread items shows nothing on the bell');
 });
+
+// ---- a refusal and a failed attempt must not read the same -------------------------------------
+//
+// One artifact, two kinds, and the rendering is where the difference becomes an action. A refusal
+// says "고치고 자원을 다시 변경하십시오" and that is right for a spec role carrying twelve managed
+// policies. Said after a terraform state lock timeout it sends an administrator to edit a resource
+// that was never broken, while the thing worth looking at - a request the pipeline cannot get
+// through - goes unmentioned. Before the inspector recorded the second kind there was no sentence
+// at all; the failure mode of adding one is showing the wrong one.
+
+const LIST = readFileSync(new URL('../src/components/PlanList.tsx', import.meta.url), 'utf8');
+
+test('the notice branches on the kind rather than telling everyone to fix the resource', () => {
+  const block = PLAN.slice(PLAN.indexOf('function RefusalNotice('),
+                           PLAN.indexOf('function RestrictionTemplates('));
+  assert.ok(block.length > 0 && block.length < PLAN.length, 'the slice caught the wrong component');
+  assert.match(block, /refusal\.retryable/,
+               'RefusalNotice reads one text for both kinds, so a lock timeout tells somebody to '
+               + 'go and change a resource that had nothing to do with it');
+  // The verdict's instruction must not be what a retryable failure shows.
+  const [retrying, verdict] = block.split(') : planStored ? (');
+  assert.ok(verdict?.includes('자원을'), 'the slice did not split the two branches');
+  assert.ok(!retrying.includes('자원을 다시 변경하십시오'),
+            'the retryable branch still tells the administrator to change the resource');
+  assert.ok(retrying.includes('고칠 것이 없습니다'),
+            'the retryable branch does not say the one thing that distinguishes it');
+});
+
+test('the row badge separates them too, because that is where somebody decides to look', () => {
+  assert.match(LIST, /s === "retrying"/,
+               'a failed attempt falls through to 계획 거부됨 on the list');
+  const badge = LIST.slice(LIST.indexOf('const stateBadge'), LIST.indexOf('export function PlanList'));
+  assert.ok(!/s === "retrying"[\s\S]{0,120}badge-danger/.test(badge),
+            'the retrying badge is the refusal colour, which is the reading it exists to avoid');
+});
