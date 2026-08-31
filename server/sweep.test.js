@@ -11,7 +11,8 @@ import { test } from 'node:test';
 
 import { makeMarkerBodies } from './markerBodies.js';
 import {
-  changesFromPlan, identityFromConfig, isDigest, passroleFromPlan, planIdFromKey,
+  changesFromPlan, holdersFromConfig, identityFromConfig, isDigest, passroleFromPlan,
+  planIdFromKey,
   requestersFromConfig,
   planPrefixFromId, readPlan,
   requestIdFromMarkerKey, sweep, unavailableFromConfig, writerVerification,
@@ -1220,4 +1221,100 @@ test('the row counts an ungrantable ask, because a silent row is how one went un
   assert.equal(row.passrole_requests, 0, 'an ungrantable ask must not read as offerable');
   assert.equal(row.passrole_unavailable, 1,
                'the row says nothing about the ask, so the plan looks like one nobody asked about');
+});
+
+// ---- who holds the grant, and what has been taken back -----------------------------------------
+//
+// The gap: granting rides on approving a plan, and once that plan is applied there is no second
+// decision to make. So the only field that removes a grant could not be sent, and a grant held by
+// somebody whose tag went in an earlier inspection stood with no screen able to touch it - and no
+// badge on the row pointing at one either, because every badge was about a REQUEST.
+
+test('the holders are read off the generated document, not the request list', () => {
+  const document = { output: {
+    passrole_requested_by: { value: ['alice'] },
+    passrole_granted_to: { value: ['carol', 'bob', 'carol'] },
+  } };
+  assert.deepEqual(holdersFromConfig(document), ['bob', 'carol']);
+  // The two answer different questions and one is not a subset of the other: carol holds the grant
+  // and is asking for nothing, which is exactly the case that had no screen.
+  assert.deepEqual(requestersFromConfig(document), ['alice']);
+});
+
+test('a document with no holders answers empty rather than undefined', () => {
+  for (const document of [null, {}, { output: {} },
+                          { output: { passrole_granted_to: {} } },
+                          { output: { passrole_granted_to: { value: 'bob' } } }]) {
+    assert.deepEqual(holdersFromConfig(document), []);
+  }
+});
+
+test('the row counts the holders, so a revocable grant is findable', async () => {
+  const requestId = '644701781058-cccccccccccccccd';
+  const plan = planFixture('644701781058', 'lambda-Held', { at: ago(600), requestId });
+  plan.bodies[`${BUCKET}/${plan.prefix}main.tf.json`] = {
+    terraform: { backend: { s3: { bucket: BUCKET,
+                                  key: '644701781058/lambda-Held/terraform.tfstate' } } },
+    // Nobody is asking. Somebody holds it. Before this the row said nothing at all.
+    output: { passrole_requested_by: { value: [] },
+              passrole_granted_to: { value: ['Taeyoung'] } },
+  };
+  const s3 = fakeS3({ [BUCKET]: plan.objects, 'opt-solution-markers': [] }, plan.bodies);
+  const state = await sweep(s3, CONFIG, { now: NOW });
+
+  const row = state.plans.find((p) => p.resource === 'lambda-Held');
+  assert.equal(row.passrole_requests, 0);
+  assert.equal(row.passrole_granted, 1,
+               'the row says nothing about a held grant, so the revoke screen has no way in');
+});
+
+test('the withdrawal history is read and is not matched to a request id', async () => {
+  // Deliberate: a withdrawal is about the RESOURCE. Matching it to one plan the way outcome.json is
+  // matched would make it vanish the next time somebody touched the role.
+  const requestId = '644701781058-dddddddddddddddе'.slice(0, 29);
+  const plan = planFixture('644701781058', 'lambda-Held',
+                           { at: ago(600), requestId: '644701781058-1234567890abcdef' });
+  plan.objects.push({ key: `${plan.prefix}passrole.json`, lastModified: ago(60) });
+  plan.bodies[`${BUCKET}/${plan.prefix}passrole.json`] = {
+    schema: 1, account_id: '644701781058', resource: 'lambda-Held',
+    actions: [
+      // A withdrawal recorded under a request id that is NOT the plan's current one.
+      { request_id: '644701781058-aaaaaaaaaaaaaaaa', action: 'revoke', users: ['bob'],
+        reviewer: 'kim', comment: 'left the team', detail: 'withdrawn from bob by kim',
+        finished_at: '2026-08-30T00:00:00Z' },
+      { request_id: '644701781058-bbbbbbbbbbbbbbbb', action: 'revoke', users: ['carol'],
+        reviewer: 'lee', comment: '', detail: '', finished_at: '2026-08-31T00:00:00Z' },
+    ],
+  };
+  assert.ok(requestId);
+  const s3 = fakeS3({ [BUCKET]: plan.objects, 'opt-solution-markers': [] }, plan.bodies);
+  const detail = await readPlan(s3, { ...CONFIG, inlineResultPrefix: 'inline_result/' },
+                                '644701781058:lambda-Held');
+
+  assert.equal(detail.passrole_withdrawals.length, 2, 'a stale request id dropped the history');
+  assert.deepEqual(detail.passrole_withdrawals[0].users, ['bob'], 'oldest first');
+  assert.equal(detail.passrole_withdrawals[0].reviewer, 'kim');
+  assert.equal(detail.passrole_withdrawals[0].comment, 'left the team');
+});
+
+test('an entry naming nobody is dropped from the history', async () => {
+  const plan = planFixture('644701781058', 'lambda-Held',
+                           { at: ago(600), requestId: '644701781058-1234567890abcdef' });
+  plan.objects.push({ key: `${plan.prefix}passrole.json`, lastModified: ago(60) });
+  plan.bodies[`${BUCKET}/${plan.prefix}passrole.json`] = {
+    actions: [null, { users: [] }, { users: ['bob'] }, 'nope'],
+  };
+  const s3 = fakeS3({ [BUCKET]: plan.objects, 'opt-solution-markers': [] }, plan.bodies);
+  const detail = await readPlan(s3, { ...CONFIG, inlineResultPrefix: 'inline_result/' },
+                                '644701781058:lambda-Held');
+  assert.deepEqual(detail.passrole_withdrawals.map((w) => w.users), [['bob']]);
+});
+
+test('a plan with no withdrawal record answers empty rather than undefined', async () => {
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(600), requestId: '644701781058-1234567890abcdef' });
+  const s3 = fakeS3({ [BUCKET]: plan.objects, 'opt-solution-markers': [] }, plan.bodies);
+  const detail = await readPlan(s3, { ...CONFIG, inlineResultPrefix: 'inline_result/' },
+                                '644701781058:cmp-WebHosting');
+  assert.deepEqual(detail.passrole_withdrawals, []);
 });

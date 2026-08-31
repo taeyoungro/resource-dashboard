@@ -1,6 +1,6 @@
 import type {
   BucketList, BucketReview, DecisionPayload, DecisionResult, NotificationFeed,
-  PassroleRetryPayload, PlanDetail, RiskAnalysisAnswer, SweepState,
+  PassroleRetryPayload, PassroleRevokePayload, PlanDetail, RiskAnalysisAnswer, SweepState,
 } from "./types";
 
 // Same origin. The server that serves this page is the server that answers these calls, so there
@@ -142,6 +142,20 @@ export const api = {
   ): Promise<DecisionResult> =>
     handle(
       await fetch(`${BASE}/plans/${encodeURIComponent(planId)}/passrole-retry`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(payload),
+      }),
+    ),
+
+  // Taking a grant back on its own. Its own route rather than a flag on decide, because it is not
+  // a decision about the plan: it carries no digest, applies nothing, and stays available after the
+  // plan has an outcome - which is exactly when it is needed.
+  revokePassrole: async (
+    planId: string, payload: PassroleRevokePayload,
+  ): Promise<DecisionResult> =>
+    handle(
+      await fetch(`${BASE}/plans/${encodeURIComponent(planId)}/passrole-revoke`, {
         method: "POST",
         headers: headers(),
         body: JSON.stringify(payload),

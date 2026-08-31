@@ -58,6 +58,16 @@ const OUTCOME_ARTIFACT = 'outcome.json';
  */
 const REFUSAL_ARTIFACT = 'refusal.json';
 
+/** PassRole actions taken on this resource with no plan decision behind them - see event_pipeline
+ * code/applier/applier/withdrawal.py.
+ *
+ * Its own object, beside outcome.json rather than inside it, and that is what makes it useful here.
+ * outcome.json is the record of ONE plan and is matched to the inspection that produced it, so a
+ * later inspection makes it stale; a withdrawal is about the RESOURCE and has to outlive every
+ * re-inspection. Appended to, never replaced - "who took what away, and when" is the question.
+ */
+const WITHDRAWAL_ARTIFACT = 'passrole.json';
+
 // The inspector's reduction of what the plan will DO, written beside the plan. See event_pipeline
 // code/inspector/generator/digest.py.
 //
@@ -196,6 +206,19 @@ export function changesFromPlan(planJson) {
  */
 export function requestersFromConfig(document) {
   const value = document?.output?.passrole_requested_by?.value;
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((v) => typeof v === 'string' && v.trim()))].sort();
+}
+
+/** Who HOLDS the grant right now, from the same document.
+ *
+ * Counted onto the row so a resource whose grants can be taken back is findable at all. Every badge
+ * before this one was about a REQUEST, and a holder whose tag was removed in an earlier inspection
+ * is in no request list - so the row said nothing and the only screen that can revoke was reachable
+ * only by guessing which plan to open.
+ */
+export function holdersFromConfig(document) {
+  const value = document?.output?.passrole_granted_to?.value;
   if (!Array.isArray(value)) return [];
   return [...new Set(value.filter((v) => typeof v === 'string' && v.trim()))].sort();
 }
@@ -431,11 +454,13 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
     // a second object read per plan.
     let requesters = [];
     let unavailable = [];
+    let holders = [];
     try {
       const document = await getJson(s3, config.stateBucket, configObject.key);
       identity = identityFromConfig(document);
       requesters = requestersFromConfig(document);
       unavailable = unavailableFromConfig(document);
+      holders = holdersFromConfig(document);
     } catch (err) {
       errors.push(`${configObject.key}: ${err.message}`);
     }
@@ -485,6 +510,9 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
       // a tagged role went unnoticed: requested_by is empty for an ungrantable ask, so the badge
       // disappeared and the plan looked like one carrying no request.
       passrole_unavailable: unavailable.length,
+      // And how many hold it now. Not a request and not a decision - a live fact about the
+      // resource, and the way in to the only screen that can take a grant back.
+      passrole_granted: holders.length,
       // The last inspection of this resource, when it refused. Null when the record is about the
       // plan that is standing - see refusalFor.
       refusal: refusalFor(refusal, requestId, refusalObject),
@@ -825,7 +853,8 @@ export async function readPlan(s3, config, planId) {
   const planObject = byName.get(PLAN_ARTIFACT);
   const refusalObject = byName.get(REFUSAL_ARTIFACT);
 
-  const [planText, configJson, planJson, planBytes, digestText, manifest, outcome, refusal] =
+  const [planText, configJson, planJson, planBytes, digestText, manifest, outcome, withdrawals,
+         refusal] =
     await Promise.all([
     byName.has('plan.txt')
       ? getBytes(s3, config.stateBucket, `${prefix}plan.txt`).then((b) => b.toString('utf-8'))
@@ -848,6 +877,11 @@ export async function readPlan(s3, config, planId) {
       : Promise.resolve(null),
     byName.has(OUTCOME_ARTIFACT)
       ? getJson(s3, config.stateBucket, `${prefix}${OUTCOME_ARTIFACT}`)
+      : Promise.resolve(null),
+    // Never matched against the request id, unlike the outcome above. A withdrawal is about the
+    // resource and not about any one plan, so an inspection since does not make it stale.
+    byName.has(WITHDRAWAL_ARTIFACT)
+      ? getJson(s3, config.stateBucket, `${prefix}${WITHDRAWAL_ARTIFACT}`).catch(() => null)
       : Promise.resolve(null),
     // Read here and not carried over from the sweep's row, because the sweep runs on an interval
     // and this reads the prefix as it is when somebody opens it. The gap between the two is exactly
@@ -939,6 +973,21 @@ export async function readPlan(s3, config, planId) {
     changes: changesFromPlan(planJson),
     // Who asked to be able to pass this mirror role, and to which services. Requests, not grants.
     passrole: passroleFromPlan(planJson),
+    // What has been taken back on this resource with no plan decision behind it, oldest first.
+    // Read unmatched to any request id on purpose: a withdrawal outlives the plan it was made
+    // beside, and matching it to one would make it vanish on the next inspection.
+    passrole_withdrawals: Array.isArray(withdrawals?.actions)
+      ? withdrawals.actions
+        .filter((a) => a && Array.isArray(a.users) && a.users.length > 0)
+        .map((a) => ({
+          request_id: typeof a.request_id === 'string' ? a.request_id : null,
+          users: a.users.filter((u) => typeof u === 'string' && u.trim()),
+          reviewer: typeof a.reviewer === 'string' ? a.reviewer : null,
+          comment: typeof a.comment === 'string' ? a.comment : '',
+          detail: typeof a.detail === 'string' ? a.detail : '',
+          finished_at: a.finished_at ?? null,
+        }))
+      : [],
     artifacts: [...byName.keys()].sort(),
   };
 }

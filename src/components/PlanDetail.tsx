@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
-  AssessmentState, Impact as Assessment, PassroleWriter, PlanDetail as Detail, PlanRefusal,
-  Restriction, RestrictionTemplate, RiskAnalysisCitation,
+  AssessmentState, Impact as Assessment, PassroleWithdrawal, PassroleWriter,
+  PlanDetail as Detail, PlanRefusal, Restriction, RestrictionTemplate, RiskAnalysisCitation,
 } from "../types";
 import { mergeTemplate, seedFromTemplate } from "../../server/templates.js";
 import { Impact } from "./Impact";
@@ -37,6 +37,11 @@ interface Props {
    * server has already established the writer failed on.
    */
   onRetryPassrole: (users: string[], reviewer: string) => void;
+  /**
+   * Take a grant back, with no decision on this plan behind it. Stays available after the plan has
+   * an outcome — which is exactly when it is needed, because that is when granting's own path shuts.
+   */
+  onRevokePassrole: (users: string[], reviewer: string) => void;
 }
 
 const actionClass = (actions: string[]) => {
@@ -428,8 +433,176 @@ function PassroleWriters({ writers, disabled, onRetry }: {
   );
 }
 
+/**
+ * Who holds the grant right now, and the one place it can be taken back.
+ *
+ * Its own panel because it is not a decision about the plan. Granting rides on approving one, and
+ * once that plan is applied there is no second decision to make - the decision route refuses one on
+ * a plan that has an outcome, and a plan whose twin already matches carries no changes to approve.
+ * So the only field that removes a grant could not be sent at all, and a grant held by somebody
+ * whose tag was removed in an earlier inspection stood until the permission set was edited by hand.
+ *
+ * Shown whenever anybody holds the grant - applied, decided, or awaiting a decision. That is the
+ * point: this panel answers "who can pass this role today", which is a live question about the
+ * resource, not a question about the plan sitting in front of it.
+ *
+ * 지금 상태 in the requests table above says the same thing for people who are still tagged. This
+ * lists EVERYONE, which is what the other table cannot do: a holder whose tag is long gone appears
+ * in neither the requests nor the withdrawn-tag group.
+ */
+function PassroleHolders({ detail, disabled, onRevoke }: {
+  detail: Detail;
+  disabled: boolean;
+  onRevoke: (users: string[], reviewer: string) => void;
+}) {
+  // Its own, like the retry panel's. Taking a grant back is recorded with this name in
+  // passrole.json, and the decision form below is about a plan this action is not part of.
+  const [reviewer, setReviewer] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
+
+  const holders = detail.passrole?.granted_to ?? [];
+  const history = detail.passrole_withdrawals ?? [];
+  if (holders.length === 0 && history.length === 0) return null;
+
+  // A grant comes off a role, so there has to be a role. A plan that only creates one has produced
+  // no ARN yet and the server refuses the withdrawal - said here rather than after the button.
+  const exists = Boolean(detail.passrole?.target_arn);
+  const toggle = (name: string) =>
+    setPicked(picked.includes(name)
+      ? picked.filter((n) => n !== name)
+      : [...picked, name].sort());
+
+  const revoke = () => {
+    const who = reviewer.trim();
+    if (!who) {
+      window.alert("회수한 사람의 이름을 입력하세요. 기록에 그대로 남습니다.");
+      return;
+    }
+    if (picked.length === 0) {
+      window.alert("회수할 사람을 고르세요.");
+      return;
+    }
+    if (!window.confirm(
+      `${picked.join(", ")} 에게서 이 역할의 PassRole 을 회수합니다.\n\n계획을 다시 적용하지는 `
+      + "않습니다. 해당 권한 세트의 인라인 정책에서 문장을 지우고, 미러 역할의 부여 기록 태그를 "
+      + "떼어냅니다.",
+    )) return;
+    onRevoke(picked, who);
+    setPicked([]);
+  };
+
+  return (
+    <>
+      <h4>지금 부여된 사람 <span className="muted small">{holders.length}명</span></h4>
+      <p className="muted small">
+        미러 역할의 태그가 기록하는 <strong>현재 보유자</strong>입니다. 요청 목록과 별개입니다 —
+        태그를 오래전에 뗀 사람은 위 어느 표에도 나오지 않고 권한만 남아 있습니다.{" "}
+        <strong>여기서는 계획 승인 없이 바로 회수합니다.</strong>
+      </p>
+
+      {holders.length > 0 && !exists && (
+        <div className="warn-inline">
+          이 계획의 미러 역할이 아직 만들어지지 않았습니다. 지울 문장이 있으려면 역할이 먼저
+          있어야 하므로 회수할 수 없습니다.
+        </div>
+      )}
+
+      {holders.length > 0 && (
+        <table className="policy-table">
+          <thead>
+            <tr>
+              <th>회수</th>
+              <th>사람</th>
+              <th>부여된 권한 세트</th>
+            </tr>
+          </thead>
+          <tbody>
+            {holders.map((name) => (
+              <tr key={name}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={picked.includes(name)}
+                    disabled={disabled || !exists}
+                    onChange={() => toggle(name)}
+                  />
+                </td>
+                <td><code>{name}</code></td>
+                <td>
+                  <code>{detail.account_id ? `${detail.account_id}-${name}` : name}</code>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {holders.length > 0 && exists && (
+        <div className="decision">
+          <div className="row">
+            <input
+              placeholder="회수한 사람 (기록에 그대로 남습니다)"
+              value={reviewer}
+              onChange={(e) => setReviewer(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn-deny"
+              disabled={disabled || picked.length === 0}
+              onClick={revoke}
+            >
+              {picked.length > 0 ? `${picked.length}명 회수` : "회수"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <>
+          <h4>회수 이력 <span className="muted small">{history.length}건</span></h4>
+          <p className="muted small">
+            계획 결정 없이 이 자원에 가한 회수입니다. 계획이 다시 검사되어도 사라지지 않습니다 —
+            자원의 이력이지 계획의 기록이 아니기 때문입니다.
+          </p>
+          <table className="policy-table">
+            <thead>
+              <tr>
+                <th>누구에게서</th>
+                <th>누가</th>
+                <th>언제</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((entry: PassroleWithdrawal, index: number) => (
+                <tr key={entry.request_id ?? index}>
+                  <td>{entry.users.map((u) => <code key={u}>{u}</code>)}</td>
+                  <td>
+                    {entry.reviewer ?? <span className="muted">미상</span>}
+                    {entry.comment ? <div className="muted small">{entry.comment}</div> : null}
+                  </td>
+                  <td className="small">
+                    {entry.finished_at ? clock(entry.finished_at) : <span className="muted">—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      <p className="muted small">
+        회수는 <strong>계획을 다시 적용하지 않습니다.</strong> 적용기는 계정과 자원 이름에서 미러
+        역할을 유도해 그 하나로 두 가지를 합니다 — 권한 세트 인라인 정책의 문장을 지우고, 미러
+        역할의 부여 기록 태그를 뗍니다. 둘이 다른 역할을 가리키면 권한은 살아 있는데 기록만
+        사라지므로, 출처를 하나로 둡니다.
+      </p>
+    </>
+  );
+}
+
 export function PlanDetail({
   detail, decided, busy, assessmentState, view, onView, onDecide, onRetryPassrole,
+  onRevokePassrole,
 }: Props) {
   const [reviewer, setReviewer] = useState("");
   const [comment, setComment] = useState("");
@@ -511,7 +684,12 @@ export function PlanDetail({
         // no way to reach it: the tab was gated on requested_by, which an ungrantable ask is
         // deliberately kept out of, so a role tagged for a user with no permission set showed the
         // assessment view and nothing else.
-        || (detail.passrole?.unavailable ?? []).length > 0) && (
+        || (detail.passrole?.unavailable ?? []).length > 0
+        // And whoever holds it now. This is the case the tab was closed on: a grant held by
+        // somebody whose tag went in an earlier inspection is in no request list at all, so the
+        // only screen that can take it back had no way in.
+        || (detail.passrole?.granted_to ?? []).length > 0
+        || (detail.passrole_withdrawals ?? []).length > 0) && (
         <div className="tabs detail-tabs">
           <button
             type="button"
@@ -530,6 +708,9 @@ export function PlanDetail({
               : ''}
             {(detail.passrole?.unavailable ?? []).length > 0
               ? ` 부여 불가 ${detail.passrole.unavailable.length}`
+              : ''}
+            {(detail.passrole?.granted_to ?? []).length > 0
+              ? ` 부여됨 ${detail.passrole.granted_to.length}`
               : ''}
           </button>
         </div>
@@ -659,6 +840,12 @@ export function PlanDetail({
             writers={detail.passrole_writers ?? []}
             disabled={busy}
             onRetry={onRetryPassrole}
+          />
+          {/* Who holds it today, and the only path that takes it back once the plan is applied. */}
+          <PassroleHolders
+            detail={detail}
+            disabled={busy}
+            onRevoke={onRevokePassrole}
           />
         </>
       )}

@@ -1376,6 +1376,13 @@ dialog.picker.block-path { width: min(44rem, 94vw); }
   color: var(--danger);
 }
 
+/* A grant somebody holds. Neither a decision waiting nor a mistake waiting - a standing fact, so it
+   reads quieter than both and still says the resource has something to look at. */
+.row-action-held {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
 /* Two views of one plan. Indented to the panel rather than the window, so it reads as belonging to
    the resource named above it and not to the page. */
 .detail-tabs {
