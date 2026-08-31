@@ -22,6 +22,23 @@ const age = (seconds: number | null): string => {
   return `${Math.round(seconds / 86400)}일`;
 };
 
+/**
+ * Why this marker is in this list — which is a different question from which list it is in.
+ *
+ * "ECS said so, exit code 1" and "fifteen minutes old and nobody has said anything" are the same
+ * state and NOT the same knowledge, and telling them apart is exactly what the notifier added. One
+ * of them names a task whose reason is on the failure panel; the other names one where the marker
+ * outliving its task is the whole of what is known — an image that would not pull, a subnet with no
+ * addresses left, a kill before the container ran a line.
+ */
+const REASON: Record<Marker["state_reason"], { label: string; className: string } | null> = {
+  reported: { label: "멈춤 확인됨", className: "reason reported" },
+  aged_out: { label: "사유 없음 · 유예 초과", className: "reason aged-out" },
+  // Nothing. On the running list every row is within grace, so a badge saying so on all of them is
+  // a column of the same word.
+  within_grace: null,
+};
+
 const COPY = {
   failed: {
     title: "실패한 작업",
@@ -29,10 +46,12 @@ const COPY = {
     explain: (
       <>
         마커는 <strong>그 작업이 완료되지 않았음</strong>을 뜻합니다. 정상 종료하는 모든 경로가
-        마커를 지우므로, 유예 시간을 넘겨서도 남아 있다는 것은 그 작업이 죽었다는 뜻입니다.
-        이미지를 받지 못한 경우·경로 없는 서브넷·메모리 부족·시작 전 중지는 로그도 종료 코드도
-        남기지 못하고 <strong>마커만 남깁니다.</strong> 그래서 이 목록이 그런 실패를 보는 유일한
-        수단입니다.
+        마커를 지우므로, 남아 있다는 것은 그 작업이 죽었다는 뜻입니다. 여기 오는 길은 둘이고
+        아는 것의 양이 다릅니다 — <strong>멈춤 확인됨</strong>은 ECS 가 그 작업이 나쁘게 끝났다고
+        말한 것이라 <strong>위의 「실패한 작업」에 사유가 있습니다.</strong> 유예 시간을 넘겼는데
+        아무 보고도 없는 것은 <strong>사유 없음</strong>이고, 이미지를 받지 못한 경우·경로 없는
+        서브넷·메모리 부족·시작 전 중지가 그렇습니다 — 로그도 종료 코드도 남기지 못하고 마커만
+        남기므로, 그 실패를 보는 수단은 이 목록뿐입니다.
       </>
     ),
   },
@@ -87,6 +106,11 @@ export function MarkerPage({ state, error, onRefresh, filter }: Props) {
                     {m.kind}
                     {m.blocks_further_writes ? (
                       <span className="meta small"> 잠금</span>
+                    ) : null}
+                    {REASON[m.state_reason] ? (
+                      <div className={REASON[m.state_reason]!.className}>
+                        {REASON[m.state_reason]!.label}
+                      </div>
                     ) : null}
                   </td>
                   <td>

@@ -11,8 +11,8 @@ import { test } from 'node:test';
 
 import { makeMarkerBodies } from './markerBodies.js';
 import {
-  changesFromPlan, holdersFromConfig, identityFromConfig, isDigest, passroleFromPlan,
-  planIdFromKey,
+  changesFromPlan, classify, holdersFromConfig, identityFromConfig, isDigest, passroleFromPlan,
+  planIdFromKey, reclassify,
   requestersFromConfig,
   planPrefixFromId, readPlan,
   requestIdFromMarkerKey, sweep, unavailableFromConfig, writerVerification,
@@ -182,6 +182,85 @@ test('a young marker is a running task, not a failure', async () => {
   assert.equal(state.counts.failed, 1);
   assert.equal(state.markers.find((m) => m.resource === 'cmp-A').state, 'running');
   assert.equal(state.markers.find((m) => m.resource === 'cmp-B').state, 'failed');
+});
+
+// ---- a report is a fact, and it ends the grace period ------------------------------------------
+//
+// The grace period is a GUESS - "nothing has told me otherwise, so do not call it dead yet". A task
+// failure report is a FACT - ECS said the task stopped with a non-zero code. Before this, the guess
+// won even when the fact was on the same screen: the panel showed opt-inspector with exit code 1
+// while the tab beside it counted that marker as running.
+
+const YOUNG = 'inspector/644701781058-dddddddddddddddd.json';
+
+const youngMarker = () => fakeS3(
+  { 'opt-solution-markers': [{ key: YOUNG, lastModified: ago(60) }] },
+  { [`opt-solution-markers/${YOUNG}`]:
+      { account_id: '644701781058', resource: 'cmp-D', kind: 'spec_policy' } },
+);
+
+test('a reported stop ends the grace period for that marker', async () => {
+  const state = await sweep(youngMarker(), CONFIG, {
+    now: NOW,
+    // Reported 30 seconds ago; the object was written 60 seconds ago. The attempt ended after it
+    // started, so the thing in the bucket is dead however young the object is.
+    stoppedAt: (key) => (key === YOUNG ? NOW - 30_000 : null),
+  });
+  const marker = state.markers.find((m) => m.key === YOUNG);
+  assert.equal(marker.state, 'failed');
+  assert.equal(marker.state_reason, 'reported');
+  assert.equal(state.counts.failed, 1);
+  assert.equal(state.counts.running, 0, 'a container known to be dead is still counted as running');
+});
+
+test('a report older than the write is a previous attempt, and says nothing about this one', () => {
+  // THE case this whole comparison exists for. Pressing 다시 실행 re-puts the object, so the write
+  // overtakes the old report and a new task is genuinely in flight. Comparing against the write
+  // rather than merely asking "is there a report" is what makes the retry correct with no special
+  // case, and without it a retried task would read as dead the instant it started.
+  const written = '2026-08-03T11:59:00Z';                    // 60s before NOW
+  const stopped = Date.parse('2026-08-03T11:58:00Z');        // 120s before NOW - the attempt before
+  assert.deepEqual(classify(written, 60, 900, stopped),
+                   { state: 'running', state_reason: 'within_grace' });
+  // And the moment the new attempt dies, its report is newer and it flips back.
+  assert.deepEqual(classify(written, 60, 900, Date.parse('2026-08-03T11:59:30Z')),
+                   { state: 'failed', state_reason: 'reported' });
+});
+
+test('with nothing reported the answer is exactly what it was before', () => {
+  assert.deepEqual(classify('2026-08-03T11:59:00Z', 60, 900, null),
+                   { state: 'running', state_reason: 'within_grace' });
+  assert.deepEqual(classify('2026-08-03T10:00:00Z', 7200, 900, null),
+                   { state: 'failed', state_reason: 'aged_out' });
+  // No timestamp at all: the same answer as aged out, for the same reason - nothing here can say
+  // this task is alive.
+  assert.deepEqual(classify(null, null, 900, null),
+                   { state: 'failed', state_reason: 'aged_out' });
+});
+
+test('the cached sweep is re-judged on the way out, not left as it was swept', async () => {
+  // The report arrives AFTER the sweep. Serving the sweep verbatim is what showed a failure panel
+  // and a running count for the same container - the sweep predated the report and nothing
+  // recomputed it. reclassify runs on every read and re-reads nothing.
+  const swept = await sweep(youngMarker(), CONFIG, { now: NOW });
+  assert.equal(swept.counts.running, 1, 'the sweep itself knew nothing, which is correct');
+
+  const judged = reclassify(swept, {
+    now: NOW + 5_000,
+    graceSeconds: CONFIG.markerGraceSeconds,
+    stoppedAt: (key) => (key === YOUNG ? NOW - 30_000 : null),
+  });
+  assert.equal(judged.counts.running, 0);
+  assert.equal(judged.counts.failed, 1);
+  assert.equal(judged.markers[0].state_reason, 'reported');
+  // The clock moved too, and the age moved with it rather than staying frozen at sweep time.
+  assert.equal(judged.markers[0].age_seconds, 65);
+  // Plan counts are not this function's business and it must not touch them.
+  assert.equal(judged.counts.awaiting_decision, swept.counts.awaiting_decision);
+  assert.equal(judged.counts.refused, swept.counts.refused);
+  assert.equal(judged.counts.stopped, swept.counts.stopped);
+  // And the sweep it was given is untouched, so a second read judges the same thing again.
+  assert.equal(swept.counts.running, 1);
 });
 
 test('a marker whose body will not read is still reported, and the failure is recorded', async () => {

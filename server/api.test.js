@@ -2229,6 +2229,62 @@ test('a report is recorded and says whether it can be retried', async () => {
   assert.equal(failures[0].stopped_reason, 'Essential container in task exited');
 });
 
+test('a report moves the marker out of the running count without waiting for a sweep', async () => {
+  // The defect this closes, exactly as it was seen: the failure panel showed opt-inspector with
+  // stop code and exit code 1, and the tab beside it counted that same marker as 진행 중. The sweep
+  // had run and classified by age; the report landed a moment later; nothing re-judged it, and
+  // GET /api/state served the sweep verbatim for up to a day.
+  //
+  // No sweep is triggered here on purpose - store.refresh is never called. The point is that the
+  // answer changes on the way OUT, from the cached listing plus what has been reported since.
+  const now = Date.now();
+  const key = `inspector/${REQUEST}.json`;
+  const swept = {
+    plans: [],
+    markers: [{
+      kind: 'inspector', key, last_modified: new Date(now - 60_000).toISOString(),
+      age_seconds: 60, state: 'running', state_reason: 'within_grace', blocks_further_writes: false,
+    }],
+    counts: { failed: 0, running: 1, awaiting_decision: 4, refused: 0, stopped: 0 },
+    errors: [],
+  };
+  const route = routes({
+    config: {
+      markerBucket: 'opt-solution-markers', stateBucket: 'state', region: 'us-east-1',
+      applierPrefix: 'applier/', planSuffix: 'plan/', release: 'test',
+      ingestKey: 'i'.repeat(40), markerGraceSeconds: 900, controlPlaneArns: [],
+    },
+    s3: {},
+    store: { get: () => swept, refresh: async () => swept },
+    notifications: { recent: () => [], enabled: true },
+    markerBodies: { put: () => {}, get: () => null },
+    impacts: { get: () => null },
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+  });
+
+  const before = await route['GET /api/state']({});
+  assert.equal(before.counts.running, 1, 'nothing has been reported yet, so the guess still stands');
+
+  await route['POST /api/task-failures']({
+    body: { ...FAILURE, marker_key: key, stopped_at: new Date(now - 30_000).toISOString() },
+  });
+
+  const after = await route['GET /api/state']({});
+  assert.equal(after.counts.running, 0);
+  assert.equal(after.counts.failed, 1);
+  assert.equal(after.markers[0].state, 'failed');
+  assert.equal(after.markers[0].state_reason, 'reported');
+  // Plan counts are not this function's business.
+  assert.equal(after.counts.awaiting_decision, 4);
+
+  // And the refresh button answers the same thing. It is a different route returning a different
+  // object - the fresh sweep rather than the cached one - and a sweep that ran before the report
+  // knows no more about it than the cached one did, so it needs judging just the same.
+  const refreshed = await route['POST /api/sweep']({});
+  assert.equal(refreshed.counts.running, 0, 'the refresh button serves the sweep unjudged');
+  assert.equal(refreshed.markers[0].state_reason, 'reported');
+});
+
 test('a report about a task nobody started from an object is kept and not retryable', async () => {
   const { route } = failureHarness();
   const answer = await route['POST /api/task-failures']({

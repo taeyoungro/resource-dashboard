@@ -40,10 +40,22 @@ export interface Marker {
   age_seconds: number | null;
 
   /**
-   * running  younger than the grace period; the task is presumably still working
-   * failed   older, and the task that should have deleted it did not
+   * running  presumably still working
+   * failed   the task that should have deleted this marker did not
    */
   state: "running" | "failed";
+
+  /**
+   * On what evidence, which is not the same question as the state.
+   *
+   * reported      opt-SolutionTaskFailureNotifier carried an ECS event saying this task stopped
+   *               badly. A FACT, and it ends the grace period for this marker however young it is
+   * within_grace  younger than OPT_MARKER_GRACE_SECONDS and nothing has been reported. A GUESS,
+   *               and the right one almost always
+   * aged_out      older than the grace period, or carrying no timestamp at all. Also a guess, and
+   *               the only one available - nothing said why, so nothing here can say why either
+   */
+  state_reason: "reported" | "within_grace" | "aged_out";
 
   body_read: boolean;
   event_count: number | null;
