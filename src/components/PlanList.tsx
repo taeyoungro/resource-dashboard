@@ -77,6 +77,20 @@ export function PlanList({ items, selectedId, onSelect, onSelectPassrole }: Prop
                 PassRole 부여 불가 {it.passrole_unavailable}
               </button>
             )}
+            {/* Who holds it now. Not a request, so it gets no accent - but it is the only way in to
+                the screen that takes a grant back, and a holder whose tag went in an earlier
+                inspection appears in no request list at all. */}
+            {it.passrole_granted > 0 && (
+              <button
+                type="button"
+                className="row-action row-action-held"
+                onClick={(e) => { e.stopPropagation(); onSelectPassrole(it.plan_id); }}
+                title={`이 역할을 넘길 수 있는 사람 ${it.passrole_granted}명. `
+                  + '계획 승인 없이 여기서 회수할 수 있습니다.'}
+              >
+                PassRole 부여됨 {it.passrole_granted}
+              </button>
+            )}
           </div>
           {/* The resource. It is also what the plan is keyed by now - one governed resource has
               one state and one plan, and a new inspection replaces the old one rather than adding

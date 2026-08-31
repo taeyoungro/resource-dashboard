@@ -2041,10 +2041,144 @@ test('the page shows an ask it cannot offer, and opens a way to reach it', () =>
   );
   assert.match(detail, /unavailable\.map\(\(entry\)/, 'the reasons are not rendered');
   // And the tab that reaches the panel opens for them too.
-  assert.match(detail, /\|\| \(detail\.passrole\?\.unavailable \?\? \[\]\)\.length > 0\) && \(/,
+  assert.match(detail, /\|\| \(detail\.passrole\?\.unavailable \?\? \[\]\)\.length > 0/,
                'the PassRole tab is still gated on requested_by alone, so the panel is unreachable');
 
   const list = readFileSync(new URL('../src/components/PlanList.tsx', import.meta.url), 'utf8');
   assert.match(list, /it\.passrole_unavailable > 0 &&/,
                'the row carries no badge for an ungrantable ask, so the plan looks unasked-about');
+});
+
+// ---- taking a grant back with no plan decision behind it ---------------------------------------
+//
+// The gap: granting rides on approving a plan, and once that plan is applied there is no second
+// decision to make. The decision route refuses one on a plan that has an outcome, and a plan whose
+// twin already matches carries no changes to approve - so passrole_revoke_from, the only field that
+// removes a grant, could not be sent at all. A grant held by somebody whose tag went in an earlier
+// inspection stood until the permission set was edited by hand.
+//
+// A path with no plan behind it is defensible here and only here, because withdrawal is the safe
+// direction: it removes access and can add none.
+
+const HELD = {
+  passrole_requested_by: { actions: ['create'], after: [] },
+  passrole_granted_to: { actions: ['create'], after: ['Taeyoung', 'TestUser'] },
+  passrole_services: { actions: ['create'], after: ['lambda.amazonaws.com'] },
+  passrole_target_arn: { actions: ['create'], after: `arn:aws:iam::${ACCOUNT}:role/mirror-ps-alice` },
+};
+
+const revocation = (extra = {}) => ({ users: ['Taeyoung'], reviewer: 'someone', ...extra });
+
+test('a grant can be taken back on a plan that was already applied', async () => {
+  // The whole point. This is the state in which every other path is shut.
+  const { route, s3 } = harness({
+    planOutputs: HELD,
+    outcome: {
+      schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice',
+      decision: 'approve', reviewer: 'kim', applied: true, detail: 'Apply complete!',
+    },
+  });
+  const answer = await route['POST /api/plans/:id/passrole-revoke']({
+    params: { id: PLAN_ID }, body: revocation(),
+  });
+  assert.ok(answer.written);
+
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal(marker.passrole_revoke, true);
+  assert.deepEqual(marker.passrole_revoke_from, ['Taeyoung']);
+  assert.equal('passrole_grant_to' in marker, false, 'a withdrawal must not carry a grant');
+  assert.equal('restrictions' in marker, false);
+  assert.equal('passrole_retry' in marker, false, 'a withdrawal is not a retry');
+});
+
+test('the same plan cannot be decided again, which is why this route exists', async () => {
+  // Pinned so the two stay in step. If the decision route ever stopped refusing, this route would
+  // be a second way to do the same thing rather than the only way to do this one.
+  const { route } = harness({
+    planOutputs: HELD,
+    outcome: {
+      schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice',
+      decision: 'approve', reviewer: 'kim', applied: true, detail: 'Apply complete!',
+    },
+  });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({ passrole_revoke_from: ['Taeyoung'] }),
+    }),
+    (err) => err.status === 409 && /already applied/.test(err.message),
+  );
+});
+
+test('only somebody the plan records as holding the grant can be revoked', async () => {
+  // The list is a container's reading of the mirror role's own tags, not something this tier
+  // authored - the same rule the grant path follows against passrole_requested_by.
+  const { route } = harness({ planOutputs: HELD });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/passrole-revoke']({
+      params: { id: PLAN_ID }, body: revocation({ users: ['mallory'] }),
+    }),
+    (err) => err.status === 409 && /가지고 있지 않습니다/.test(err.message),
+  );
+});
+
+test('a role that does not exist yet has no statement to remove', async () => {
+  const { route } = harness({
+    planOutputs: {
+      ...HELD,
+      // The ordinary shape for a plan that CREATES the role: terraform cannot say the ARN yet.
+      passrole_target_arn: { actions: ['create'], after: null, after_unknown: true },
+    },
+  });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/passrole-revoke']({
+      params: { id: PLAN_ID }, body: revocation(),
+    }),
+    (err) => err.status === 409 && /미러 역할이 아직 만들어지지 않았습니다/.test(err.message),
+  );
+});
+
+test('a withdrawal needs a name and at least one target', async () => {
+  const { route } = harness({ planOutputs: HELD });
+  for (const [body, why] of [
+    [revocation({ reviewer: '' }), 'reviewer'],
+    [revocation({ users: [] }), 'no target'],
+    [revocation({ users: ['  '] }), 'blank name'],
+    [revocation({ users: 'Taeyoung' }), 'not an array'],
+  ]) {
+    await assert.rejects(
+      () => route['POST /api/plans/:id/passrole-revoke']({ params: { id: PLAN_ID }, body }),
+      (err) => err.status === 400, why,
+    );
+  }
+});
+
+test('several holders can be taken back in one act', async () => {
+  const { route, s3 } = harness({ planOutputs: HELD });
+  await route['POST /api/plans/:id/passrole-revoke']({
+    params: { id: PLAN_ID }, body: revocation({ users: ['TestUser', 'Taeyoung', 'Taeyoung'] }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.deepEqual(marker.passrole_revoke_from, ['Taeyoung', 'TestUser'], 'sorted and deduplicated');
+});
+
+test('the page offers the holders and a way to reach them', () => {
+  // Structural, because the runner cannot load the .tsx. The server tests above prove the ROUTE
+  // works and say nothing about whether anything on screen can call it - and the holder whose tag
+  // went long ago is in no request list, so nothing pointed at the panel.
+  const detail = readFileSync(
+    new URL('../src/components/PlanDetail.tsx', import.meta.url), 'utf8',
+  );
+  assert.match(detail, /<PassroleHolders/, 'the holders panel is not rendered');
+  assert.match(detail, /const holders = detail\.passrole\?\.granted_to \?\? \[\]/,
+               'the panel reads the holders from somewhere other than the plan');
+  assert.match(detail, /\|\| \(detail\.passrole\?\.granted_to \?\? \[\]\)\.length > 0/,
+               'the PassRole tab does not open for a role that only has holders');
+
+  const list = readFileSync(new URL('../src/components/PlanList.tsx', import.meta.url), 'utf8');
+  assert.match(list, /it\.passrole_granted > 0 &&/,
+               'the row carries no badge for a held grant, so the revoke screen has no way in');
+
+  const page = readFileSync(new URL('../src/components/PlanPage.tsx', import.meta.url), 'utf8');
+  assert.match(page, /api\.revokePassrole\(/, 'the handler does not call the revoke route');
 });

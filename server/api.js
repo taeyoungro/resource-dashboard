@@ -1623,6 +1623,121 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       });
       return { written: `s3://${config.markerBucket}/${key}`, marker };
     },
+
+    /**
+     * Take a PassRole grant back, with no decision on a plan behind it.
+     *
+     * The gap this fills: granting rides on approving a plan, and once that plan is applied there is
+     * no second decision to make. The decision route refuses one on a plan that has an outcome, and
+     * a plan whose twin already matches carries no changes to approve - so `passrole_revoke_from`,
+     * the only field that removes a grant, could not be sent at all. A grant held by somebody whose
+     * tag was removed in an earlier inspection stood until the permission set was edited by hand.
+     *
+     * A path with no plan behind it is defensible here and only here, because withdrawal is the safe
+     * direction: it removes access and can add none. The applier refuses a grant on this marker for
+     * the same reason - a grant needs a tag somebody wrote and a plan somebody read.
+     *
+     * The names are still bounded. They must be people the plan records as HOLDING the grant:
+     *
+     *   무엇인가   지금 이 미러 역할의 PassRole 을 가진 사람. 검사기가 미러 역할의 태그에서 읽는다
+     *   어디 있나  상태 버킷 <계정>/<자원>/plan/plan.json 의 출력 passrole_granted_to
+     *   누가 쓰나  검사기 하나
+     *   누가 읽나  여기, 그리고 계획 화면의 「지금 상태」열
+     *
+     * That list is a container's reading of the role's own tags, not something this tier authored -
+     * the same rule the grant path follows against passrole_requested_by.
+     */
+    'POST /api/plans/:id/passrole-revoke': async ({ params, body }) => {
+      const id = planId(params.id);
+      const reviewer = String(body.reviewer ?? '').trim();
+      if (!reviewer) throw new HttpError(400, 'reviewer is required');
+      if (reviewer.length > MAX_REVIEWER) throw new HttpError(400, 'reviewer is too long');
+      const comment = String(body.comment ?? '').trim();
+      if (comment.length > MAX_COMMENT) throw new HttpError(400, 'comment is too long');
+
+      const users = body.users ?? [];
+      if (!Array.isArray(users) || users.some((u) => typeof u !== 'string' || !u.trim())) {
+        throw new HttpError(400, 'users must be an array of Identity Center user names');
+      }
+      const named = [...new Set(users.map((u) => u.trim()))].sort();
+      if (named.length === 0) {
+        throw new HttpError(400, 'a withdrawal names the people whose grant is to be removed');
+      }
+
+      // Read the bucket rather than trusting what the page was showing. A grant removed by another
+      // administrator between the page rendering and this request is one there is nothing left to
+      // take, and the list below is what says so.
+      const plan = await readPlan(s3, config, id);
+      if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
+
+      const holders = new Set(plan.passrole?.granted_to ?? []);
+      const notHeld = named.filter((u) => !holders.has(u));
+      if (notHeld.length > 0) {
+        throw new HttpError(
+          409,
+          `${notHeld.join(', ')} — 이 역할의 PassRole 을 가지고 있지 않습니다. 회수는 미러 역할의 `
+          + `태그가 기록한 보유자에게만 할 수 있고, 이 계획이 기록한 보유자는 `
+          + `${[...holders].sort().join(', ') || '없음'} 입니다. 목록이 오래됐다면 원본 역할을 `
+          + '다시 검사하십시오.',
+        );
+      }
+      // The mirror role has to exist for there to be a statement to remove. A plan that only
+      // creates one has produced no ARN yet, and the applier would derive a name for a role that is
+      // not there.
+      if (!plan.passrole?.target_arn) {
+        throw new HttpError(
+          409,
+          `${id} 의 미러 역할이 아직 만들어지지 않았습니다. 회수할 문장이 있으려면 역할이 먼저 `
+          + '있어야 합니다.',
+        );
+      }
+
+      const [accountId, resource] = id.split(':');
+      const requestId = retryRequestId(accountId);
+      const marker = {
+        request_id: requestId,
+        plan_id: plan.plan_id,
+        account_id: accountId,
+        resource,
+        decision: 'approve',
+
+        // What makes this a withdrawal rather than a decision. The applier applies nothing on this
+        // path and refuses a marker that carries a grant, a restriction, or a denial.
+        passrole_revoke: true,
+        passrole_revoke_from: named,
+
+        reviewer,
+        comment,
+        decided_at: new Date().toISOString(),
+
+        // Carried because the applier's parse requires them, and true of the plan standing here.
+        // Nothing on this path reads them: no plan file is downloaded and no apply is run. Which
+        // role the grant comes off is DERIVED by the applier from the account and the resource, so
+        // that the statement and the mirror role tag cannot name different roles.
+        changes_sha256: plan.changes_sha256,
+        plan: {
+          bucket: config.stateBucket,
+          prefix: planPrefixFromId(id),
+          tfplan_sha256: plan.plan_file_sha256,
+        },
+
+        issued_by: { component: 'opt-SolutionDashboard', release: config.release },
+        schema: 1,
+      };
+
+      const key = `${config.applierPrefix}${requestId}.json`;
+      const bytes = await putJson(s3, config.markerBucket, key, marker);
+      markerBodies.put('applier', requestId, marker, 'written-here');
+
+      log.info('passrole withdrawal plan=%s request=%s reviewer=%s from=%s key=s3://%s/%s bytes=%d',
+        id, requestId, reviewer, named.join(','), config.markerBucket, key, bytes);
+
+      await store.refresh(`passrole withdrawal on ${id}`).catch((err) => {
+        log.warn('withdrawal written and the sweep after it failed plan=%s request=%s error=%s',
+          id, requestId, err?.message ?? err);
+      });
+      return { written: `s3://${config.markerBucket}/${key}`, marker };
+    },
   };
 }
 

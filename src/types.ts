@@ -110,6 +110,14 @@ export interface PlanSummary {
    * carrying no request.
    */
   passrole_unavailable: number;
+  /**
+   * How many people hold the grant right now, from the mirror role's own tags.
+   *
+   * Neither a request nor a decision — a live fact about the resource. It is on the row because a
+   * holder whose tag was removed in an earlier inspection appears in no request list, so nothing
+   * pointed at the only screen that can take the grant back.
+   */
+  passrole_granted: number;
 }
 
 /**
@@ -305,6 +313,14 @@ export interface PlanDetail {
    * every plan that granted nobody, which is most of them.
    */
   passrole_writers: PassroleWriter[];
+  /**
+   * What has been taken back on this resource with no plan decision behind it, oldest first.
+   *
+   * Never matched to a request id, unlike `outcome`. A withdrawal is about the RESOURCE and has to
+   * outlive every re-inspection of it; matching it to one plan would make it vanish the next time
+   * somebody touched the role.
+   */
+  passrole_withdrawals: PassroleWithdrawal[];
   artifacts: string[];
 }
 
@@ -316,6 +332,18 @@ export interface PlanDetail {
  * a grant happens only when an approver confirms a name on the decision, and the applier checks
  * that name against `requested_by` again, because this tier is the one that is not trusted.
  */
+/** One PassRole grant taken back outside a plan decision, from `passrole.json`. */
+export interface PassroleWithdrawal {
+  request_id: string | null;
+  /** Who lost the grant. */
+  users: string[];
+  reviewer: string | null;
+  comment: string;
+  /** The applier's own line — which work orders it wrote, and whether the tag came off. */
+  detail: string;
+  finished_at: string | null;
+}
+
 /** One ask the inspector resolved and could not turn into a grant. */
 export interface PassroleUnavailable {
   user_name: string;
@@ -587,6 +615,22 @@ export interface DecisionResult {
  * out of the recorded outcome, and refuses any name that outcome does not mark retryable.
  */
 export interface PassroleRetryPayload {
+  users: string[];
+  reviewer: string;
+  comment?: string;
+}
+
+/**
+ * Take a PassRole grant back, with no decision on a plan behind it.
+ *
+ * The same shape as a retry and a different act. Names only: which role the grant comes off is
+ * derived by the applier from the account and the resource, so that the statement it removes and
+ * the mirror role tag it clears cannot name different roles.
+ *
+ * Every name has to be somebody the plan records as HOLDING the grant — `passrole_granted_to`,
+ * which the inspector reads off the mirror role's own tags.
+ */
+export interface PassroleRevokePayload {
   users: string[];
   reviewer: string;
   comment?: string;

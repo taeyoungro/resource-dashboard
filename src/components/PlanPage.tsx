@@ -150,6 +150,28 @@ export function PlanPage({ state, error, onRefresh }: Props) {
     }
   };
 
+  /**
+   * Take a grant back, with no decision on the plan behind it.
+   *
+   * Deliberately not routed through decide(). It carries no digest and no restriction because it is
+   * not a verdict on the plan - and it stays available after the plan has an outcome, which is
+   * exactly when granting's own path has shut and a held grant would otherwise be permanent.
+   */
+  const revokePassrole = async (users: string[], reviewer: string) => {
+    if (!selectedId) return;
+    setBusy(true);
+    setDetailError(null);
+    try {
+      const result = await api.revokePassrole(selectedId, { users, reviewer });
+      window.alert(`회수했습니다.\n${result.written}`);
+      onRefresh();
+    } catch (e) {
+      setDetailError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const fold = (next: boolean) => {
     setFolded(next);
     foldPreference.set(next);
@@ -224,6 +246,7 @@ export function PlanPage({ state, error, onRefresh }: Props) {
             onView={setView}
             onDecide={decide}
             onRetryPassrole={retryPassrole}
+            onRevokePassrole={revokePassrole}
           />
         ) : (
           <div className="empty">왼쪽 목록에서 계획을 선택하세요.</div>
