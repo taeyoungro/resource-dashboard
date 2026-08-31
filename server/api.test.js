@@ -188,6 +188,11 @@ function stubS3(objects) {
 
 function harness({ pushed = null, riskAnalysis = false, assessment = null, planOutputs = null,
                    noChanges = false, refreshFails = false, outcome = null, markers = {},
+                   // The ingest key authorises the MACHINE routes - announcements, the assessment
+                   // delivery, and the notifier's failure reports. Set here so those are reachable;
+                   // the routes a person drives use the dashboard's own key, which this table never
+                   // sees because that check happens at the HTTP layer.
+                   ingestKey = 'i'.repeat(40),
                    makeModelClient = async () => { throw new Error('not configured'); },
                  } = {}) {
   const document = assessment ? JSON.stringify(assessment) : ASSESSMENT_JSON;
@@ -216,7 +221,7 @@ function harness({ pushed = null, riskAnalysis = false, assessment = null, planO
   });
   const route = routes({
     config: {
-      markerBucket: 'opt-solution-markers', stateBucket: 'state',
+      markerBucket: 'opt-solution-markers', stateBucket: 'state', ingestKey,
       applierPrefix: 'applier/', planSuffix: 'plan/', release: 'test',
       inlineWriterPrefix: 'inline_writer/', inlineResultPrefix: 'inline_result/',
       region: 'us-east-1',
@@ -2181,4 +2186,127 @@ test('the page offers the holders and a way to reach them', () => {
 
   const page = readFileSync(new URL('../src/components/PlanPage.tsx', import.meta.url), 'utf8');
   assert.match(page, /api\.revokePassrole\(/, 'the handler does not call the revoke route');
+});
+
+// ---- a container that stopped badly -------------------------------------------------------------
+//
+// The marker that outlived the task is already visible. What the notifier adds is the REASON, which
+// exists in the ECS task state change event and nowhere the dashboard can reach: a plan lock timeout
+// and a task killed before it ran a line leave the same object in the same bucket.
+//
+// And the retry. Re-putting the object that started a task is the only way to run it again without
+// ecs:RunTask - which is the whole reason it is acceptable here, because RunTask carries container
+// overrides and this does not: it starts a fixed task definition with the overrides its own rule
+// composes.
+
+const FAILURE = {
+  schema: 1,
+  task_arn: `arn:aws:ecs:us-east-1:${ACCOUNT}:task/opt-solution-cluster/abc123`,
+  task_definition_arn: `arn:aws:ecs:us-east-1:${ACCOUNT}:task-definition/opt-inspector:41`,
+  stop_code: 'EssentialContainerExited',
+  stopped_reason: 'Essential container in task exited',
+  stopped_at: '2026-08-31T10:00:00Z',
+  exit_codes: [1],
+  marker_bucket: 'opt-solution-markers',
+  marker_key: `inspector/${REQUEST}.json`,
+};
+
+function failureHarness({ marker = 'the listener wrote this' } = {}) {
+  const { route, s3 } = harness({
+    markers: marker === null ? {} : { [`inspector/${REQUEST}.json`]: marker },
+  });
+  return { route, s3 };
+}
+
+test('a report is recorded and says whether it can be retried', async () => {
+  const { route } = failureHarness();
+  const answer = await route['POST /api/task-failures']({ body: FAILURE });
+  assert.equal(answer.retryable, true);
+  assert.equal(answer.attempts, 1);
+  const { failures } = await route['GET /api/task-failures']({});
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].stop_code, 'EssentialContainerExited');
+  assert.equal(failures[0].stopped_reason, 'Essential container in task exited');
+});
+
+test('a report about a task nobody started from an object is kept and not retryable', async () => {
+  const { route } = failureHarness();
+  const answer = await route['POST /api/task-failures']({
+    body: { ...FAILURE, marker_bucket: null, marker_key: null },
+  });
+  assert.equal(answer.retryable, false, 'there is nothing to re-put');
+  const { failures } = await route['GET /api/task-failures']({});
+  assert.equal(failures.length, 1, 'and it is still worth showing');
+});
+
+test('a report that is not one is refused with 400 rather than rendered', async () => {
+  const { route } = failureHarness();
+  await assert.rejects(() => route['POST /api/task-failures']({ body: { nothing: true } }),
+                       (err) => err.status === 400);
+});
+
+test('the retry re-puts the object it read, byte for byte', async () => {
+  // Read and written back, never composed. What restarts the task is the write event and not the
+  // contents, so this tier has no reason to author bytes a container will act on - and every reason
+  // not to: the applier checks an approval came from here, and that can only keep meaning something
+  // while this route cannot invent one.
+  const { route, s3 } = failureHarness({ marker: 'the listener wrote this' });
+  await route['POST /api/task-failures']({ body: FAILURE });
+  const answer = await route['POST /api/task-failures/retry']({
+    body: { id: FAILURE.marker_key, reviewer: 'kim' },
+  });
+  assert.equal(answer.key, `inspector/${REQUEST}.json`);
+  const put = s3.puts.at(-1);
+  assert.equal(put.key, `inspector/${REQUEST}.json`);
+  assert.equal(put.body.toString(), 'the listener wrote this');
+});
+
+test('the retry says who pressed it, so it is not pressed twice', async () => {
+  const { route } = failureHarness();
+  await route['POST /api/task-failures']({ body: FAILURE });
+  await route['POST /api/task-failures/retry']({ body: { id: FAILURE.marker_key, reviewer: 'kim' } });
+  const { failures } = await route['GET /api/task-failures']({});
+  assert.equal(failures[0].retried_by, 'kim');
+  assert.ok(failures[0].retried_at);
+});
+
+test('a retry naming nothing this dashboard was told about is 404', async () => {
+  const { route } = failureHarness();
+  await assert.rejects(
+    () => route['POST /api/task-failures/retry']({ body: { id: 'inspector/nope.json', reviewer: 'kim' } }),
+    (err) => err.status === 404,
+  );
+});
+
+test('a retry of an object that is already gone says so rather than failing', async () => {
+  // A container that finished deletes its own object. Somebody pressing retry on a row that has
+  // since resolved gets a sentence, not a stack trace.
+  const { route } = failureHarness({ marker: null });
+  await route['POST /api/task-failures']({ body: FAILURE });
+  await assert.rejects(
+    () => route['POST /api/task-failures/retry']({ body: { id: FAILURE.marker_key, reviewer: 'kim' } }),
+    (err) => err.status === 409 && /already have been dealt with/.test(err.message),
+  );
+});
+
+test('the retry needs a name, and it is recorded', async () => {
+  const { route } = failureHarness();
+  await route['POST /api/task-failures']({ body: FAILURE });
+  await assert.rejects(
+    () => route['POST /api/task-failures/retry']({ body: { id: FAILURE.marker_key } }),
+    (err) => err.status === 400,
+  );
+});
+
+test('a report naming a plan artifact cannot be retried, whatever it says', async () => {
+  // The fence, reached through the route rather than the unit. tfplan is what an approval binds to.
+  const { route } = failureHarness();
+  const key = `${ACCOUNT}/ps-alice/plan/tfplan`;
+  await route['POST /api/task-failures']({
+    body: { ...FAILURE, marker_bucket: 'state', marker_key: key },
+  });
+  await assert.rejects(
+    () => route['POST /api/task-failures/retry']({ body: { id: key, reviewer: 'kim' } }),
+    (err) => err.status === 409,
+  );
 });

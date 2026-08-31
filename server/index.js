@@ -13,6 +13,7 @@ import { client } from './s3.js';
 import { makeImpacts } from './impacts.js';
 import { makeMarkerBodies } from './markerBodies.js';
 import { makeNotifications } from './notifications.js';
+import { makeTaskFailures } from './taskFailures.js';
 import { staticHandler } from './static.js';
 import { sweep } from './sweep.js';
 
@@ -116,7 +117,13 @@ async function main() {
   // that reads a file is a request that can fail for a reason unrelated to what it asked.
   const store = makeStore(s3, config, markerBodies);
   const notifications = makeNotifications({ limit: config.notificationLimit });
-  const routeTable = routes({ config, s3, store, notifications, markerBodies, impacts, log });
+  // What the notifier has reported about containers that stopped badly. Memory on purpose: the
+  // marker is in S3 and the sweep finds it whatever happens here, so a restart costs the REASON
+  // rather than the fact - see taskFailures.js.
+  const taskFailures = makeTaskFailures({ limit: config.notificationLimit });
+  const routeTable = routes({
+    config, s3, store, notifications, taskFailures, markerBodies, impacts, log,
+  });
   const serveStatic = staticHandler(config.staticDir);
 
   const server = createServer(async (req, res) => {

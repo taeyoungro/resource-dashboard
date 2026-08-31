@@ -14,7 +14,9 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { NotificationError, parse as parseNotification } from './notifications.js';
-import { getBucketPolicy, listBuckets, putJson } from './s3.js';
+import { TaskFailureError, makeTaskFailures, parseReport, retryTarget }
+  from './taskFailures.js';
+import { getBytes, getBucketPolicy, listBuckets, putBytes, putJson } from './s3.js';
 import { openStatements, parsePolicy, readPolicy, sameAccountOf } from './bucketPolicy.js';
 import { governedPrincipals } from './governedPrincipals.js';
 import { ImpactError, parse as parseImpact } from './impacts.js';
@@ -119,6 +121,11 @@ export const INGEST_ROUTES = new Set([
   // both are machines saying what they did, and neither may approve anything. The dashboard's own
   // key - the one that CAN approve an IAM change - opens neither.
   'POST /api/impact',
+  // opt-SolutionTaskFailureNotifier, saying a container stopped badly and which object started it.
+  // Same key and the same reasoning: a machine reporting what happened. The RETRY it makes possible
+  // is a separate route under the dashboard's own key, because re-running a container is a decision
+  // and this is a report.
+  'POST /api/task-failures',
 ]);
 
 export async function readBody(req, maxBytes = MAX_BODY_BYTES) {
@@ -307,6 +314,7 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
 }
 
 export function routes({ config, s3, store, notifications, markerBodies, impacts, log,
+                         taskFailures = makeTaskFailures(),
                          makeModelClient = bedrockClient, runs = runStore() }) {
   // Announcements ask for a sweep, because learning that work started is most of what they are
   // for. Rate limited: a burst of dispatches is a normal thing (one administrator attaching five
@@ -551,6 +559,109 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
 
       return { recorded: recorded.id, swept: due };
     },
+
+    // Posted by opt-SolutionTaskFailureNotifier when a container in the cluster stopped badly.
+    //
+    // What it adds is the REASON. The marker that outlived the task is already visible - the sweep
+    // finds it - and it says only that a task did not finish: a plan lock timeout and a task killed
+    // before it ran a line leave the same object. stopCode, exitCode and stoppedReason separate
+    // them, they exist in the ECS task state change event, and nothing here can see that event.
+    //
+    // Unlike an announcement, a failure here IS the notifier's problem. The listener must not retry
+    // an announcement because the marker is in S3 either way; this reason is in the event and in
+    // CloudWatch Logs and nowhere a person looks, so a refusal has to reach the notifier and its
+    // rule has to be able to quarantine what it cannot deliver.
+    'POST /api/task-failures': async ({ body }) => {
+      if (!config.ingestKey) {
+        throw new HttpError(503, 'OPT_DASHBOARD_INGEST_KEY is not set; reports are off');
+      }
+      let report;
+      try {
+        report = parseReport(body);
+      } catch (err) {
+        if (err instanceof TaskFailureError) throw new HttpError(400, err.message);
+        throw err;
+      }
+      const recorded = taskFailures.record(report, Date.now());
+      const target = retryTarget(recorded, config);
+      log.warn(
+        'task failed definition=%s stop_code=%s exit=%s marker=%s retryable=%s reason=%s',
+        recorded.task_definition_arn ?? '-', recorded.stop_code ?? '-',
+        recorded.exit_codes.join(',') || '-', recorded.marker_key ?? '-',
+        Boolean(target), recorded.stopped_reason ?? '-',
+      );
+      // Answered without a sweep. Nothing in the buckets changed - the marker was already there -
+      // so a sweep would read the same thing it read last time and hold the notifier's socket open
+      // while it did.
+      return { recorded: recorded.id, retryable: Boolean(target), attempts: recorded.attempts };
+    },
+
+    /**
+     * Run a failed container again, by re-putting the object that started it.
+     *
+     * The only way to retry a task without ecs:RunTask, and the reason that matters: RunTask carries
+     * container overrides, so a login surface holding it runs anything as any role it may pass.
+     * Re-putting an object starts a FIXED task definition with the overrides its own rule composes,
+     * and this process holds neither RunTask nor PassRole.
+     *
+     * The object is READ AND WRITTEN BACK, never composed. What restarts the task is the write
+     * event, not the contents, so there is no reason for this tier to author bytes that a container
+     * will act on - and every reason not to: the applier checks that an approval came from here,
+     * and it can only keep meaning that while this route cannot invent one.
+     *
+     * Three fences, and they fail differently:
+     *   retryTarget    refuses a bucket or key shape this is not for, and can say why on a screen
+     *   read-then-write  means a defect here cannot change what a container reads
+     *   IAM            refuses the call outright - see ReRunAFailedTaskByReputtingItsMarker in
+     *                  opt-stack-dashboard-host. This is the one that holds when the code is wrong
+     */
+    'POST /api/task-failures/retry': async ({ body }) => {
+      const reviewer = String(body.reviewer ?? '').trim();
+      if (!reviewer) throw new HttpError(400, 'reviewer is required');
+      if (reviewer.length > MAX_REVIEWER) throw new HttpError(400, 'reviewer is too long');
+
+      const id = String(body.id ?? '').trim();
+      if (!id) throw new HttpError(400, 'id is required');
+      const report = taskFailures.get(id);
+      if (!report) {
+        throw new HttpError(404, `${id} is not a failure this dashboard has been told about`);
+      }
+
+      const target = retryTarget(report, config);
+      if (!target) {
+        throw new HttpError(
+          409,
+          `${id} names nothing this dashboard may re-put. A task started by hand carries no `
+          + 'object to re-run, and only the four prefixes that start a container are accepted.',
+        );
+      }
+
+      let bytes;
+      try {
+        bytes = await getBytes(s3, target.bucket, target.key);
+      } catch (err) {
+        throw new HttpError(
+          409,
+          `s3://${target.bucket}/${target.key} could not be read (${err.message}). A container `
+          + 'that finished deletes its own object, so this may already have been dealt with.',
+        );
+      }
+
+      await putBytes(s3, target.bucket, target.key, bytes);
+      const marked = taskFailures.retried(id, reviewer, Date.now());
+      log.warn('task retried by=%s marker=s3://%s/%s bytes=%d attempts=%d',
+               reviewer, target.bucket, target.key, bytes.length, marked?.attempts ?? 0);
+      return { retried: id, bucket: target.bucket, key: target.key, bytes: bytes.length };
+    },
+
+    /** What has failed lately, newest first. Emptied by a restart - see taskFailures.js. */
+    'GET /api/task-failures': async () => ({
+      failures: taskFailures.list().map((entry) => ({
+        ...entry,
+        retryable: Boolean(retryTarget(entry, config)),
+      })),
+      enabled: Boolean(config.ingestKey),
+    }),
 
     // What has been announced recently, newest first. Emptied by a restart on purpose: these are
     // announcements, and everything durable about them is in the buckets.

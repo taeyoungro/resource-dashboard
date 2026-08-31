@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, apiKey } from "./api";
 import { MarkerPage } from "./components/MarkerPage";
 import { Notifications } from "./components/Notifications";
+import { TaskFailures } from "./components/TaskFailures";
 import { PlanPage } from "./components/PlanPage";
 import { ResourcePolicyPage } from "./components/ResourcePolicyPage";
 import type { SweepState } from "./types";
@@ -138,6 +139,11 @@ export default function App() {
           </ul>
         </div>
       ) : null}
+
+      {/* Above whichever page is showing, because it is the one thing on this dashboard that is
+          about something being broken right now. Renders nothing when nothing has failed, so an
+          ordinary day looks exactly as it did. */}
+      <TaskFailures />
 
       {tab === "plans" ? (
         <PlanPage state={state} error={error} onRefresh={sweepNow} />

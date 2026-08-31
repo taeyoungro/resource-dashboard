@@ -1276,3 +1276,49 @@ export interface BucketReview {
   /** Set when the policy could not be parsed. Not the same fact as a bucket with no policy. */
   error: string | null;
 }
+
+/**
+ * A container that stopped badly, as opt-SolutionTaskFailureNotifier reported it.
+ *
+ * The marker that outlived the task is already on the markers page. What this adds is the REASON:
+ * a plan lock timeout and a task killed before it ran a line leave the same object, and stopCode,
+ * exitCode and stoppedReason are what separate them. They exist in the ECS task state change event,
+ * which the dashboard cannot see.
+ *
+ * Held in the server's memory and lost on a restart — deliberately. The marker is in S3 and the
+ * sweep finds it whatever happens, so a restart costs the sentence rather than the fact.
+ */
+export interface TaskFailure {
+  /** The marker key, or the task arn when nothing started this task from an object. */
+  id: string;
+  task_arn: string;
+  task_definition_arn: string | null;
+  cluster_arn: string | null;
+  /** The three a marker cannot say. */
+  stop_code: string | null;
+  stopped_reason: string | null;
+  stopped_at: string | null;
+  /** Empty when the container never ran a line — which is itself the diagnosis. */
+  exit_codes: number[];
+  marker_bucket: string | null;
+  marker_key: string | null;
+  first_seen: number;
+  last_seen: number;
+  /** How many times this same request has come back. A number climbing is a retry loop. */
+  attempts: number;
+  retried_at: number | null;
+  retried_by: string | null;
+  /**
+   * Whether re-putting the object is something this dashboard may do.
+   *
+   * False for a task nobody started from an object, and for anything outside the four prefixes that
+   * start a container. The server decides it; the IAM role refuses the call regardless.
+   */
+  retryable: boolean;
+}
+
+export interface TaskFailureFeed {
+  failures: TaskFailure[];
+  /** False when OPT_DASHBOARD_INGEST_KEY is unset, so nothing can report and the list stays empty. */
+  enabled: boolean;
+}
