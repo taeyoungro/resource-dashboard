@@ -14,7 +14,7 @@ import {
   changesFromPlan, identityFromConfig, isDigest, passroleFromPlan, planIdFromKey,
   requestersFromConfig,
   planPrefixFromId, readPlan,
-  requestIdFromMarkerKey, sweep,
+  requestIdFromMarkerKey, sweep, writerVerification,
 } from './sweep.js';
 
 const CONFIG = {
@@ -952,4 +952,175 @@ test('the two lists the request list cannot answer travel with it', () => {
   assert.deepEqual(answer.untagged, ['carol'], 'the withdrawal is not carried to the page');
   // carol is granted and untagged, and must NOT read as a request - there is nothing to grant.
   assert.ok(!answer.requested_by.includes('carol'));
+});
+
+// ---- did the inline writer do what the decision dispatched? -------------------------------------
+//
+// The gap: an approver confirms PassRole for three people, the applier writes three work orders and
+// records `dispatched`, and one writer fails. Every screen said the decision was applied. The
+// person who asked never got the grant, the reason was in CloudWatch, and the only trace was a lock
+// nobody reads.
+//
+// `dispatched` means the work order was written. It has never meant that the writer did anything
+// with it, and these tests are about keeping those two facts apart.
+
+const LOCK = (user) => `inline_writer/644701781058:644701781058-${user}.json`;
+const RESULT = (user) => `inline_result/644701781058:644701781058-${user}.json`;
+const SENT = (user, over = {}) => ({
+  user_name: user, action: 'grant', permission_set: `644701781058-${user}`,
+  key: LOCK(user), retry: false, ...over,
+});
+
+test('a written result is the only thing that counts as applied', () => {
+  const [alice] = writerVerification(
+    [SENT('alice')],
+    new Map([[LOCK('alice'), { state: 'written', ok: true, reason: '', finished_at: 'then' }]]),
+    new Set(),
+  );
+  assert.equal(alice.ok, true);
+  assert.equal(alice.state, 'written');
+  assert.equal(alice.retryable, false, 'a finished writer must not be re-dispatched');
+});
+
+test('a missing lock is not proof the grant was written', () => {
+  // A refusal releases the lock without writing anything. Reading "no lock" as success would report
+  // the exact state this whole panel exists to surface as finished.
+  const [alice] = writerVerification([SENT('alice')], new Map(), new Set());
+  assert.equal(alice.ok, false);
+  assert.equal(alice.state, null);
+  assert.equal(alice.locked, false);
+  assert.equal(alice.retryable, false, 'nothing establishes the run has stopped');
+});
+
+test('a failed writer carries its reason and is the one thing retry is offered on', () => {
+  const [alice] = writerVerification(
+    [SENT('alice')],
+    new Map([[LOCK('alice'), {
+      state: 'failed', ok: false, reason: 'terraform apply failed: exit 1',
+      finished_at: '2026-08-31T00:00:00Z',
+    }]]),
+    new Set([LOCK('alice')]),
+  );
+  assert.equal(alice.ok, false);
+  assert.equal(alice.retryable, true);
+  assert.equal(alice.locked, true);
+  assert.equal(alice.reason, 'terraform apply failed: exit 1',
+               'the cause is the whole of what a person gets, so it has to travel');
+});
+
+test('a refused writer is retryable too, because its run stopped', () => {
+  // Normally moot - a refusal releases the lock - but a release that itself failed leaves a stopped
+  // run holding one, and the applier may take that over for the same reason.
+  const [alice] = writerVerification(
+    [SENT('alice')],
+    new Map([[LOCK('alice'), { state: 'refused', ok: false, reason: 'no such permission set' }]]),
+    new Set([LOCK('alice')]),
+  );
+  assert.equal(alice.retryable, true);
+  assert.equal(alice.reason, 'no such permission set');
+});
+
+test('a lock with no result is never retryable, however long it has been there', () => {
+  // The case the gate exists for. A run still going and a task killed before it ran any code leave
+  // the identical object, and overwriting it would put a second work order under a live apply.
+  const [alice] = writerVerification([SENT('alice')], new Map(), new Set([LOCK('alice')]));
+  assert.equal(alice.locked, true);
+  assert.equal(alice.state, null);
+  assert.equal(alice.retryable, false);
+});
+
+test('the count is per person, and one failure does not hide the rest', () => {
+  const writers = writerVerification(
+    [SENT('alice'), SENT('bob'), SENT('carol', { action: 'revoke' })],
+    new Map([
+      [LOCK('alice'), { state: 'written', ok: true }],
+      [LOCK('bob'), { state: 'failed', ok: false, reason: 'AccessDenied' }],
+      [LOCK('carol'), { state: 'written', ok: true }],
+    ]),
+    new Set([LOCK('bob')]),
+  );
+  assert.equal(writers.length, 3);
+  assert.deepEqual(writers.filter((w) => w.ok).map((w) => w.user_name), ['alice', 'carol']);
+  assert.deepEqual(writers.filter((w) => w.retryable).map((w) => w.user_name), ['bob']);
+  assert.equal(writers[2].action, 'revoke',
+               'a retry repeats the act, so a withdrawal must not read as a grant');
+});
+
+test('a result for another permission set is not read as this one', () => {
+  // Keyed by the lock, which is keyed by the permission set. Joining on anything looser would let
+  // bob's success answer for alice.
+  const [alice] = writerVerification(
+    [SENT('alice')],
+    new Map([[LOCK('bob'), { state: 'written', ok: true }]]),
+    new Set(),
+  );
+  assert.equal(alice.ok, false);
+  assert.equal(alice.state, null);
+});
+
+test('a dispatch entry that names nobody is dropped rather than rendered', () => {
+  const writers = writerVerification(
+    [SENT('alice'), { key: LOCK('bob') }, null, { user_name: '  ' }],
+    new Map(), new Set(),
+  );
+  assert.deepEqual(writers.map((w) => w.user_name), ['alice']);
+});
+
+test('the plan detail reads the writers for the work orders its outcome recorded', async () => {
+  const requestId = '644701781058-cccccccccccccccc';
+  const plan = planFixture('644701781058', 'mirror-lambda-Report', {
+    at: ago(600), requestId,
+    outcome: {
+      inline_state: 'dispatched',
+      inline_detail: `${LOCK('alice')} ${LOCK('bob')}`,
+      passrole_dispatch: [SENT('alice'), SENT('bob')],
+      retries: [],
+    },
+  });
+  const s3 = fakeS3(
+    { [BUCKET]: plan.objects,
+      'opt-solution-markers': [{ key: LOCK('bob'), lastModified: ago(60) }] },
+    { ...plan.bodies,
+      [`opt-solution-markers/${RESULT('alice')}`]: { state: 'written', ok: true, reason: '' },
+      [`opt-solution-markers/${RESULT('bob')}`]: {
+        state: 'failed', ok: false, reason: 'terraform apply failed: exit 1',
+      } },
+  );
+
+  const detail = await readPlan(s3, { ...CONFIG, inlineResultPrefix: 'inline_result/' },
+                                '644701781058:mirror-lambda-Report');
+  assert.equal(detail.passrole_writers.length, 2);
+  const [alice, bob] = detail.passrole_writers;
+  assert.equal(alice.ok, true);
+  assert.equal(bob.retryable, true);
+  assert.equal(bob.locked, true, 'the lock listing has to reach the row');
+  assert.equal(bob.reason, 'terraform apply failed: exit 1');
+  // And the applier's own word travels beside it, because "dispatched" is what the screen used to
+  // stop at.
+  assert.equal(detail.outcome.inline_state, 'dispatched');
+});
+
+test('a plan that granted nobody reads no result objects at all', async () => {
+  const plan = planFixture('644701781058', 'cmp-WebHosting', {
+    at: ago(600), requestId: '644701781058-dddddddddddddddd', outcome: {},
+  });
+  const s3 = fakeS3({ [BUCKET]: plan.objects }, plan.bodies);
+  const detail = await readPlan(s3, { ...CONFIG, inlineResultPrefix: 'inline_result/' },
+                                '644701781058:cmp-WebHosting');
+  assert.deepEqual(detail.passrole_writers, []);
+  assert.ok(!s3.gets.some((key) => key.startsWith('inline_result/')),
+            'the marker bucket was read for a decision that dispatched nothing');
+});
+
+test('a result that cannot be read leaves the row unknown rather than failing the page', async () => {
+  const requestId = '644701781058-eeeeeeeeeeeeeeee';
+  const plan = planFixture('644701781058', 'mirror-lambda-Report', {
+    at: ago(600), requestId, outcome: { passrole_dispatch: [SENT('alice')] },
+  });
+  const s3 = fakeS3({ [BUCKET]: plan.objects, 'opt-solution-markers': [] }, plan.bodies);
+  const detail = await readPlan(s3, { ...CONFIG, inlineResultPrefix: 'inline_result/' },
+                                '644701781058:mirror-lambda-Report');
+  assert.equal(detail.passrole_writers.length, 1);
+  assert.equal(detail.passrole_writers[0].state, null);
+  assert.equal(detail.passrole_writers[0].retryable, false);
 });

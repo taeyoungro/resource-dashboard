@@ -128,6 +128,28 @@ export function PlanPage({ state, error, onRefresh }: Props) {
     }
   };
 
+  /**
+   * Send the work orders again, for the people the inline writer did not reach.
+   *
+   * Not a decision, and it carries none of a decision's values: no plan digest, no assessment
+   * digest, no restriction. Everything the grant says was settled when the plan was approved, and
+   * the server re-reads the bucket to establish that these are names the writer actually failed on.
+   */
+  const retryPassrole = async (users: string[], reviewer: string) => {
+    if (!selectedId) return;
+    setBusy(true);
+    setDetailError(null);
+    try {
+      const result = await api.retryPassrole(selectedId, { users, reviewer });
+      window.alert(`다시 보냈습니다.\n${result.written}`);
+      onRefresh();
+    } catch (e) {
+      setDetailError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const fold = (next: boolean) => {
     setFolded(next);
     foldPreference.set(next);
@@ -201,6 +223,7 @@ export function PlanPage({ state, error, onRefresh }: Props) {
             view={view}
             onView={setView}
             onDecide={decide}
+            onRetryPassrole={retryPassrole}
           />
         ) : (
           <div className="empty">왼쪽 목록에서 계획을 선택하세요.</div>

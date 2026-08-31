@@ -151,6 +151,63 @@ export interface PlanOutcome {
    * captured outputs; the Governed link falls back to the Identity Center console home then.
    */
   permission_set_arn: string | null;
+  /**
+   * What the applier said about the work it handed to the inline writer.
+   *
+   * `dispatched` means the work order was written — NOT that the writer did anything with it. That
+   * distinction is the whole of why passrole_writers exists beside this.
+   */
+  inline_state: "not_required" | "dispatched" | "failed" | "no_inline_target" | null;
+  inline_detail: string;
+  /** Each re-dispatch of the work orders, appended by the applier's retry path. */
+  retries: PlanOutcomeRetry[];
+}
+
+export interface PlanOutcomeRetry {
+  request_id: string;
+  retry_of?: string;
+  reviewer?: string;
+  comment?: string;
+  decided_at?: string;
+  granted?: string[];
+  revoked?: string[];
+  detail?: string;
+}
+
+/**
+ * Did the inline writer do what this decision dispatched, for one of the people it named?
+ *
+ * The count is the question. An approver confirms PassRole for three people, the applier writes
+ * three work orders and records `dispatched`, and one writer fails — leaving a grant that was
+ * approved, recorded as sent, never written, and reported nowhere.
+ *
+ * Built by the server from three objects: the outcome's `passrole_dispatch` (what was sent), the
+ * writer's `inline_result/<account>:<permission set>.json` (what it did), and whether the lock
+ * `inline_writer/<account>:<permission set>.json` is still there (whether a run is outstanding).
+ */
+export interface PassroleWriter {
+  user_name: string;
+  /** What the work order said to do. A retry repeats the act, never the opposite one. */
+  action: "grant" | "revoke";
+  permission_set: string | null;
+  /** The lock key, which is also what joins the three objects above. */
+  key: string;
+  /** Whether this dispatch came from a retry rather than the original decision. */
+  retried: boolean;
+  /**
+   * What the writer recorded. Null when it recorded nothing — which is NOT a state of its own but
+   * the absence of one: either the run has not finished, or it died before it could say anything.
+   */
+  state: "written" | "refused" | "failed" | null;
+  /** The whole of what a person gets about a failure. CloudWatch has the traceback. */
+  reason: string;
+  finished_at: string | null;
+  /** Whether an execution for this permission set is still outstanding. */
+  locked: boolean;
+  /** Only a recorded `written`. A missing lock proves nothing: a refusal releases it too. */
+  ok: boolean;
+  /** Whether the applier would take this lock over — it does so only on a recorded, stopped run. */
+  retryable: boolean;
 }
 
 export interface PlanChange {
@@ -233,6 +290,11 @@ export interface PlanDetail {
   changes: PlanChange[];
   /** Who asked to be able to pass this mirror role, and to which services. Requests, not grants. */
   passrole: PassroleRequests;
+  /**
+   * And what the inline writer did with each work order this plan's decision dispatched. Empty on
+   * every plan that granted nobody, which is most of them.
+   */
+  passrole_writers: PassroleWriter[];
   artifacts: string[];
 }
 
@@ -488,6 +550,19 @@ export type RestrictionIntent =
 export interface DecisionResult {
   written: string;
   marker: Record<string, unknown>;
+}
+
+/**
+ * Send the work orders again, for the people the inline writer did not reach.
+ *
+ * Names and who asked, and nothing else. Which role, which services, and whether the act is a grant
+ * or a withdrawal were all settled by the decision this re-dispatches - the server reads them back
+ * out of the recorded outcome, and refuses any name that outcome does not mark retryable.
+ */
+export interface PassroleRetryPayload {
+  users: string[];
+  reviewer: string;
+  comment?: string;
 }
 
 

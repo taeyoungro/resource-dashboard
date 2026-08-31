@@ -1,6 +1,6 @@
 import type {
-  BucketList, BucketReview, DecisionPayload, DecisionResult, NotificationFeed, PlanDetail,
-  RiskAnalysisAnswer, SweepState,
+  BucketList, BucketReview, DecisionPayload, DecisionResult, NotificationFeed,
+  PassroleRetryPayload, PlanDetail, RiskAnalysisAnswer, SweepState,
 } from "./types";
 
 // Same origin. The server that serves this page is the server that answers these calls, so there
@@ -128,6 +128,20 @@ export const api = {
   decide: async (planId: string, payload: DecisionPayload): Promise<DecisionResult> =>
     handle(
       await fetch(`${BASE}/plans/${encodeURIComponent(planId)}/decision`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(payload),
+      }),
+    ),
+
+  // A separate route from decide, deliberately. It sends no digest and no restriction because it
+  // decides nothing: the grant was decided when the plan was approved, and this asks for the work
+  // orders of that decision to be written again for the people the writer did not reach.
+  retryPassrole: async (
+    planId: string, payload: PassroleRetryPayload,
+  ): Promise<DecisionResult> =>
+    handle(
+      await fetch(`${BASE}/plans/${encodeURIComponent(planId)}/passrole-retry`, {
         method: "POST",
         headers: headers(),
         body: JSON.stringify(payload),
