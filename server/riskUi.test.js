@@ -1528,3 +1528,23 @@ test('a failure with nothing to re-put offers no button', () => {
   assert.match(FAILURES, /!entry\.retryable \?/,
                'every row offers a retry, including ones the server would refuse with a 409');
 });
+
+test('the failures panel is on the failure tab and not on the other three', () => {
+  // It was on all four. On "plans", "running" and "rbp" nothing about it was actionable, so it read
+  // as a banner that would not go away - and a warning people learn to scroll past is worse than no
+  // warning, because it spends the attention the real one needs.
+  //
+  // Matched on the guard rather than on the tab name alone: `<TaskFailures />` with the string
+  // "failed" somewhere else in the file would satisfy a looser pattern while still rendering on
+  // every page, which is the exact defect this pins.
+  const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(app, /\{tab === "failed" && <TaskFailures \/>\}/,
+               'the failures panel is not gated on the failure tab');
+  // And no second, ungated render. The guarded one above is the only place it may appear.
+  const renders = app.split('\n')
+    .filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*'))
+    .filter((line) => /<TaskFailures\s*\/>/.test(line));
+  assert.equal(renders.length, 1, `TaskFailures is rendered ${renders.length} times: ${renders}`);
+  assert.match(renders[0], /tab === "failed"/,
+               'the render of TaskFailures is not the guarded one');
+});

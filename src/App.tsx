@@ -140,10 +140,17 @@ export default function App() {
         </div>
       ) : null}
 
-      {/* Above whichever page is showing, because it is the one thing on this dashboard that is
-          about something being broken right now. Renders nothing when nothing has failed, so an
-          ordinary day looks exactly as it did. */}
-      <TaskFailures />
+      {/* The "failed" tab only. This used to sit above every page, on the reasoning that a
+          container failing is the one thing worth interrupting whatever you came here to do. In
+          practice it read as a banner that would not go away, on three tabs where nothing about it
+          was actionable. It belongs beside the markers it explains: a marker says a task did not
+          finish, and this says WHICH failure it was.
+
+          What that gives up, stated: the panel is now behind a click. A failure whose marker is
+          still inside the grace period is counted as "running" by the tab labels, and one from a
+          task nobody started from an object has no marker to be counted at all - so neither raises
+          the failed count, and a person who never opens this tab does not learn about them. */}
+      {tab === "failed" && <TaskFailures />}
 
       {tab === "plans" ? (
         <PlanPage state={state} error={error} onRefresh={sweepNow} />
