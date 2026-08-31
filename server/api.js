@@ -20,7 +20,7 @@ import { getBytes, getBucketPolicy, listBuckets, putBytes, putJson } from './s3.
 import { openStatements, parsePolicy, readPolicy, sameAccountOf } from './bucketPolicy.js';
 import { governedPrincipals } from './governedPrincipals.js';
 import { ImpactError, parse as parseImpact } from './impacts.js';
-import { planPrefixFromId, readImpact, readPlan } from './sweep.js';
+import { planPrefixFromId, readImpact, readPlan, reclassify } from './sweep.js';
 import { controlPlane } from './controlPlane.js';
 import { condense, digestBytes } from './riskDigest.js';
 import { candidates as proposeCandidates } from './candidatePaths.js';
@@ -321,6 +321,19 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
   // policies) and would otherwise be a burst of full bucket listings.
   let lastNotificationSweep = 0;
 
+  /**
+   * The sweep, with running-versus-failed decided now rather than whenever it last ran.
+   *
+   * Two inputs the sweep cannot have had: the clock, and every failure report that arrived since.
+   * A report is a FACT - ECS said the task stopped - and it ends the grace period for that one
+   * marker, which is what stops the page counting a container it is showing the exit code for as
+   * still running.
+   */
+  const judged = (state) => reclassify(state, {
+    graceSeconds: config.markerGraceSeconds,
+    stoppedAt: (key) => taskFailures.stoppedAt(key),
+  });
+
   /** How a run looks to the page right now. */
   const runState = (entry) => ({
     ...asJson(entry, runs.elapsed(entry)),
@@ -496,15 +509,21 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       };
     },
 
+    // Re-judged on the way out, every time. The sweep answers what is in the buckets - the
+    // expensive half, and the half that does not change on its own. Whether a marker is running or
+    // failed is the other half: it moves with the clock, and it moves the SECOND a failure report
+    // lands. Served straight from the sweep, this route said a container was still working while
+    // the panel above it showed the exit code it stopped with, because the sweep predated the
+    // report. Nothing is re-read to fix that - see reclassify() in sweep.js.
     'GET /api/state': async () => {
       const state = store.get();
       if (!state) throw new HttpError(503, 'the first sweep has not finished');
-      return state;
+      return judged(state);
     },
 
     'POST /api/sweep': async () => {
       await store.refresh('requested from the page');
-      return store.get();
+      return judged(store.get());
     },
 
     // Posted by the listener after it has dispatched an inspection and acknowledged the queue.

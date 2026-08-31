@@ -170,6 +170,28 @@ export function makeTaskFailures({ limit = MAX_REPORTS } = {}) {
       return byKey.get(id) ?? null;
     },
 
+    /**
+     * When a task started from this object was last reported stopped, in epoch milliseconds, or
+     * null if nothing has been reported about it.
+     *
+     *   무엇인가   이 마커로 시작된 작업이 언제 죽었나. 「죽었는가」가 아니라 「언제」인 것이
+     *              요점이다 — 부르는 쪽이 그것을 마커의 마지막 쓰기와 견주기 때문이다
+     *   어디 있나  이 저장소의 항목. stopped_at 은 ECS 가 말한 시각이고, last_seen 은 이 프로세스가
+     *              보고를 받은 시각이다
+     *   누가 쓰나  record() 하나. opt-SolutionTaskFailureNotifier 가 보낸 것을 그대로 옮긴다
+     *   누가 읽나  sweep.js 의 classify - 마커가 실행 중인지 실패인지 정하는 곳
+     *
+     * ECS's own timestamp is preferred over ours: the report can be delayed by a retry or by the
+     * dashboard restarting, and what the caller is asking is when the TASK stopped, not when we
+     * heard. last_seen is the fallback for an event that carried no stoppedAt or an unparseable one.
+     */
+    stoppedAt(key) {
+      const entry = byKey.get(key);
+      if (!entry) return null;
+      const reported = entry.stopped_at ? Date.parse(entry.stopped_at) : NaN;
+      return Number.isFinite(reported) ? reported : entry.last_seen;
+    },
+
     list() {
       return [...byKey.values()].reverse();
     },

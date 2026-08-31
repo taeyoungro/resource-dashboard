@@ -175,6 +175,32 @@ test('a retry is recorded on the row so it does not get pressed twice', () => {
   assert.equal(store.retried('nothing-like-this', 'kim', 99), null);
 });
 
+test('stoppedAt answers when ECS said the task stopped, not when we heard', () => {
+  // The two differ whenever delivery was retried or the dashboard restarted, and the question the
+  // caller is asking - is this newer than the marker's last write - is about the TASK, not about us.
+  const store = makeTaskFailures();
+  store.record(parseReport(REPORT), Date.parse('2026-08-31T10:05:00Z'));
+  assert.equal(store.stoppedAt(REPORT.marker_key), Date.parse('2026-08-31T10:00:00Z'));
+
+  // No usable stoppedAt in the event: fall back to when this process was told. Losing five minutes
+  // of precision is not the same as losing the fact.
+  const blind = makeTaskFailures();
+  blind.record(parseReport({ ...REPORT, stopped_at: null }), 12345);
+  assert.equal(blind.stoppedAt(REPORT.marker_key), 12345);
+  const junk = makeTaskFailures();
+  junk.record(parseReport({ ...REPORT, stopped_at: 'not a time' }), 999);
+  assert.equal(junk.stoppedAt(REPORT.marker_key), 999);
+});
+
+test('a marker nothing has been reported about answers null, not zero', () => {
+  // Null is "nothing is known"; 0 is a timestamp in 1970 that would beat every marker write and
+  // turn every unreported marker into a confirmed failure.
+  const store = makeTaskFailures();
+  assert.equal(store.stoppedAt('inspector/nothing-like-this.json'), null);
+  store.record(parseReport(REPORT), 1);
+  assert.equal(store.stoppedAt('inspector/still-not-this.json'), null);
+});
+
 test('a fresh report about a request already retried keeps that it was', () => {
   // The retry ran, the task failed again, and the row has to say both - otherwise the person who
   // pressed it sees an untouched failure and presses it again.

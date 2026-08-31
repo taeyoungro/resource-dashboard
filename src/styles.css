@@ -373,6 +373,22 @@ pre.plan {
 .marker-lock > td:first-child { border-left: 4px solid var(--danger); font-weight: 600; }
 .marker-lock .meta { color: var(--danger); }
 
+/* Why a marker is in the list it is in. `reported` is a fact carried from an ECS event and its
+   reason is on the failure panel above; `aged-out` is an inference from the clock and is all
+   anybody has. Different colours because they call for different next moves - one is read, the
+   other is investigated. */
+.reason {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 0 6px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+.reason.reported { color: var(--danger); border-color: var(--danger); }
+.reason.aged-out { color: var(--muted); }
+
 /* A refused inspection. Louder than .warn because it is not advice about a decision - it says the
    last thing that happened to this resource failed, and before the inspector recorded it that
    sentence reached nobody. First on the panel, so it is read before the plan under it. */

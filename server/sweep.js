@@ -365,15 +365,98 @@ async function readMarkerBodies(s3, config, markers, bodies, errors) {
   return { bodies: out, fetched: capped.length, held: markers.length - missing.length };
 }
 
-function describeMarkers(markers, bodies, kind, prefix, nowMs, graceSeconds, { locks = false } = {}) {
+/**
+ * Running or failed, and on what evidence.
+ *
+ * TWO DIFFERENT KINDS OF THING decide this, and conflating them is what put a container the
+ * dashboard KNEW was dead into the running count.
+ *
+ *   the grace period       a GUESS - "nothing has told me otherwise, so do not call it dead yet".
+ *                          Right almost always, and the reason it exists is that calling a task two
+ *                          minutes into a terraform plan `failed` teaches everyone to ignore the list
+ *   a task failure report  a FACT - ECS said this task stopped with a non-zero code, and
+ *                          opt-SolutionTaskFailureNotifier carried it here
+ *
+ * A fact beats a guess. Once the report is in, the grace period has nothing left to be uncertain
+ * about, so it ends for that one marker and nothing else changes.
+ *
+ * WHY THE COMPARISON IS AGAINST last_modified rather than the report merely existing. That one
+ * comparison is what makes the retry correct with no special case anywhere:
+ *
+ *   the object is written    last_modified moves. This is "an attempt started"
+ *   the task dies            a report arrives. This is "an attempt ended"
+ *   ended after started  ->  the attempt now in the bucket is dead
+ *   started after ended  ->  a NEW attempt is in flight and the old report says nothing about it
+ *
+ * Pressing 다시 실행 re-puts the object, so last_modified overtakes the old report and the marker
+ * reads running again - which is true. When that attempt fails its report is newer and it flips
+ * back. Nothing here has to know a retry happened, and `retried_at` is never consulted.
+ *
+ * The three reasons are kept apart on purpose. "ECS said so, exit code 1" and "older than fifteen
+ * minutes and nobody has said anything" are the same state and NOT the same knowledge, and telling
+ * them apart is precisely what the notifier added - folding them into one badge throws it away.
+ */
+export function classify(lastModified, ageSeconds, graceSeconds, stoppedAtMs) {
+  const writtenAt = lastModified ? Date.parse(lastModified) : NaN;
+  if (stoppedAtMs !== null && stoppedAtMs !== undefined
+      && Number.isFinite(writtenAt) && stoppedAtMs > writtenAt) {
+    return { state: 'failed', state_reason: 'reported' };
+  }
+  if (ageSeconds !== null && ageSeconds < graceSeconds) {
+    return { state: 'running', state_reason: 'within_grace' };
+  }
+  // Older than the grace period, or carrying no timestamp to judge at all. Both are the same
+  // answer for the same reason: nothing here can say this task is alive.
+  return { state: 'failed', state_reason: 'aged_out' };
+}
+
+/** Seconds since the object was written, or null when it carries no timestamp. */
+function ageOf(lastModified, nowMs) {
+  return lastModified ? Math.max(0, Math.round((nowMs - Date.parse(lastModified)) / 1000)) : null;
+}
+
+/**
+ * The cached sweep, re-judged against the clock and against what has been reported since it ran.
+ *
+ * The sweep answers what is IN THE BUCKETS - the expensive half, and the half that does not change
+ * on its own between sweeps. Whether a marker is running or failed is not that half: it moves with
+ * the clock, and it moves the moment a report lands, which is seconds after a container dies. A
+ * state served straight from a sweep that ran hours ago says a task is still working while the
+ * panel above it is showing the exit code it stopped with.
+ *
+ * So this runs on the way out, every time. It re-reads nothing.
+ */
+export function reclassify(state, { now = Date.now(), graceSeconds, stoppedAt = () => null } = {}) {
+  if (!state || !Array.isArray(state.markers)) return state;
+  const markers = state.markers.map((marker) => {
+    const ageSeconds = ageOf(marker.last_modified, now);
+    return {
+      ...marker,
+      age_seconds: ageSeconds,
+      ...classify(marker.last_modified, ageSeconds, graceSeconds, stoppedAt(marker.key)),
+    };
+  });
+  return {
+    ...state,
+    markers,
+    // Only the two this decides. awaiting_decision, refused and stopped are about plans and are
+    // untouched by anything here.
+    counts: {
+      ...state.counts,
+      failed: markers.filter((m) => m.state === 'failed').length,
+      running: markers.filter((m) => m.state === 'running').length,
+    },
+  };
+}
+
+function describeMarkers(markers, bodies, kind, prefix, nowMs, graceSeconds,
+                         { locks = false, stoppedAt = () => null } = {}) {
   const rows = [];
   for (const marker of markers) {
     const name = requestIdFromMarkerKey(marker.key, prefix);
     if (!name) continue;
     const body = bodies.get(marker.key) ?? null;
-    const ageSeconds = marker.lastModified
-      ? Math.max(0, Math.round((nowMs - Date.parse(marker.lastModified)) / 1000))
-      : null;
+    const ageSeconds = ageOf(marker.lastModified, nowMs);
     rows.push({
       kind,
       key: marker.key,
@@ -390,13 +473,10 @@ function describeMarkers(markers, bodies, kind, prefix, nowMs, graceSeconds, { l
       decision: body?.decision ?? null,
       last_modified: marker.lastModified,
       age_seconds: ageSeconds,
-      // Below the grace period the task is presumed to be running. Saying "failed" about a task
-      // that is two minutes into a terraform plan would train everyone to ignore the list.
-      //
       // For a lock, `failed` means more than a task that did not finish: the permission set is
       // BLOCKED until somebody deletes the object, and the grant it was meant to limit is already
       // in force. That is why it is called out separately on the page.
-      state: ageSeconds !== null && ageSeconds < graceSeconds ? 'running' : 'failed',
+      ...classify(marker.lastModified, ageSeconds, graceSeconds, stoppedAt(marker.key)),
       blocks_further_writes: locks,
       body_read: body !== null,
       event_count: Array.isArray(body?.events) ? body.events.length : null,
@@ -830,7 +910,8 @@ function planState(manifest, outcome, requestId, decidedRequestIds, refusal) {
   return 'awaiting_decision';
 }
 
-export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}) {
+export async function sweep(s3, config,
+                            { now = Date.now(), bodies = null, stoppedAt = () => null } = {}) {
   const errors = [];
 
   const [inspectorListing, applierListing, impactListing, inlineWriterListing] = await Promise.all([
@@ -871,12 +952,12 @@ export async function sweep(s3, config, { now = Date.now(), bodies = null } = {}
 
   const markers = [
     ...describeMarkers(inspectorMarkers, read.bodies, 'inspector', config.inspectorPrefix,
-                       now, config.markerGraceSeconds),
+                       now, config.markerGraceSeconds, { stoppedAt }),
     ...describeMarkers(applierMarkers, read.bodies, 'applier', config.applierPrefix,
-                       now, config.markerGraceSeconds),
+                       now, config.markerGraceSeconds, { stoppedAt }),
     ...describeMarkers(inlineWriterMarkers, read.bodies, 'inline_writer',
                        config.inlineWriterPrefix, now, config.markerGraceSeconds,
-                       { locks: true }),
+                       { locks: true, stoppedAt }),
   ];
   markers.sort((a, b) => (b.age_seconds ?? 0) - (a.age_seconds ?? 0));
 
