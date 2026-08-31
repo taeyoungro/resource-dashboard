@@ -266,6 +266,23 @@ export function load() {
     // record of what ran is the marker, the plan prefix and CloudWatch.
     notificationLimit: integer('OPT_NOTIFICATION_LIMIT', 200),
 
+    // Where this process may keep the little it needs to remember across a restart. Today that is
+    // one file: why containers stopped badly.
+    //
+    //   무엇인가   systemd 가 이 서비스를 위해 만들어 준 디렉터리. 「쓸 곳이 있는가」의 답이고,
+    //              값이 있다는 것 자체가 「기록해도 된다」는 뜻이다
+    //   어디 있나  유닛의 StateDirectory=opt-dashboard 가 만드는 /var/lib/opt-dashboard.
+    //              systemd 가 $STATE_DIRECTORY 로 환경에 넣어 준다
+    //   누가 쓰나  systemd 하나. dashboard.env 에 손으로 적지 않는다 — 적으면 유닛이 만들어 주지
+    //              않은 경로를 가리키게 되고 ProtectSystem=strict 가 쓰기를 막는다
+    //   누가 읽나  index.js 가 taskFailures 에 넘긴다. 비어 있으면 아무것도 저장하지 않는다
+    //
+    // Taken from systemd rather than configured, and that is the point: persistence is on exactly
+    // when the unit provisioned somewhere for it, and off everywhere else - a developer running
+    // this from a checkout writes nothing. StateDirectory can name several directories, in which
+    // case this is colon separated; there is one, and the first is it either way.
+    stateDir: (process.env.STATE_DIRECTORY ?? '').split(':')[0].trim() || null,
+
     // A notification asks for a sweep, because learning that work started is most of its value.
     // Not on every one: a burst of dispatches would otherwise be a burst of full bucket listings.
     notificationSweepSeconds: integer('OPT_NOTIFICATION_SWEEP_SECONDS', 10),

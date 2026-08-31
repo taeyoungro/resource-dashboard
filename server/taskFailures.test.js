@@ -13,6 +13,9 @@
 //     npm run check
 //
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { TaskFailureError, makeTaskFailures, parseReport, retryTarget } from './taskFailures.js';
@@ -210,4 +213,126 @@ test('a fresh report about a request already retried keeps that it was', () => {
   const again = store.record(parseReport(REPORT), 3);
   assert.equal(again.retried_by, 'kim');
   assert.equal(again.attempts, 2);
+});
+
+// ---- across a restart ---------------------------------------------------------------------------
+//
+// Every deploy is a restart, and there have been several in a day. Losing the reason on each one
+// meant the panel emptied while the markers it explains stayed exactly where they were - a screen
+// that says a task did not finish and can no longer say why.
+//
+// The FACT is not at stake and never was: the marker is in S3 and the sweep finds it. What is
+// written here is the sentence beside it.
+
+const scratch = () => mkdtempSync(join(tmpdir(), 'task-failures-'));
+const file = (dir) => join(dir, 'task-failures.json');
+
+test('what one process was told, the next one still knows', () => {
+  const dir = scratch();
+  const first = makeTaskFailures({ dir });
+  first.record(parseReport(REPORT), 1000);
+  first.retried(REPORT.marker_key, 'kim', 2000);
+
+  const second = makeTaskFailures({ dir });
+  const rows = second.list();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].stop_code, 'EssentialContainerExited');
+  assert.deepEqual(rows[0].exit_codes, [1]);
+  assert.equal(rows[0].retried_by, 'kim', 'who pressed it is the half somebody is answerable for');
+  assert.equal(rows[0].retried_at, 2000);
+  // And the classifier's input survives, which is the point: without it the marker goes back to
+  // being judged by age alone and a container known to be dead reads as running again.
+  assert.equal(second.stoppedAt(REPORT.marker_key), Date.parse(REPORT.stopped_at));
+});
+
+test('the newest is still first after a restart, and the cap still holds', () => {
+  const dir = scratch();
+  const first = makeTaskFailures({ dir, limit: 2 });
+  for (const [n, at] of [['a', 1], ['b', 2], ['c', 3]]) {
+    first.record(parseReport({ ...REPORT, marker_key: `inspector/${n}.json` }), at);
+  }
+  const second = makeTaskFailures({ dir, limit: 2 });
+  assert.deepEqual(second.list().map((r) => r.marker_key),
+                   ['inspector/c.json', 'inspector/b.json']);
+});
+
+test('with nowhere to write, everything behaves exactly as it did', () => {
+  // A developer running this from a checkout, and every test above. The unit is what provisions a
+  // directory, so no directory means no file and no attempt at one.
+  const store = makeTaskFailures({});
+  store.record(parseReport(REPORT), 1);
+  assert.equal(store.list().length, 1);
+  assert.equal(makeTaskFailures({}).list().length, 0);
+});
+
+test('a file this cannot read costs the sentence, never the startup', () => {
+  // A truncated write, a half-full disk, a version of this code that wrote a different shape. The
+  // dashboard must come up: the markers are the facts and they are in S3, so refusing to boot over
+  // a scratch file would trade a lost sentence for a lost screen.
+  for (const contents of ['', 'not json at all', '[]', '{"schema":99,"entries":[]}',
+                          '{"schema":1,"entries":"nope"}', '{"schema":1,"entries":[null,3,{}]}']) {
+    const dir = scratch();
+    writeFileSync(file(dir), contents);
+    const store = makeTaskFailures({ dir });
+    assert.equal(store.list().length, 0, `${contents} should start empty, not throw`);
+    // And it recovers: the next report is recorded and saved over the bad file.
+    store.record(parseReport(REPORT), 1);
+    assert.equal(makeTaskFailures({ dir }).list().length, 1, contents);
+  }
+});
+
+test('one unreadable row costs that row and not the rest of the file', () => {
+  const dir = scratch();
+  const good = makeTaskFailures({ dir });
+  good.record(parseReport(REPORT), 1);
+  const held = JSON.parse(readFileSync(file(dir), 'utf8'));
+  // A row with no id, and one with no last_seen. Neither can be placed or ordered.
+  held.entries.push({ stop_code: 'OhNo' }, { id: 'x', last_seen: 'yesterday' });
+  writeFileSync(file(dir), JSON.stringify(held));
+  assert.equal(makeTaskFailures({ dir }).list().length, 1);
+});
+
+test('a write that fails does not reach the caller', () => {
+  // The report is already in memory and the marker is already in S3. Refusing the notifier over a
+  // full disk would turn a lost sentence into a lost fact and fill the dead-letter queue doing it.
+  const warnings = [];
+  const store = makeTaskFailures({
+    dir: join(scratch(), 'no', 'such', 'directory'),
+    log: { warn: (...args) => warnings.push(args), info: () => {} },
+  });
+  const recorded = store.record(parseReport(REPORT), 1);
+  assert.equal(recorded.attempts, 1, 'the report was accepted');
+  assert.equal(store.list().length, 1);
+  assert.ok(warnings.length > 0, 'a disk that cannot be written to is worth saying out loud');
+});
+
+test('a file holding more than the limit is trimmed on the way in', () => {
+  // Not covered by writing through a capped store: that store trims before it saves, so the file
+  // never holds more than the limit and a load that ignored the cap would look correct. A file can
+  // be larger than the limit for a real reason - the limit was lowered - and an unbounded load
+  // would then quietly restore a list this process has been configured not to keep.
+  const dir = scratch();
+  writeFileSync(file(dir), JSON.stringify({
+    schema: 1,
+    entries: [1, 2, 3, 4, 5].map((n) => ({
+      id: `inspector/${n}.json`, marker_key: `inspector/${n}.json`,
+      task_arn: `arn:${n}`, last_seen: n, first_seen: n, attempts: 1,
+    })),
+  }));
+  const store = makeTaskFailures({ dir, limit: 2 });
+  assert.deepEqual(store.list().map((r) => r.marker_key),
+                   ['inspector/5.json', 'inspector/4.json']);
+});
+
+test('a file written by a version this does not understand is not read', () => {
+  // With a real row in it, so the check is doing something. A future version could store a shape
+  // these fields do not describe, and half-reading it would put values on the screen that mean
+  // something else - worse than the empty list a person can explain.
+  const dir = scratch();
+  writeFileSync(file(dir), JSON.stringify({
+    schema: 99,
+    entries: [{ id: 'inspector/future.json', marker_key: 'inspector/future.json',
+                task_arn: 'arn:future', last_seen: 1, first_seen: 1, attempts: 1 }],
+  }));
+  assert.equal(makeTaskFailures({ dir }).list().length, 0);
 });

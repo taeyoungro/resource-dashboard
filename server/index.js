@@ -122,7 +122,9 @@ async function main() {
   // BEFORE the store, which asks it whether a marker's task is known to have stopped. A report is
   // what lets the sweep say `failed` about a marker the grace period would still call running - see
   // classify() in sweep.js.
-  const taskFailures = makeTaskFailures({ limit: config.notificationLimit });
+  const taskFailures = makeTaskFailures({
+    limit: config.notificationLimit, dir: config.stateDir, log,
+  });
   const store = makeStore(s3, config, markerBodies, (key) => taskFailures.stoppedAt(key));
   const notifications = makeNotifications({ limit: config.notificationLimit });
   const routeTable = routes({
