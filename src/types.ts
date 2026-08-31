@@ -100,6 +100,16 @@ export interface PlanSummary {
   assessment_digest_stored: boolean;
   /** How many people asked to be able to pass this mirror role. Zero on every other kind of plan. */
   passrole_requests: number;
+  /**
+   * And how many of those asks cannot be granted — no Identity Center user by that name, or no
+   * permission set to write the grant into.
+   *
+   * Separate from the count above because these are not decisions an approver can make. Present at
+   * all because their absence is how a tagged role went unnoticed: an ungrantable ask is kept out
+   * of `passrole_requested_by` on purpose, so the row's badge vanished and the plan looked like one
+   * carrying no request.
+   */
+  passrole_unavailable: number;
 }
 
 /**
@@ -306,6 +316,15 @@ export interface PlanDetail {
  * a grant happens only when an approver confirms a name on the decision, and the applier checks
  * that name against `requested_by` again, because this tier is the one that is not trusted.
  */
+/** One ask the inspector resolved and could not turn into a grant. */
+export interface PassroleUnavailable {
+  user_name: string;
+  /** The permission set the grant would have been written into, derived from the user name. */
+  permission_set: string | null;
+  /** The inspector's own sentence. Two causes, and they call for different fixes. */
+  why: string;
+}
+
 export interface PassroleRequests {
   /** Identity Center user names read off the source role's tags. Empty on a plan with no request. */
   requested_by: string[];
@@ -328,6 +347,14 @@ export interface PassroleRequests {
    * inspection's own marker, which is the only place a removal exists.
    */
   untagged: string[];
+  /**
+   * Asked for, and a grant cannot be written. Never in `requested_by` — a name there is one an
+   * approver may confirm, and these cannot be — which is exactly why they used to be invisible.
+   *
+   * The inspector records this so the ask is not swallowed: somebody who tags a role and sees
+   * nothing has no way to tell "refused" from "not looked at yet".
+   */
+  unavailable: PassroleUnavailable[];
   /**
    * The services the grant may be conditioned on, from the mirror role's trust policy. A role can
    * only be assumed by a service it trusts, so passing it to any other grants nothing. Empty means

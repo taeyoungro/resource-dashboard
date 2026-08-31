@@ -1579,7 +1579,7 @@ test('the requests reach the page so an approver can see what is being asked', a
   const { route } = harness({ planOutputs: ASKED });
   const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
   assert.deepEqual(detail.passrole, {
-    requested_by: ['alice'], granted_to: [], untagged: [],
+    requested_by: ['alice'], granted_to: [], untagged: [], unavailable: [],
     services: ['lambda.amazonaws.com'], target_arn: null,
   });
 });
@@ -2020,4 +2020,31 @@ test('the page renders the writer verification and offers retry only where the s
   const page = readFileSync(new URL('../src/components/PlanPage.tsx', import.meta.url), 'utf8');
   assert.match(page, /onRetryPassrole=\{retryPassrole\}/, 'the retry handler is not wired up');
   assert.match(page, /api\.retryPassrole\(/, 'the handler does not call the retry route');
+});
+
+test('the page shows an ask it cannot offer, and opens a way to reach it', () => {
+  // Structural, because the runner cannot load the .tsx - and because every server test above
+  // proves the DATA now reaches the page while saying nothing about whether anything draws it.
+  // That gap is the whole bug: the inspector recorded passrole_unavailable from the start and no
+  // component read it, so a tagged role produced an empty screen.
+  const detail = readFileSync(
+    new URL('../src/components/PlanDetail.tsx', import.meta.url), 'utf8',
+  );
+  assert.match(detail, /const unavailable = detail\.passrole\?\.unavailable \?\? \[\]/,
+               'the panel no longer reads the ungrantable asks');
+  // The panel must not bail out when the ONLY thing on the role is an ungrantable ask - that is
+  // exactly the case that showed nothing.
+  assert.match(
+    detail,
+    /requests\.length === 0 && withdrawnTags\.length === 0 && unavailable\.length === 0/,
+    'the panel returns null on a role carrying only ungrantable asks, which is the reported bug',
+  );
+  assert.match(detail, /unavailable\.map\(\(entry\)/, 'the reasons are not rendered');
+  // And the tab that reaches the panel opens for them too.
+  assert.match(detail, /\|\| \(detail\.passrole\?\.unavailable \?\? \[\]\)\.length > 0\) && \(/,
+               'the PassRole tab is still gated on requested_by alone, so the panel is unreachable');
+
+  const list = readFileSync(new URL('../src/components/PlanList.tsx', import.meta.url), 'utf8');
+  assert.match(list, /it\.passrole_unavailable > 0 &&/,
+               'the row carries no badge for an ungrantable ask, so the plan looks unasked-about');
 });

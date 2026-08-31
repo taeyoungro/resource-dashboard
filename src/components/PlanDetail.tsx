@@ -73,7 +73,11 @@ function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdra
   // Tag removed, grant still standing. Not requests - there is nothing to grant - so they get
   // their own group below and only one thing can be done with them.
   const withdrawnTags = detail.passrole?.untagged ?? [];
-  if (requests.length === 0 && withdrawnTags.length === 0) return null;
+  // Asked for and not grantable. Nothing can be DECIDED about these, which is why they are not
+  // requests - and why the panel used to return null on a role carrying only these, showing the
+  // person who tagged it an empty screen or no PassRole tab at all.
+  const unavailable = detail.passrole?.unavailable ?? [];
+  if (requests.length === 0 && withdrawnTags.length === 0 && unavailable.length === 0) return null;
 
   const services = detail.passrole?.services ?? [];
   // No service means no grant can be written: the condition would have to be invented, and an
@@ -104,6 +108,7 @@ function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdra
       <h3>
         PassRole <span className="muted small">
           요청 {requests.length}건{withdrawnTags.length > 0 ? ` · 회수 대기 ${withdrawnTags.length}건` : ""}
+          {unavailable.length > 0 ? ` · 부여 불가 ${unavailable.length}건` : ""}
         </span>
       </h3>
       <p className="muted small">
@@ -168,6 +173,47 @@ function PassroleRequests({ detail, confirmed, onConfirmed, withdrawn, onWithdra
             ))}
           </tbody>
         </table>
+      )}
+
+      {unavailable.length > 0 && (
+        <>
+          <h4>부여할 수 없는 요청 <span className="muted small">{unavailable.length}건</span></h4>
+          <p className="muted small">
+            태그는 붙었고 <strong>부여 문장을 쓸 대상이 없습니다.</strong> 여기 있는 이름은 위
+            목록에 나오지 않습니다 — 승인자가 고를 수 있는 것이 아니기 때문입니다. 그래도 화면에
+            내는 이유는, 태그를 붙인 사람이 아무것도 보지 못하면 <strong>거절된 것인지 아직 처리가
+            안 된 것인지 구분할 방법이 없기</strong> 때문입니다.
+          </p>
+          <table className="policy-table">
+            <thead>
+              <tr>
+                <th>사람</th>
+                <th>부여될 권한 세트</th>
+                <th>왜 안 되는가</th>
+              </tr>
+            </thead>
+            <tbody>
+              {unavailable.map((entry) => (
+                <tr key={entry.user_name} className="marker-lock">
+                  <td><code>{entry.user_name}</code></td>
+                  <td>
+                    {entry.permission_set
+                      ? <code>{entry.permission_set}</code>
+                      : <span className="muted">—</span>}
+                  </td>
+                  <td className="small">{entry.why || <span className="muted">사유 없음</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="muted small">
+            고치는 자리는 둘 중 하나입니다. <strong>Identity Center 사용자가 없다</strong>면 태그의
+            키가 사용자 이름과 정확히 같은지 봅니다. <strong>권한 세트가 없다</strong>면 그 사용자의
+            권한 세트를 먼저 만들어야 합니다 — 부여 문장은 그 권한 세트의 인라인 정책에 들어가므로,
+            없으면 쓸 곳이 없습니다. 어느 쪽이든 고친 뒤 원본 역할의 태그를 다시 붙이면 새 검사가
+            돕니다.
+          </p>
+        </>
       )}
 
       {withdrawnTags.length > 0 && (
@@ -459,7 +505,13 @@ export function PlanDetail({
       {/* Two questions about one resource, and the answer to one is not the answer to the other.
           Only offered where there is a PassRole request - a tab that opens an empty panel is a tab
           people learn to ignore. */}
-      {(detail.passrole?.requested_by ?? []).length > 0 && (
+      {((detail.passrole?.requested_by ?? []).length > 0
+        || (detail.passrole?.untagged ?? []).length > 0
+        // An ungrantable ask opens the tab too. Without this the panel below existed and there was
+        // no way to reach it: the tab was gated on requested_by, which an ungrantable ask is
+        // deliberately kept out of, so a role tagged for a user with no permission set showed the
+        // assessment view and nothing else.
+        || (detail.passrole?.unavailable ?? []).length > 0) && (
         <div className="tabs detail-tabs">
           <button
             type="button"
@@ -473,7 +525,12 @@ export function PlanDetail({
             className={view === "passrole" ? "tab active" : "tab"}
             onClick={() => onView("passrole")}
           >
-            PassRole 요청 {detail.passrole.requested_by.length}
+            PassRole {detail.passrole.requested_by.length > 0
+              ? `요청 ${detail.passrole.requested_by.length}`
+              : ''}
+            {(detail.passrole?.unavailable ?? []).length > 0
+              ? ` 부여 불가 ${detail.passrole.unavailable.length}`
+              : ''}
           </button>
         </div>
       )}

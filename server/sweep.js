@@ -200,6 +200,33 @@ export function requestersFromConfig(document) {
   return [...new Set(value.filter((v) => typeof v === 'string' && v.trim()))].sort();
 }
 
+/** The people who ASKED and cannot be granted, from the same document.
+ *
+ * Counted into the row beside the requesters above, and that is the whole point of it. These names
+ * are in `passrole_unavailable` and in no other output: the inspector keeps them OUT of
+ * passrole_requested_by deliberately, because a name there is one an approver may confirm and these
+ * cannot be. So every screen that read only requested_by showed nothing at all.
+ *
+ * That is the state this exists to end. Somebody tags their role, the inspector resolves the tag,
+ * decides the grant cannot be written, records why - and the person who asked sees an empty
+ * PassRole panel, or no PassRole tab at all, with no way to tell "refused" from "not looked at
+ * yet". The inspector's own comment on the output says so; nothing read it.
+ */
+export function unavailableFromConfig(document) {
+  const value = document?.output?.passrole_unavailable?.value;
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry) => entry && typeof entry.user_name === 'string' && entry.user_name.trim())
+    .map((entry) => ({
+      user_name: entry.user_name,
+      permission_set: typeof entry.permission_set === 'string' ? entry.permission_set : null,
+      // The inspector's own sentence, not one composed here. It distinguishes the two causes -
+      // no Identity Center user by that name, or no permission set to write the grant into - and
+      // they call for different things from the person who asked.
+      why: typeof entry.why === 'string' ? entry.why : '',
+    }));
+}
+
 /** The PassRole requests this plan carries, from the mirror document's outputs.
  *
  * A user asks by tagging their <service>-* role <their name> = passrole. The inspector reads the
@@ -240,10 +267,16 @@ export function passroleFromPlan(planJson) {
     return Array.isArray(value) ? value.filter((v) => typeof v === 'string' && v.trim()) : [];
   };
   const arn = after('passrole_target_arn');
+  const unavailable = after('passrole_unavailable');
   return {
     requested_by: [...new Set(list('passrole_requested_by'))].sort(),
     granted_to: [...new Set(list('passrole_granted_to'))].sort(),
     untagged: [...new Set(list('passrole_untagged'))].sort(),
+    // Asked for and NOT grantable, with the inspector's reason. Never in requested_by - a name
+    // there is one an approver may confirm, and these cannot be - which is exactly why they were
+    // invisible: every screen read requested_by and nothing else, so tagging a role whose
+    // permission set does not exist produced an empty panel and no tab.
+    unavailable: unavailableFromConfig({ output: { passrole_unavailable: { value: unavailable } } }),
     services: [...new Set(list('passrole_services'))].sort(),
     target_arn: typeof arn === 'string' && arn.trim() ? arn.trim() : null,
   };
@@ -397,10 +430,12 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
     // before writing it - so the row can say whether there is a PassRole request to look at without
     // a second object read per plan.
     let requesters = [];
+    let unavailable = [];
     try {
       const document = await getJson(s3, config.stateBucket, configObject.key);
       identity = identityFromConfig(document);
       requesters = requestersFromConfig(document);
+      unavailable = unavailableFromConfig(document);
     } catch (err) {
       errors.push(`${configObject.key}: ${err.message}`);
     }
@@ -445,6 +480,11 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
       // How many people asked to be able to pass this mirror role. The row shows a way in to the
       // confirmation screen when there is one, and nothing when there is not.
       passrole_requests: requesters.length,
+      // And how many of those asks cannot be granted. Counted separately because they are not
+      // decisions an approver can make - but counted AT ALL because a row that says nothing is how
+      // a tagged role went unnoticed: requested_by is empty for an ungrantable ask, so the badge
+      // disappeared and the plan looked like one carrying no request.
+      passrole_unavailable: unavailable.length,
       // The last inspection of this resource, when it refused. Null when the record is about the
       // plan that is standing - see refusalFor.
       refusal: refusalFor(refusal, requestId, refusalObject),

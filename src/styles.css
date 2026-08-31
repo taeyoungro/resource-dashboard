@@ -1368,6 +1368,14 @@ dialog.picker.block-path { width: min(44rem, 94vw); }
   background: var(--panel-2);
 }
 
+/* An ask that cannot be granted. It reads differently from a request on purpose: the accent badge
+   beside it is a decision waiting for an approver, and this is a mistake waiting for whoever wrote
+   the tag. Same shape so the row stays one row; different colour so they are not confused. */
+.row-action-warn {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 /* Two views of one plan. Indented to the panel rather than the window, so it reads as belonging to
    the resource named above it and not to the page. */
 .detail-tabs {

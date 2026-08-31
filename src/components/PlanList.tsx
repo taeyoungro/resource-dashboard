@@ -61,6 +61,22 @@ export function PlanList({ items, selectedId, onSelect, onSelectPassrole }: Prop
                 PassRole 요청 {it.passrole_requests}
               </button>
             )}
+            {/* Asked for and not grantable. Its own badge rather than folded into the count above,
+                because there is nothing to decide here - but shown, because its absence is how a
+                tagged role went unnoticed entirely: an ungrantable ask is kept out of
+                passrole_requested_by on purpose, so this row carried no badge at all and looked
+                like a plan nobody had asked anything about. */}
+            {it.passrole_unavailable > 0 && (
+              <button
+                type="button"
+                className="row-action row-action-warn"
+                onClick={(e) => { e.stopPropagation(); onSelectPassrole(it.plan_id); }}
+                title={`태그는 붙었고 부여 문장을 쓸 대상이 없는 요청 ${it.passrole_unavailable}건. `
+                  + '승인자가 고를 수 있는 것이 아니라, 태그를 붙인 사람이 고쳐야 하는 것입니다.'}
+              >
+                PassRole 부여 불가 {it.passrole_unavailable}
+              </button>
+            )}
           </div>
           {/* The resource. It is also what the plan is keyed by now - one governed resource has
               one state and one plan, and a new inspection replaces the old one rather than adding
