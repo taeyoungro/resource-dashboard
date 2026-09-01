@@ -2411,3 +2411,57 @@ test('a report naming a plan artifact cannot be retried, whatever it says', asyn
     (err) => err.status === 409,
   );
 });
+
+// ---- what is standing, when the writer has no record of it -------------------------------------
+//
+// inline_result is written by the inline writer, so a permission set it has never run for has no
+// such object. readPlan answers null for every unreadable one, and null closes the restriction
+// editor - so "nothing has ever been written here", the state of every permission set the first
+// time somebody restricts one, read as "nobody can say what is standing". The editor closed and
+// every 경로 차단 button on the risk analysis cards went with it: the first restriction became the
+// one restriction that could not be written.
+
+test('a permission set with no writer record opens the editor when the assessment says nothing stands', async () => {
+  // current_admin_deny is what the querier read off the LIVE inline policy. Empty is a FACT - there
+  // is no AdminDeny family - and an empty form is then the truth rather than a lie.
+  const { route } = harness({
+    assessment: { ...ASSESSMENT, permission_set_name: `${ACCOUNT}-alice`, current_admin_deny: [] },
+  });
+  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  assert.deepEqual(detail.restrictions_in_force, [],
+                   'the editor stays closed on a permission set that has never been restricted');
+});
+
+test('standing statements with no writer record keep the editor closed', async () => {
+  // The case the closed editor was built for, and it must survive the fix above: statements are in
+  // force and nothing can say which decisions produced them, so a form seeded empty would drop
+  // every one of them - composing replaces the whole family.
+  const { route } = harness({
+    assessment: {
+      ...ASSESSMENT,
+      permission_set_name: `${ACCOUNT}-alice`,
+      current_admin_deny: [{ Sid: 'AdminDeny1', Effect: 'Deny', Action: 'sqs:DeleteMessage' }],
+    },
+  });
+  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  assert.equal(detail.restrictions_in_force, null);
+});
+
+test('an earlier assessment does not open the editor', async () => {
+  // It carries no digest, so the decision route refuses any restriction composed from it. An open
+  // form there is one whose submission is refused after the approver has filled it in.
+  const { route } = harness({
+    assessment: {
+      ...ASSESSMENT,
+      request_id: `${ACCOUNT}-0000000000000000`,
+      permission_set_name: `${ACCOUNT}-alice`,
+      current_admin_deny: [],
+    },
+    planOutputs: ASKED,
+    noChanges: true,
+  });
+  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  assert.equal(detail.assessment_source, 'earlier');
+  assert.equal(detail.assessment_sha256, null);
+  assert.equal(detail.restrictions_in_force, null);
+});

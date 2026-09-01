@@ -234,6 +234,37 @@ export function restrictionsInForce(document) {
   return value.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry));
 }
 
+/**
+ * Whether the assessment PROVES that nothing is restricted, so an empty form is the truth.
+ *
+ * 무엇인가   이 권한 세트의 인라인 정책에 AdminDeny 문장이 하나도 없다는 사실. 추측이 아니라
+ *            영향도 조회기가 살아 있는 문서를 읽어 적은 것이다
+ * 어디 있나  impact.json 의 current_admin_deny — 「새 결정이 무엇을 교체하게 되는가」
+ * 누가 쓰나  영향도 조회기 하나 (code/impact/impact/assess.py:712,
+ *            current = owned(current_inline, ADMIN_DENY_SID))
+ * 누가 읽나  여기, 그리고 계획 상세 경로가 작성기의 기록이 없을 때 이것으로 답을 메운다
+ *
+ * This exists because absence of a RECORD is not absence of a RESTRICTION, and the two were
+ * collapsed. inline_result is written by the writer, so a permission set the writer has never run
+ * for has no such object - which is every permission set the first time somebody restricts one -
+ * and reading that as "nobody can say" closed the editor on exactly the plans it is for.
+ *
+ * The live document answers it, and this is the artifact that read it. Empty here is a fact: there
+ * is no AdminDeny family, so nothing is standing. Non-empty is NOT the mirror answer and must not
+ * be treated as one - statements exist and this says nothing about which decisions produced them,
+ * which is the whole reason restrictions_in_force is read separately.
+ */
+export function nothingRestricted(assessment) {
+  // A permission set has to exist for "nothing is restricted on it" to be a claim at all. The
+  // querier only reads an inline policy for a ps_role plan (impact/app.py:228), so a mirror plan's
+  // current_admin_deny is empty for want of a document rather than for want of statements - and
+  // opening the editor there would offer a form the applier refuses to dispatch (no_inline_target).
+  const name = assessment?.permission_set_name;
+  if (typeof name !== 'string' || !name.trim()) return false;
+  const current = assessment?.current_admin_deny;
+  return Array.isArray(current) && current.length === 0;
+}
+
 /** One line per resource the plan changes, from the machine-readable rendering. */
 export function changesFromPlan(planJson) {
   const changes = [];
@@ -1220,14 +1251,18 @@ export async function readPlan(s3, config, planId) {
     //
     //   [...]  these are standing. Open the form with them ticked; the approver adds and removes
     //   []     nothing is standing. An empty form is correct
-    //   null   nobody has said. An empty form here would let an approval be composed against a set
-    //          it cannot see, and composing replaces the whole family - so every standing
-    //          restriction would be dropped by an approver who never saw one. The editor refuses
-    //          the decision instead of offering that
+    //   null   THE WRITER'S RECORD cannot say. Not yet the final answer: the plan detail route
+    //          fills it in from the assessment, which read the live document - see
+    //          nothingRestricted. What survives as null is the case the closed editor exists for,
+    //          where statements are standing and nothing can say which decisions produced them.
+    //          An empty form there would let an approval be composed against a set it cannot see,
+    //          and composing replaces the whole family - so every standing restriction would be
+    //          dropped by an approver who never saw one
     //
     // Null happens on a permission set no writer has run for yet, on a plan that is not about a
-    // permission set at all, and after a run that could not say. All three are the same answer to
-    // the only question the editor asks.
+    // permission set at all, and after a run that could not say. Those are NOT the same answer and
+    // treating them as one closed the editor on every unrestricted permission set - which is every
+    // one of them the first time somebody restricts it. The route above is where they part.
     restrictions_in_force: inForce,
 
     // What the applier did, if it has finished with this plan. Terminal: a plan with an outcome
