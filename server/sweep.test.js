@@ -14,7 +14,7 @@ import {
   changesFromPlan, classify, holdersFromConfig, identityFromConfig, isDigest, passroleFromPlan,
   planIdFromKey, reclassify,
   requestersFromConfig,
-  permissionSetFromConfig, planPrefixFromId, readPlan, restrictionsInForce,
+  nothingRestricted, permissionSetFromConfig, planPrefixFromId, readPlan, restrictionsInForce,
   requestIdFromMarkerKey, sweep, unavailableFromConfig, writerVerification,
 } from './sweep.js';
 
@@ -1721,4 +1721,31 @@ test('nobody having said is not the same answer as nothing being restricted', ()
     restrictionsInForce({ restrictions_in_force: [{ intent: 'deny_action' }, 3, null, []] }),
     [{ intent: 'deny_action' }],
   );
+});
+
+test('the assessment answers what the writer has no record of', () => {
+  // "No record" and "nothing restricted" were one answer, and a permission set the writer has never
+  // run for has no record - which is every permission set the first time somebody restricts one. So
+  // the editor closed on exactly the plans it exists for, and the first restriction became the one
+  // restriction that could not be written.
+  //
+  // current_admin_deny is the querier's reading of the LIVE inline policy. Empty there is a fact.
+  const ps = { permission_set_name: '644701781058-alice' };
+  assert.equal(nothingRestricted({ ...ps, current_admin_deny: [] }), true);
+
+  // Non-empty is NOT the mirror answer. Statements stand and this says nothing about which
+  // decisions produced them - so the editor stays closed rather than seeding a form that would drop
+  // them, and restrictions_in_force remains the only thing that can reopen it.
+  assert.equal(nothingRestricted({ ...ps, current_admin_deny: [{ Sid: 'AdminDeny1' }] }), false);
+
+  // A permission set has to exist for the claim to mean anything. A mirror plan's assessment
+  // carries an empty list for want of a document, and a restriction there is refused by the applier
+  // (no_inline_target), so an open editor would offer a form that dispatches nothing.
+  assert.equal(nothingRestricted({ current_admin_deny: [] }), false, 'no permission set');
+  assert.equal(nothingRestricted({ permission_set_name: '  ', current_admin_deny: [] }), false);
+
+  // Anything that is not an assessment saying so is not a fact.
+  assert.equal(nothingRestricted({ ...ps }), false, 'an assessment from before the field existed');
+  assert.equal(nothingRestricted({ ...ps, current_admin_deny: null }), false);
+  assert.equal(nothingRestricted(null), false, 'no assessment at all');
 });

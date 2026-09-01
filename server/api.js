@@ -20,7 +20,7 @@ import { getBytes, getBucketPolicy, listBuckets, putBytes, putJson } from './s3.
 import { openStatements, parsePolicy, readPolicy, sameAccountOf } from './bucketPolicy.js';
 import { governedPrincipals } from './governedPrincipals.js';
 import { ImpactError, parse as parseImpact } from './impacts.js';
-import { planPrefixFromId, readImpact, readPlan, reclassify } from './sweep.js';
+import { nothingRestricted, planPrefixFromId, readImpact, readPlan, reclassify } from './sweep.js';
 import { controlPlane } from './controlPlane.js';
 import { condense, digestBytes } from './riskDigest.js';
 import { candidates as proposeCandidates } from './candidatePaths.js';
@@ -789,8 +789,36 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         }
       }
 
+      // What is standing, answered by the assessment when the writer's record could not.
+      //
+      // readPlan says null whenever inline_result cannot be read, and a permission set the writer
+      // has never run for HAS no such object. So "nothing has ever been written here" - the state
+      // of every permission set the first time somebody restricts one - read as "nobody can say",
+      // the editor closed, and with it every 경로 차단 button on the risk analysis cards. The first
+      // restriction became the one restriction that could not be written.
+      //
+      // current_admin_deny is what the impact querier read off the LIVE inline policy - "what a new
+      // decision would replace". Empty there is a fact, not an absence: there is no AdminDeny
+      // family, so nothing is standing, so an empty form is the truth.
+      //
+      // Non-empty stays null, and that is the case the closed editor was built for: statements are
+      // in force and nothing can say which decisions produced them, so a form seeded empty would
+      // drop them all.
+      //
+      // Only from an assessment carrying a digest - the current one. An assessment kept from an
+      // earlier inspection composes nothing (the decision route refuses a restriction without the
+      // digest), so opening the editor on it would offer a form whose submission is refused.
+      const inForce = plan.restrictions_in_force
+        ?? (digest && nothingRestricted(assessment) ? [] : null);
+
       // The digest the page has to send back with a restriction. Not computed here - see readImpact.
-      return { ...plan, assessment, assessment_source: source, assessment_sha256: digest };
+      return {
+        ...plan,
+        restrictions_in_force: inForce,
+        assessment,
+        assessment_source: source,
+        assessment_sha256: digest,
+      };
     },
 
     /**
