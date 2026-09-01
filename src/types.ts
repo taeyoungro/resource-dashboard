@@ -296,6 +296,28 @@ export interface PlanDetail {
   request_id: string | null;
   /** False when the twin already matches the spec. Such a plan cannot be approved. */
   has_changes: boolean;
+
+  /**
+   * The administrator restrictions already standing on this permission set, as the DECISIONS that
+   * produced them. What the editor opens with.
+   *
+   * THREE-VALUED, and the third value is the point:
+   *
+   *   [...]  these are standing. The form opens with them, and the approver adds or removes
+   *   []     nothing is standing, so an empty form is right
+   *   null   nobody has said what is standing. An empty form would then be a lie: approving from it
+   *          composes a decision set that replaces the whole family, so every standing restriction
+   *          would be dropped by an approver who was never shown one. That is the defect this
+   *          field exists to close, and rendering null as [] reintroduces it exactly.
+   *
+   * Decisions rather than statements because intent is not recoverable from a statement -
+   * allow_only keeping two resources and deny_only denying the rest can compile to the same bytes,
+   * so a form rebuilt from the policy would show a choice nobody made.
+   *
+   * Written by the inline writer into inline_result/<account>:<permission set>.json; nothing else
+   * stores them, because the approval marker that carried them is deleted by the applier.
+   */
+  restrictions_in_force: Restriction[] | null;
   /**
    * Why the last inspection of this resource produced no plan, when it produced none.
    *

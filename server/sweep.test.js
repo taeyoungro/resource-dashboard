@@ -14,7 +14,7 @@ import {
   changesFromPlan, classify, holdersFromConfig, identityFromConfig, isDigest, passroleFromPlan,
   planIdFromKey, reclassify,
   requestersFromConfig,
-  planPrefixFromId, readPlan,
+  permissionSetFromConfig, planPrefixFromId, readPlan, restrictionsInForce,
   requestIdFromMarkerKey, sweep, unavailableFromConfig, writerVerification,
 } from './sweep.js';
 
@@ -1680,4 +1680,45 @@ test('the panel carries the kind, because the two say opposite things to a perso
   assert.equal(detail.refusal.retryable, true,
                'the panel cannot tell a verdict from an attempt, so it renders one text for both');
   assert.equal(detail.plan_stored, true);
+});
+
+// ---- what is already restricted --------------------------------------------------------------
+//
+// The defect, as a user met it: event one restricts and it is applied. Event two opens the same
+// screen EMPTY - nothing anywhere records what is in force - so every restriction has to be picked
+// again, and picking one replaces the whole family with that one. Approved restrictions vanished
+// with the run reporting success.
+//
+// The decisions live in one place only. The approval marker carries them and the applier deletes
+// it; the statements they compiled to cannot be turned back into them, because intent is not
+// recoverable from a statement.
+
+test('the permission set name comes from the generated document, never re-derived', () => {
+  // Re-deriving it here would mean reimplementing the generator's nineteen-character truncation in
+  // a second language, and the join is by exact name - so the two drift and the lookup silently
+  // returns nothing, which reads as "no restrictions" and is the defect again.
+  assert.equal(
+    permissionSetFromConfig({ resource: { aws_ssoadmin_permission_set: { ps: { name: '644701781058-alice' } } } }),
+    '644701781058-alice',
+  );
+  for (const absent of [null, {}, { resource: {} },
+                        { resource: { aws_ssoadmin_permission_set: { ps: { name: '  ' } } } }]) {
+    assert.equal(permissionSetFromConfig(absent), null, JSON.stringify(absent));
+  }
+});
+
+test('nobody having said is not the same answer as nothing being restricted', () => {
+  // THE assertion. [] lets the editor open an empty form, which is correct when nothing is set and
+  // catastrophic when something is: approving from it replaces the whole family. null closes the
+  // editor instead.
+  assert.deepEqual(restrictionsInForce({ restrictions_in_force: [] }), []);
+  assert.equal(restrictionsInForce({ restrictions_in_force: null }), null, 'the run could not say');
+  assert.equal(restrictionsInForce({}), null, 'a record from before the field existed');
+  assert.equal(restrictionsInForce(null), null, 'no record at all');
+  assert.equal(restrictionsInForce({ restrictions_in_force: 'no' }), null);
+  // Entries that are not decisions are dropped; the rest still stand.
+  assert.deepEqual(
+    restrictionsInForce({ restrictions_in_force: [{ intent: 'deny_action' }, 3, null, []] }),
+    [{ intent: 'deny_action' }],
+  );
 });
