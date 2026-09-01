@@ -1762,19 +1762,28 @@ test('the solid and dashed grammar is stated where it is used', () => {
   assert.ok(TOPOLOGY.includes('민감'), 'sensitivity does not reach the screen');
 });
 
-test('the filter offers what the assessment can serve, and says why not for the rest', () => {
-  // The account and the region a resource sits in are facts on every row. Which VPC or subnet it
-  // sits in is not in the assessment at all - Resource Explorer returns an ARN, a type, a region,
-  // an account and tags - so a VPC filter would narrow nothing while looking like it narrowed
-  // something. The dimension is shown, disabled, with the reason.
+test('the filter offers all four dimensions a container records', () => {
   assert.ok(TOPOLOGY.includes('<FilterBar'), 'the window offers no way to narrow the picture');
   assert.ok(TOPOLOGY.includes('전체'), 'there is no way back to the unnarrowed picture');
-  assert.ok(TOPOLOGY_CODE.includes('facets.unavailable'),
-            'the dimensions this data cannot serve are not rendered, so a reader is left to guess '
-            + 'why there is no VPC filter');
-  assert.match(CSS, /\.topology-chip\.off/, 'an unavailable dimension is styled as an available one');
-  assert.ok(!/vpcId|subnet_id|vpc_id/.test(TOPOLOGY_CODE),
-            'the component reached for a VPC or subnet field, which no assessment carries');
+  for (const dimension of ['계정', '리전', 'VPC', '서브넷']) {
+    assert.ok(TOPOLOGY.includes(`label="${dimension}"`), `${dimension} cannot be chosen`);
+  }
+  // The component reads the facets the module computed and never a raw row field of its own: the
+  // three meanings of a missing vpc_id are decided in one tested place.
+  assert.ok(!/resource\.vpc_id|\.subnet_id/.test(TOPOLOGY_CODE),
+            'the component reached into a row for placement instead of using the facets');
+});
+
+test('the rows the placement lookup could not place are counted on screen', () => {
+  // Defect it prevents: a denied optional permission reading as an empty VPC. A row with no vpc_id
+  // is not evidence of belonging and not evidence of not belonging, and folding it silently into
+  // "not in this VPC" turns a lookup failure into a claim about the account.
+  assert.ok(TOPOLOGY.includes('VPC를 알 수 없는 자원이'),
+            'nothing says how many resources a VPC filter cannot speak for');
+  assert.ok(TOPOLOGY.includes('이 자원들은 빠진다'),
+            'the window does not say that narrowing by VPC drops the unplaced rows');
+  assert.ok(TOPOLOGY.includes('VPC가 아예 없는'),
+            'a volume, which has no VPC by definition, is not distinguished from a lookup failure');
 });
 
 test('a narrowed picture says what it left out', () => {

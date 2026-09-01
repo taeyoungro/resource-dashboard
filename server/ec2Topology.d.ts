@@ -127,7 +127,16 @@ export interface Scene {
 export interface Facets {
   accounts: { id: string; total: number }[];
   regions: { id: string; total: number }[];
-  /** Dimensions somebody will ask for that this assessment cannot serve, each with the reason. */
+  vpcs: { id: string; total: number }[];
+  subnets: { id: string; total: number }[];
+  /** VPC-scoped rows the querier recorded no VPC for - an optional permission it did not have, or
+   *  an assessment written before the field existed. A VPC filter cannot speak for these. */
+  unplaced: number;
+  /** How many rows a VPC filter could speak for at all. unplaced is a share of this, not of the
+   *  whole picture: a volume has no VPC by definition and is in neither number. */
+  placeable: number;
+  /** Dimensions this assessment cannot serve, each with the reason. Empty now that the querier
+   *  records placement; kept so a future dimension has somewhere honest to go. */
   unavailable: { id: string; label: string; why: string }[];
 }
 
@@ -135,8 +144,11 @@ export interface Facets {
 export interface SceneFilter {
   accounts?: string[] | null;
   regions?: string[] | null;
+  vpcs?: string[] | null;
+  subnets?: string[] | null;
 }
 
+export const VPC_SCOPED: Set<string>;
 export function facets(policy: ImpactPolicy): Facets | null;
 export function filterActive(filter: SceneFilter | null): boolean;
 export function topologyPolicy(identifier: string): "ec2" | null;

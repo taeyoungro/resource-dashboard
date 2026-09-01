@@ -259,13 +259,15 @@ function FacetPicker({ label, values, chosen, onChange }: {
 }
 
 /**
- * The filter bar: what the picture can be narrowed by, and what it cannot.
+ * The filter bar: the four dimensions a container actually recorded.
  *
- * The second half is the part that matters. Somebody looking at an EC2 diagram will reach for a VPC
- * filter, and this assessment cannot serve one - Resource Explorer returns an ARN, a type, a region,
- * an account and tags, and none of those says which VPC an instance is in. A control that appeared
- * to narrow by VPC and quietly narrowed nothing would be exactly the lie the rest of this window is
- * built to avoid, so the dimension is shown, disabled, with the reason on it.
+ * The account and the region are on every row. The VPC and the subnet are there because the impact
+ * querier now looks them up - no EC2 ARN carries a VPC and Resource Explorer does not return one,
+ * so impact/inventory.py joins the membership on from the EC2 Describe calls.
+ *
+ * What still has to be said out loud is the rows that lookup could not place. A VPC filter cannot
+ * speak for them, and folding them silently into "not in this VPC" would let an approver read a
+ * denied optional permission as an empty VPC.
  */
 function FilterBar({ facets, filter, onChange }: {
   facets: Facets;
@@ -288,6 +290,31 @@ function FilterBar({ facets, filter, onChange }: {
         chosen={filter.regions ?? []}
         onChange={(regions) => onChange({ ...filter, regions })}
       />
+      {facets.vpcs.length > 0 && (
+        <FacetPicker
+          label="VPC"
+          values={facets.vpcs}
+          chosen={filter.vpcs ?? []}
+          onChange={(vpcs) => onChange({ ...filter, vpcs })}
+        />
+      )}
+      {facets.subnets.length > 0 && (
+        <FacetPicker
+          label="서브넷"
+          values={facets.subnets}
+          chosen={filter.subnets ?? []}
+          onChange={(subnets) => onChange({ ...filter, subnets })}
+        />
+      )}
+      {facets.unplaced > 0 && (
+        <p className="muted small">
+          VPC를 알 수 없는 자원이 {facets.unplaced.toLocaleString()}개 있다
+          (VPC에 속할 수 있는 {facets.placeable.toLocaleString()}개 중). VPC나 서브넷으로 좁히면
+          <strong> 이 자원들은 빠진다</strong> — 조회기가 배치를 읽지 못했거나(선택 권한이다),
+          이 평가가 그 값이 생기기 전에 만들어졌다는 뜻이다. 볼륨·스냅샷·AMI처럼 VPC가 아예 없는
+          유형은 이 수에 들어 있지 않다.
+        </p>
+      )}
       {facets.unavailable.map((dimension) => (
         <div className="topology-facet" key={dimension.id}>
           <span className="topology-facet-name">{dimension.label}</span>
@@ -335,7 +362,9 @@ export function PolicyTopology({ policy, name, accountId }: {
   // 전체 on every dimension, which is the picture the button promises. Held here rather than in the
   // module so closing and reopening the window starts from everything again: a filter an approver
   // set five minutes ago and cannot see is a filter that makes the next picture a quiet lie.
-  const [filter, setFilter] = useState<SceneFilter>({ accounts: [], regions: [] });
+  const [filter, setFilter] = useState<SceneFilter>(
+    { accounts: [], regions: [], vpcs: [], subnets: [] },
+  );
   const facets = useMemo(() => facetsOf(policy), [policy]);
   // Unfiltered, for the closed-state summary and for the sentence that says what was narrowed away.
   const whole = useMemo(() => ec2Scene(policy, accountId), [policy, accountId]);

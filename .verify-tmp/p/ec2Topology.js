@@ -30,27 +30,9 @@
 // icon: null and renders its plate and its label - the same never-guess contract the service table
 // keeps, rendered rather than described.
 //
-// Counts come from group.total, which is what the container recorded (assess.py: total is the
-// number of rows it kept, capped at 1000 per query) and a floor when `truncated` says the cap was
-// hit. Never from group.resources.length here: the two agree today, and reading the field the
-// container publishes is what keeps them agreeing if the container ever learns a true count.
-//
-// WHAT CAN BE FILTERED. Four dimensions, and every one of them is a fact a container recorded.
-//
-//   account, region   on every row, from the ARN and from Resource Explorer's own Region
-//   vpc, subnet       on the EC2 types AWS scopes to one, from vpc_id / subnet_id
-//
-// The last two arrive because the querier now asks for them. Resource Explorer's Search returns an
-// ARN, a type, a region, an owning account and Properties-as-tags, and no EC2 ARN carries a VPC -
-// so impact/inventory.py's _with_placement joins the membership on from the EC2 Describe calls,
-// one per operation per region that holds a row of the matching type.
-//
-// A row with no vpc_id is THREE different things and the filter must not flatten them: the type has
-// no VPC at all (a volume, a snapshot, an AMI, a key pair - zone- or region-scoped, and the absence
-// is a fact about EC2), the resource is genuinely unattached, or the querier could not look it up
-// (the permission is optional, and an older assessment predates the field entirely). unplaced()
-// counts the rows in that state so the screen can say how much of the picture a VPC filter cannot
-// speak for, rather than silently dropping them.
+// Counts come from group.total and never from group.resources.length. The container caps the rows
+// it returns at 1000 and GroupBlock shows 50 of them; total is the true count, and a floor when the
+// group is truncated.
 //
 // Plain JS with a .d.ts beside it, same arrangement as blockPath.js and for the same reason:
 // node --test is the one test runner here and it cannot load TypeScript. Korean appears in this
@@ -300,111 +282,6 @@ function regionOf(resource) {
   return resource?.region || parseArn(resource?.arn ?? '')?.region || 'global';
 }
 
-/** The account a row belongs to, from its ARN. Empty when the ARN does not carry one. */
-function accountOf(resource) {
-  return parseArn(resource?.arn ?? '')?.account || '';
-}
-
-/** The VPC a row sits in, as the querier recorded it. Empty when nothing recorded one. */
-function vpcOf(resource) {
-  const value = resource?.vpc_id;
-  return typeof value === 'string' && value ? value : '';
-}
-
-/** The subnet a row sits in. Empty for the types AWS does not scope to one. */
-function subnetOf(resource) {
-  const value = resource?.subnet_id;
-  return typeof value === 'string' && value ? value : '';
-}
-
-/**
- * The EC2 types AWS scopes to a VPC, mirroring PLACEMENT in impact/inventory.py.
- *
- * Here so an unplaced volume is not counted against the placement lookup: a volume has no VPC by
- * definition, and folding it into "rows with no VPC recorded" would report a permission failure
- * that did not happen. The two tables are pinned against each other by a test.
- */
-export const VPC_SCOPED = new Set([
-  'ec2:vpc', 'ec2:instance', 'ec2:subnet', 'ec2:security-group', 'ec2:network-interface',
-  'ec2:natgateway', 'ec2:route-table', 'ec2:network-acl', 'ec2:vpc-endpoint',
-  'ec2:internet-gateway',
-]);
-
-/**
- * What the picture can be narrowed by, and what it cannot.
- *
- * accounts and regions are read off the rows the container enumerated, so they are facts about this
- * assessment and the counts beside them are the same counts the picture draws.
- *
- * unavailable names the dimensions somebody will reasonably ask for and this data cannot serve,
- * WITH the reason. It is a field rather than a sentence on the screen because the screen must not
- * be the place that decides which filters are honest: a control that narrows nothing while looking
- * like it narrowed something is worse than no control, and worse still than a control that says
- * why it is not there.
- */
-export function facets(policy) {
-  if (topologyPolicy(policy?.identifier) === null) return null;
-  const accounts = new Map();
-  const regions = new Map();
-  const vpcs = new Map();
-  const subnets = new Map();
-  // Rows the placement lookup says nothing about. Counted rather than dropped: a VPC filter cannot
-  // speak for them, and how many there are is the difference between "this VPC holds little" and
-  // "most of this picture has no VPC recorded".
-  let unplaced = 0;
-  let placeable = 0;
-  for (const group of policy?.affected ?? []) {
-    if (group?.service !== 'ec2') continue;
-    const scoped = VPC_SCOPED.has(group.resource_type);
-    for (const resource of group.resources ?? []) {
-      const account = accountOf(resource);
-      const region = regionOf(resource);
-      if (account) accounts.set(account, (accounts.get(account) ?? 0) + 1);
-      regions.set(region, (regions.get(region) ?? 0) + 1);
-      if (!scoped) continue;
-      placeable += 1;
-      const vpc = vpcOf(resource);
-      const subnet = subnetOf(resource);
-      if (vpc) vpcs.set(vpc, (vpcs.get(vpc) ?? 0) + 1); else unplaced += 1;
-      if (subnet) subnets.set(subnet, (subnets.get(subnet) ?? 0) + 1);
-    }
-  }
-  const listed = (map) => [...map.entries()]
-    .map(([id, total]) => ({ id, total }))
-    .sort((a, b) => b.total - a.total || a.id.localeCompare(b.id));
-  return {
-    accounts: listed(accounts),
-    regions: listed(regions),
-    vpcs: listed(vpcs),
-    subnets: listed(subnets),
-    unplaced,
-    placeable,
-    unavailable: [],
-  };
-}
-
-/** Whether a row survives the filter. A null or empty list on a dimension means 전체. */
-function keeps(filter, resource) {
-  if (!filter) return true;
-  const { accounts, regions, vpcs, subnets } = filter;
-  if (accounts?.length && !accounts.includes(accountOf(resource))) return false;
-  if (regions?.length && !regions.includes(regionOf(resource))) return false;
-  // A row with no vpc_id does NOT match a chosen VPC. It is not evidence of belonging and it is not
-  // evidence of not belonging - it is the absence of a recording - and the honest answer to "show
-  // me what is in vpc-0abc" is the rows that say they are, with a count of the rows that say
-  // nothing shown beside the picture rather than folded into it.
-  if (vpcs?.length && !vpcs.includes(vpcOf(resource))) return false;
-  if (subnets?.length && !subnets.includes(subnetOf(resource))) return false;
-  return true;
-}
-
-/** Whether any dimension of the filter actually narrows anything. */
-export function filterActive(filter) {
-  if (!filter) return false;
-  return ['accounts', 'regions', 'vpcs', 'subnets']
-    .some((dimension) => (filter[dimension]?.length ?? 0) > 0);
-}
-
 function countLabel(total, truncated) {
   return truncated ? `${total.toLocaleString()}개 이상†` : `${total.toLocaleString()}개`;
 }
@@ -420,9 +297,8 @@ function marks(group) {
  * Deterministic: two calls on the same input deepEqual. Nothing in here reads a clock, a random
  * source, or the length of a capped list.
  */
-export function ec2Scene(policy, accountId, filter = null) {
+export function ec2Scene(policy, accountId) {
   if (topologyPolicy(policy?.identifier) === null) return null;
-  const narrowed = filterActive(filter);
 
   // ---- pass 1: bucket ---------------------------------------------------------------------
   const frameCount = new Map();      // frame id -> { total, truncated, marks }
@@ -436,22 +312,14 @@ export function ec2Scene(policy, accountId, filter = null) {
   let kinds = 0;
 
   for (const group of policy?.affected ?? []) {
-    // Unfiltered, the count is the field the container publishes. Filtered, it is the rows that
-    // survive - which is the SAME quantity, because assess.py sets total to the number of rows it
-    // kept. Both are floors when `truncated` says the enumeration hit its cap, and the picture
-    // marks them the same way, so narrowing the view never changes how sure a number is.
-    const kept = (group?.resources ?? []).filter((r) => keeps(filter, r));
-    const total = narrowed ? kept.length : (Number(group?.total) || 0);
+    const total = Number(group?.total) || 0;
     if (group?.service !== 'ec2') {
-      // An omitted service is counted whole. Its rows are not EC2 rows and the account/region
-      // filter is about the picture, not about the footnote that says what the picture leaves out.
-      const whole = Number(group?.total) || 0;
-      if (whole > 0) omittedBy.set(group.service, (omittedBy.get(group.service) ?? 0) + whole);
+      if (total > 0) omittedBy.set(group.service, (omittedBy.get(group.service) ?? 0) + total);
       continue;
     }
     if (total === 0) continue;
     if (group.truncated) truncated = true;
-    for (const resource of kept) regions.add(regionOf(resource));
+    for (const resource of group.resources ?? []) regions.add(regionOf(resource));
     measured += total;
     kinds += 1;
 
@@ -565,9 +433,7 @@ export function ec2Scene(policy, accountId, filter = null) {
     if (f.id === 'az') return '평가에 없음';
     if (f.id === 'cloud') return accountId ? `계정 ${accountId}` : null;
     if (f.id === 'region') {
-      if (regionList.length === 0) {
-        return narrowed ? '고른 조건에 맞는 자원이 없다' : '이 정책이 닿는 EC2 자원이 없다';
-      }
+      if (regionList.length === 0) return '이 정책이 닿는 EC2 자원이 없다';
       const head = regionList.length === 1 ? regionList[0]
         : `${regionList.length}곳 — ${regionList.slice(0, 3).join(', ')}`
           + (regionList.length > 3 ? ` 외 ${regionList.length - 3}곳` : '');
@@ -695,9 +561,6 @@ export function ec2Scene(policy, accountId, filter = null) {
     measured,
     kinds,
     empty: kinds === 0,
-    /** Whether a filter narrowed this scene. The screen says so; an empty picture that is empty
-     *  BECAUSE of a filter must not read as "this policy reaches nothing". */
-    narrowed,
   };
 }
 
@@ -720,14 +583,7 @@ export const CAPTION =
  */
 export function sceneSummary(scene) {
   if (!scene) return '';
-  // An empty picture has two causes and they are not the same news. "This policy reaches nothing"
-  // is a fact about the policy; "the filter matched nothing" is a fact about the filter, and
-  // reading the second as the first would tell an approver a policy is harmless.
-  if (scene.empty) {
-    return scene.narrowed
-      ? '고른 계정과 리전에 이 정책이 닿는 EC2 자원이 없다. 계정과 리전 테두리만 그렸다.'
-      : '이 정책이 닿는 EC2 자원이 인벤토리에 없다. 계정과 리전 테두리만 그렸다.';
-  }
+  if (scene.empty) return '이 정책이 닿는 EC2 자원이 인벤토리에 없다. 계정과 리전 테두리만 그렸다.';
   const placed = [
     ...scene.frames.filter((f) => f.count).map((f) => `${f.label} ${f.count}`),
     ...scene.slots.map((s) => `${s.label.join(' ')} ${s.count}`),

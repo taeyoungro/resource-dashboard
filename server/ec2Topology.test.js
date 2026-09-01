@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   CAPTION, EC2_FRAMES, EC2_RAILS, EC2_SLOTS, LABEL_BUDGET, SCENE_W,
-  ec2Scene, facets, filterActive, sceneSummary, textUnits, topologyPolicy,
+  VPC_SCOPED, ec2Scene, facets, filterActive, sceneSummary, textUnits, topologyPolicy,
 } from './ec2Topology.js';
 import { RESOURCE_TYPE_ICONS } from './serviceIcons.js';
 
@@ -380,19 +380,13 @@ const TWO_REGIONS = [
   group('ec2:volume', 2, { resources: [rowIn('us-east-1', ACCOUNT, 'volume')] }),
 ];
 
-test('the facets are read off the rows, and name what cannot be filtered', () => {
+test('the facets are read off the rows', () => {
   const found = facets(policyOf(TWO_REGIONS));
   assert.deepEqual(found.regions, [
     { id: 'ap-northeast-2', total: 2 },
     { id: 'us-east-1', total: 2 },
   ]);
   assert.deepEqual(found.accounts, [{ id: ACCOUNT, total: 4 }]);
-  // The part that matters: VPC and subnet are NAMED as unavailable, with a reason, rather than
-  // being quietly absent or - worse - offered as controls that narrow nothing.
-  assert.deepEqual(found.unavailable.map((u) => u.id), ['vpc', 'subnet']);
-  for (const dimension of found.unavailable) {
-    assert.ok(dimension.why.length > 20, `${dimension.id} is unavailable and does not say why`);
-  }
   assert.equal(facets(policyOf(TWO_REGIONS, 'AdministratorAccess')), null);
 });
 
@@ -483,5 +477,101 @@ test('narrowing keeps every geometric guarantee', () => {
     const frame = frames.get(rail.frame);
     assert.ok(slot.x >= frame.x && slot.x + slot.w <= frame.x + frame.w,
               `${slot.resourceType} escaped ${frame.id} once the picture was narrowed`);
+  }
+});
+
+// ---- VPC and subnet, once the querier records them ---------------------------------------------
+//
+// No EC2 ARN carries a VPC and Resource Explorer does not return one, so impact/inventory.py's
+// _with_placement joins the membership on from the EC2 Describe calls and writes vpc_id / subnet_id
+// onto the row. These pin what the dashboard may conclude from that - and, just as importantly,
+// what it may not conclude from a row that has neither.
+
+function placed(region, vpc, subnet, kind = 'instance') {
+  return {
+    arn: `arn:aws:ec2:${region}:${ACCOUNT}:${kind}/${vpc}-${subnet}-${kind}`,
+    region, tags: {}, sensitive: false,
+    ...(vpc ? { vpc_id: vpc } : {}),
+    ...(subnet ? { subnet_id: subnet } : {}),
+  };
+}
+
+const TWO_VPCS = [
+  group('ec2:instance', 3, {
+    resources: [placed('us-east-1', 'vpc-a', 'subnet-a1'),
+                placed('us-east-1', 'vpc-a', 'subnet-a2'),
+                placed('us-east-1', 'vpc-b', 'subnet-b1')],
+  }),
+  group('ec2:volume', 2, {
+    resources: [placed('us-east-1', '', '', 'volume'), placed('us-east-1', '', '', 'volume')],
+  }),
+];
+
+test('the VPC and subnet facets come from what the querier recorded', () => {
+  const found = facets(policyOf(TWO_VPCS));
+  assert.deepEqual(found.vpcs, [{ id: 'vpc-a', total: 2 }, { id: 'vpc-b', total: 1 }]);
+  assert.deepEqual(found.subnets, [
+    { id: 'subnet-a1', total: 1 }, { id: 'subnet-a2', total: 1 }, { id: 'subnet-b1', total: 1 },
+  ]);
+});
+
+test('a type with no VPC is not counted as one the lookup failed on', () => {
+  // A volume is zone-scoped and has no VPC by definition. Folding it into "rows with no VPC
+  // recorded" would report a permission failure that did not happen, and would tell an approver the
+  // placement lookup is broken when it is working exactly as specified.
+  const found = facets(policyOf(TWO_VPCS));
+  assert.equal(found.unplaced, 0, 'a volume was counted as an unplaced VPC resource');
+  assert.equal(found.placeable, 3, 'placeable counts rows that could have a VPC, not every row');
+});
+
+test('a VPC-scoped row the querier could not place is counted and named', () => {
+  // The optional permission was denied, or the assessment predates the field. Either way a VPC
+  // filter cannot speak for the row, and the screen has to say how many there are - otherwise a
+  // denied permission reads as an empty VPC.
+  const unknown = [group('ec2:instance', 2, {
+    resources: [placed('us-east-1', 'vpc-a', 'subnet-a1'), placed('us-east-1', '', '')],
+  })];
+  const found = facets(policyOf(unknown));
+  assert.equal(found.unplaced, 1);
+  assert.equal(found.placeable, 2);
+});
+
+test('a VPC filter narrows to the rows that SAY they are in it', () => {
+  const scene = ec2Scene(policyOf(TWO_VPCS), ACCOUNT, { vpcs: ['vpc-a'] });
+  assert.ok(scene.narrowed);
+  assert.equal(scene.slots.find((s) => s.resourceType === 'ec2:instance').count, '2개');
+  assert.ok(!scene.slots.some((s) => s.resourceType === 'ec2:volume'),
+            'a volume, which has no VPC at all, survived a VPC filter');
+});
+
+test('a row with no recorded VPC never matches a chosen one', () => {
+  // Absence is not evidence of belonging and not evidence of not belonging. The picture shows the
+  // rows that say they are in the VPC; the count of rows that say nothing sits beside it.
+  const unknown = [group('ec2:instance', 2, {
+    resources: [placed('us-east-1', 'vpc-a', 'subnet-a1'), placed('us-east-1', '', '')],
+  })];
+  const scene = ec2Scene(policyOf(unknown), ACCOUNT, { vpcs: ['vpc-a'] });
+  assert.equal(scene.measured, 1);
+});
+
+test('a subnet filter narrows further than its VPC', () => {
+  const scene = ec2Scene(policyOf(TWO_VPCS), ACCOUNT, { vpcs: ['vpc-a'], subnets: ['subnet-a2'] });
+  assert.equal(scene.measured, 1);
+});
+
+test('every VPC-scoped type has a slot in the picture', () => {
+  // VPC_SCOPED mirrors PLACEMENT in impact/inventory.py. A type the querier places and this picture
+  // has no seat for would be a resource with a known VPC and nowhere to be drawn.
+  for (const type of VPC_SCOPED) {
+    assert.ok(type in EC2_SLOTS, `${type} is placed by the querier and has no slot`);
+  }
+});
+
+test('전체 still means unfiltered on the two new dimensions', () => {
+  const whole = ec2Scene(policyOf(TWO_VPCS), ACCOUNT);
+  for (const filter of [{ vpcs: [] }, { vpcs: [], subnets: [] },
+                        { accounts: [], regions: [], vpcs: null, subnets: null }]) {
+    assert.equal(filterActive(filter), false, `${JSON.stringify(filter)} counted as a filter`);
+    assert.deepEqual(ec2Scene(policyOf(TWO_VPCS), ACCOUNT, filter), whole);
   }
 });
