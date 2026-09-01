@@ -228,7 +228,7 @@ function retryRequestId(accountId) {
   return `${accountId}-${randomBytes(8).toString('hex')}`;
 }
 
-function decisionMarker({ config, plan, prefix, payload, now, restrictions = [], impactDigest = '',
+function decisionMarker({ config, plan, prefix, payload, now, restrictions = null, impactDigest = '',
                          passroleGrantTo = [], passroleRevokeFrom = [], analysis = null }) {
   return {
     // What the applier is being asked to do, and to what.
@@ -279,12 +279,17 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = [],
     // is what was chosen, and the inline writer builds the statements and refuses anything that
     // cannot become one.
     //
-    // restrictions is omitted when empty. The digest travels whenever a stored assessment was
-    // verified to be the one the page displayed - with a restriction it is REQUIRED (the
-    // restriction is validated against that assessment), and without one it is what lets the
-    // applier read the assessment's passrole_grants and dispatch the PassRole fence. An approval
-    // with neither carries neither, exactly as before.
-    ...(restrictions.length > 0 ? { restrictions } : {}),
+    // restrictions is omitted when the decision says NOTHING about them, and carried otherwise -
+    // an empty list included, because [] is an answer. It says there are none, and the writer
+    // clears the family it finds standing. Omitting it there would say the opposite: carry them
+    // forward, which is how emptying the form used to change nothing at all.
+    //
+    // The digest travels whenever a stored assessment was verified to be the one the page
+    // displayed - with any restriction answer it is REQUIRED (a named restriction is validated
+    // against that assessment, a clear against the inline_sha256 inside it), and without one it is
+    // what lets the applier read the assessment's passrole_grants and dispatch the PassRole fence.
+    // An approval with neither carries neither, exactly as before.
+    ...(restrictions !== null ? { restrictions } : {}),
     ...(impactDigest ? { expected_impact_sha256: impactDigest } : {}),
 
     // Whose PassRole request this approval CONFIRMS. Names only, and omitted when nobody was
@@ -1123,15 +1128,31 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         );
       }
 
-      const restrictions = body.restrictions ?? [];
-      if (!Array.isArray(restrictions)
-          || restrictions.some((r) => !r || typeof r !== 'object' || Array.isArray(r))) {
-        throw new HttpError(400, 'restrictions must be an array of objects');
+      // THREE-VALUED, all the way down to the writer's compose(). Absent or null says nothing about
+      // restrictions and the family in force is carried forward; [] says there are none and clears
+      // it; a list says exactly those. The page sends the key when its editor was live - which is
+      // when it could show what already stands - and omits it otherwise.
+      //
+      // [] used to be indistinguishable from absent here and everywhere below, so an approver could
+      // add a restriction and change one but never remove the last: the form emptied, the run
+      // reported success, and every restriction was still in force.
+      const restrictions = body.restrictions === undefined || body.restrictions === null
+        ? null
+        : body.restrictions;
+      if (restrictions !== null
+          && (!Array.isArray(restrictions)
+              || restrictions.some((r) => !r || typeof r !== 'object' || Array.isArray(r)))) {
+        throw new HttpError(400, 'restrictions must be an array of objects, absent, or null');
       }
       let impactDigest = '';
-      if (restrictions.length > 0) {
+      if (restrictions !== null) {
         if (body.decision !== 'approve') {
-          throw new HttpError(400, 'a denial cannot carry a restriction: nothing is being granted');
+          throw new HttpError(
+            400,
+            'a denial decides nothing about restrictions: the plan is not applied, so nothing runs '
+            + 'to write them. An empty list is a decision too - it clears the family - and a denial '
+            + 'cannot carry that either.',
+          );
         }
         // ACTIONS, not entries. The bound says "restricted actions" and one entry carries a list of
         // them, so counting entries let 200 x N through - and N is a whole policy's action list
@@ -1153,12 +1174,18 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
           );
         }
 
+        // Required for an EMPTY answer too, and for the other half of the same reason. A named
+        // restriction is validated against this assessment; a clear is written against the
+        // inline_sha256 that travels inside it - the digest of the restriction family the approver
+        // was shown - and the writer refuses to replace a family that has moved since. Without the
+        // assessment the applier reads neither, and a clear would delete something nobody
+        // established anybody had looked at.
         const stored = await readImpact(s3, config, id);
         if (!stored?.document) {
           throw new HttpError(
             409,
-            `${id} has no impact assessment stored, so there is nothing to check the restricted `
-            + 'resources against. Approve without a restriction, or wait for the assessment.',
+            `${id} has no impact assessment stored, so there is nothing to write a restriction `
+            + 'decision against. Approve without deciding restrictions, or wait for the assessment.',
           );
         }
         if (!stored.digest) {
@@ -1182,8 +1209,10 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // different value means it was showing an assessment that has since been replaced.
         const expectedImpact = String(body.expected_impact_sha256 ?? '').trim();
         if (!expectedImpact) {
-          throw new HttpError(400, 'expected_impact_sha256 is required with a restriction: it names '
-                                   + 'the assessment the restriction was chosen from');
+          throw new HttpError(400, 'expected_impact_sha256 is required with a restriction decision: '
+                                   + 'it names the assessment that decision was made from, and a '
+                                   + 'clear needs it as much as a restriction does - it is what '
+                                   + 'carries the digest of the family being removed');
         }
         if (expectedImpact !== stored.digest) {
           throw new HttpError(

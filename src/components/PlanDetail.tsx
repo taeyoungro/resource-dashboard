@@ -26,7 +26,15 @@ interface Props {
     decision: "approve" | "deny",
     reviewer: string,
     comment: string,
-    restrictions: Restriction[],
+    /**
+     * What this decision says about the restrictions in force, and null is not [].
+     *
+     * null   it says nothing. The writer carries the family forward - a denial, or an approval
+     *        made on a screen whose restriction editor was closed
+     * []     it says there are none. The writer CLEARS the family
+     * [...]  it says exactly these. The writer replaces the family with them
+     */
+    restrictions: Restriction[] | null,
     passroleGrantTo: string[],
     passroleRevokeFrom: string[],
     analysis: RiskAnalysisCitation | null,
@@ -693,17 +701,41 @@ export function PlanDetail({
       window.alert("거부에는 사유가 필요합니다. 변경을 요청한 사람이 읽을 것은 이것뿐입니다.");
       return;
     }
-    const active = decision === "approve" ? restrictions.filter((r) => r.actions.length > 0) : [];
-    if (decision === "approve" && restrictions.length > active.length) {
+    // Three-valued, and null is not []. null says this decision decides nothing about restrictions
+    // and the family in force is carried forward; [] says there are none and clears it.
+    //
+    // The editor has to have been LIVE for an empty form to mean "none". It is closed when there is
+    // no assessment and when what stands cannot be read (inForceUnknown), and in both cases the
+    // form is empty because nobody could fill it - reading that as a clear would delete
+    // restrictions off a screen that never showed them. A denial writes nothing at all.
+    const decidable = decision === "approve" && !!detail.assessment && !inForceUnknown;
+    const chosen = restrictions.filter((r) => r.actions.length > 0);
+    if (decidable && restrictions.length > chosen.length) {
       window.alert("동작을 고르지 않은 제한이 있습니다. 지우거나 동작을 고르세요.");
       return;
     }
+    // An empty answer is sent only when there is something to clear.
+    //
+    // With nothing standing the two answers have the same outcome - no restrictions either way -
+    // and the difference is what they do with a document that disagrees with the record. "Clear"
+    // deletes whatever is in it; "says nothing" carries it forward. The approver read the record,
+    // and a statement it does not know about is one they were never shown, so the safe answer is
+    // the one that keeps it. It also spares the writer a run that would change nothing.
+    const standing = detail.restrictions_in_force ?? [];
+    const active = decidable && (chosen.length > 0 || standing.length > 0) ? chosen : null;
     const granting = decision === "approve" ? grantTo : [];
     // A withdrawal rides on the apply that follows an approval. A denied plan applies nothing, so
     // there is no run to carry it - the server refuses that pairing and so does this.
     const withdrawing = decision === "approve" ? revokeFrom : [];
     const what = detail.resource ?? detail.plan_id;
-    const suffix = active.length > 0 ? ` 제한 ${active.length}건과 함께` : "";
+    const suffix = active && active.length > 0 ? ` 제한 ${active.length}건과 함께` : "";
+    // A clear is named on its own line, because it is the one restriction answer that DELETES.
+    // "제한 없이 승인합니다" reads as "I restricted nothing"; what actually happens is that every
+    // restriction standing on this permission set comes off, and an approver who did not mean to
+    // empty the form has to be able to see that before the button does it.
+    const cleared = active && active.length === 0 && standing.length > 0
+      ? `\n\n그리고 지금 걸려 있는 제한 ${standing.length}건을 모두 해제합니다.`
+      : "";
     // Named separately in the confirmation, because it is a separate act. Approving the plan and
     // granting somebody the ability to pass the role are different decisions, and a reviewer who
     // reads only this line has to see both.
@@ -715,7 +747,8 @@ export function PlanDetail({
       : "";
     if (
       !window.confirm(
-        `${what} 를${suffix} ${decision === "approve" ? "승인" : "거부"}합니다.${grants}${revokes}`)
+        `${what} 를${suffix} ${decision === "approve" ? "승인" : "거부"}합니다.`
+        + `${cleared}${grants}${revokes}`)
     ) {
       return;
     }
@@ -798,9 +831,11 @@ export function PlanDetail({
           {/* Editing is closed when nothing can say what is already standing.
               Approving replaces the whole restriction family with what is ticked here, so ticking
               anything without seeing what stands drops the rest - and the approver would have no
-              way to know. Approving with NOTHING ticked stays available and is safe: the writer
-              reads an approval carrying no restrictions as "this decision says nothing about them"
-              and carries the existing ones forward untouched. */}
+              way to know. Approving with NOTHING ticked stays available and is still safe here,
+              because a closed editor sends no restrictions key at all: the writer reads that as
+              "this decision says nothing about them" and carries the existing ones forward. An
+              empty form on a LIVE editor is the opposite answer - it sends [], which clears - and
+              that is the difference this notice exists to keep true. */}
           {inForceUnknown && (
             <div className="notice">
               <strong>지금 걸려 있는 제한을 확인할 수 없어 제한 편집을 닫았습니다.</strong> 이
