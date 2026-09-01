@@ -1,4 +1,5 @@
-// "구성도 보기" - the impact assessment as a picture instead of a list.
+// "구성도 보기" - the impact assessment as a picture instead of a list. Three pictures now: EC2,
+// 람다, ECS. Which one a policy gets, and what is in it, is server/topology.js and its specs.
 //
 // A list of thirty resource types with counts beside them is a true answer nobody reads, and that
 // is the complaint this exists to answer. The difficulty of a picture is that it says more than a
@@ -7,11 +8,16 @@
 // keeping the picture honest about what it is - see the two caveat paragraphs, the legend's
 // solid/dashed grammar, and the caption drawn inside the viewBox so it survives a screenshot.
 //
-// THIS FILE COMPUTES NOTHING. Every coordinate, every count, every label comes out of
-// server/ec2Topology.js, which is plain JS with unit tests behind it. What is here is three .maps
-// and a conditional. That split is deliberate: geometry that decides whether a slot escapes its
-// frame - a picture that lies about containment while every sentence above it says the opposite -
-// is exactly the thing a source-text test cannot catch and a unit test can.
+// THIS FILE COMPUTES NOTHING, and it holds no service noun either. Every coordinate, every count,
+// every label comes out of server/topology.js, which is plain JS with unit tests behind it; every
+// Korean noun that names a service comes out of the spec, as `spec.words`. What is here is a few
+// .maps and some conditionals. That split is deliberate: geometry that decides whether a slot
+// escapes its frame - a picture that lies about containment while every sentence above it says the
+// opposite - is exactly the thing a source-text test cannot catch and a unit test can.
+//
+// THE LEGEND IS CONDITIONAL, for the same reason. A legend line about the one arrow, or about the
+// Amazon EBS border, is a sentence about a thing that is not in the ECS picture, and a legend that
+// explains marks the reader cannot see teaches them to skim it.
 //
 // It also never renders ServiceIcon. resourceIconPath('ec2', …) never returns null: it falls
 // through to the service icon, so a type with no glyph of its own would draw the Amazon-EC2 tile.
@@ -20,15 +26,17 @@
 
 import { useId, useMemo, useRef, useState } from "react";
 import type { ImpactCoverage, ImpactPolicy } from "../types";
-import type { Facets, Frame, Link, Scene, SceneFilter, Slot } from "../../server/ec2Topology.js";
+import type {
+  Facets, Frame, Link, Scene, SceneFilter, Slot, TopologySpec,
+} from "../../server/topology.js";
 import {
-  FRAME_LABEL, ec2Enumerated, ec2Scene, facets as facetsOf, sceneSummary,
-} from "../../server/ec2Topology.js";
+  enumeratedFor, facets as facetsOf, scene as sceneOf, sceneSummary, specOf,
+} from "../../server/topology.js";
 
 /**
  * One frame: the box, its badge, and a label band of up to three parts.
  *
- * The class carries the frame id, so a frame added to EC2_FRAMES gets `.topo-frame-<id>` with no
+ * The class carries the frame id, so a frame added to any spec gets `.topo-frame-<id>` with no
  * edit here and no edit in the stylesheet unless it wants one.
  */
 function FrameShape({ frame }: { frame: Frame }) {
@@ -167,7 +175,8 @@ function LinkShape({ link, uid }: { link: Link; uid: string }) {
  * elements need no aria-hidden of their own; what a screen reader gets is the <title> and the
  * <desc>, and the <desc> is sceneSummary(), which has its own unit test.
  */
-function Figure({ scene, name, uid }: { scene: Scene; name: string; uid: string }) {
+function Figure({ scene, name, title, uid }:
+                { scene: Scene; name: string; title: string; uid: string }) {
   return (
     <svg
       className="topology-svg"
@@ -179,7 +188,7 @@ function Figure({ scene, name, uid }: { scene: Scene; name: string; uid: string 
       role="img"
       aria-labelledby={`${uid}-t ${uid}-d`}
     >
-      <title id={`${uid}-t`}>{`${name}이 닿는 EC2 자원 구성도`}</title>
+      <title id={`${uid}-t`}>{`${name}이 닿는 ${title} 자원 구성도`}</title>
       <desc id={`${uid}-d`}>{sceneSummary(scene)}</desc>
       <rect className="topo-ground" x={0} y={0} width={scene.width} height={scene.height} />
       {scene.frames.map((f) => <FrameShape key={f.id} frame={f} />)}
@@ -199,14 +208,15 @@ function Figure({ scene, name, uid }: { scene: Scene; name: string; uid: string 
  * the drawing has no place for has a row here too. A reader who distrusts the picture can check it
  * without leaving the window, and a reader using a screen reader gets the whole answer from it.
  */
-function SceneTable({ scene }: { scene: Scene }) {
-  // FRAME_LABEL comes from the module rather than from a copy here. The copy was byte-identical
+function SceneTable({ scene, spec }: { scene: Scene; spec: TopologySpec }) {
+  // The frame names come from the SPEC rather than from a copy here. The copy was byte-identical
   // until somebody added a frame, at which point the 자리 column printed the raw id while the
   // drawing beside it printed the Korean name - and this file's own banner says it computes
-  // nothing, which a second table of labels quietly made untrue.
+  // nothing, which a second table of labels quietly made untrue. With three pictures it would have
+  // been three copies.
   const place = (row: Scene["rows"][number]) => {
     if (!row.frame) return <td className="none">없음</td>;
-    return <td>{FRAME_LABEL[row.frame] ?? row.frame}</td>;
+    return <td>{spec.frameLabel[row.frame] ?? row.frame}</td>;
   };
   return (
     <table className="topology-table">
@@ -298,42 +308,40 @@ function FacetPicker({ label, values, chosen, onChange }: {
  * speak for them, and folding them silently into "not in this VPC" would let an approver read a
  * denied optional permission as an empty VPC.
  */
-function FilterBar({ facets, filter, onChange }: {
+function FilterBar({ facets, filter, spec, onChange }: {
   facets: Facets;
   filter: SceneFilter;
+  spec: TopologySpec;
   onChange: (next: SceneFilter) => void;
 }) {
+  /** One dimension, rendered only when the picture offers it and the data filled it. */
+  const dimension = (id: keyof SceneFilter, label: string) => {
+    const values = facets[id as "accounts"] ?? [];
+    if (!spec.dimensions.includes(id) || values.length === 0) return null;
+    return (
+      <FacetPicker
+        label={label}
+        values={values}
+        chosen={filter[id] ?? []}
+        onChange={(next) => onChange({ ...filter, [id]: next })}
+      />
+    );
+  };
   return (
     <div className="topology-filter">
-      {facets.accounts.length > 0 && (
-        <FacetPicker
-          label="계정"
-          values={facets.accounts}
-          chosen={filter.accounts ?? []}
-          onChange={(accounts) => onChange({ ...filter, accounts })}
-        />
-      )}
-      <FacetPicker
-        label="리전"
-        values={facets.regions}
-        chosen={filter.regions ?? []}
-        onChange={(regions) => onChange({ ...filter, regions })}
-      />
-      {facets.vpcs.length > 0 && (
-        <FacetPicker
-          label="VPC"
-          values={facets.vpcs}
-          chosen={filter.vpcs ?? []}
-          onChange={(vpcs) => onChange({ ...filter, vpcs })}
-        />
-      )}
-      {facets.subnets.length > 0 && (
-        <FacetPicker
-          label="서브넷"
-          values={facets.subnets}
-          chosen={filter.subnets ?? []}
-          onChange={(subnets) => onChange({ ...filter, subnets })}
-        />
+      {dimension("accounts", "계정")}
+      {dimension("regions", "리전")}
+      {/* Between the region and the VPC, because a cluster is region-scoped and holds services
+          that may sit in several VPCs - the same order the picture draws them in. */}
+      {dimension("clusters", "클러스터")}
+      {dimension("vpcs", "VPC")}
+      {dimension("subnets", "서브넷")}
+      {/* A resource can name up to sixteen subnets, so the chips can sum to more than the row
+          count. Said out loud rather than folded away: folding it would mean picking one. */}
+      {spec.multiSubnet && facets.subnets.length > 0 && (
+        <p className="muted small">
+          한 자원이 서브넷을 여러 개 쓸 수 있어서, 서브넷 칩의 합은 자원 수보다 클 수 있다.
+        </p>
       )}
       {facets.unplaced > 0 && (
         <p className="muted small">
@@ -359,10 +367,41 @@ function FilterBar({ facets, filter, onChange }: {
 }
 
 /**
+ * Why the placement lookup could not speak for some of the picture.
+ *
+ * `placement: 'none'` never reaches here - AWS answering "this is in no VPC" is an answer, and it
+ * is the ordinary state for a Lambda function. What is left is the states where the lookup did not
+ * get to say anything, and each of them is a different thing for an approver to do about it: a
+ * denied permission is a deploy step, a spent budget is a bigger account, a short ARN is a listing
+ * the role may not do. One sentence each, and none of them changes a count.
+ */
+const UNMEASURED: Record<string, (n: string) => string> = {
+  failed: (n) => `자원 ${n}개의 배치를 읽지 못했다 — 조회기에 권한이 없거나 호출이 거절되었다. `
+    + '이 정책이 닿는 자원의 수는 그대로다.',
+  'over-budget': (n) => `자원 ${n}개는 한 번의 평가가 쓰는 배치 조회 한도를 넘어서 읽지 못했다.`,
+  'no-cluster': (n) => `서비스 ${n}개는 ARN이 짧은 형식이라 클러스터를 읽을 수 없었다.`,
+  'subnet-unknown': (n) => `서비스 ${n}개는 서브넷은 알아냈지만 그 서브넷의 VPC를 조회하지 못했다.`,
+  unanswered: (n) => `자원 ${n}개는 조회가 답하지 않았다 — 이 평가가 배치를 읽기 전에 만들어졌거나, `
+    + '조회 뒤에 사라진 자원이다.',
+};
+
+function UnmeasuredNote({ unmeasured }: { unmeasured: Record<string, number> }) {
+  const said = Object.entries(unmeasured)
+    .filter(([reason, n]) => n > 0 && reason in UNMEASURED)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  if (said.length === 0) return null;
+  return (
+    <p className="warn-inline">
+      {said.map(([reason, n]) => UNMEASURED[reason](n.toLocaleString())).join(" ")}
+    </p>
+  );
+}
+
+/**
  * The button, the closed-state summary beside it, and the window.
  *
- * The GATE LIVES HERE, not in Impact.tsx: this returns null when ec2Scene() returns null, so the
- * string AmazonEC2FullAccess never appears in a 1,722-line file where nobody would find it, and
+ * The GATE LIVES HERE, not in Impact.tsx: this returns null when scene() returns null, so the
+ * three policy names never appear in a 1,700-line file where nobody would find them, and
  * widening the scope later touches one module.
  *
  * `disabled` is deliberately not a prop. Every other control in this subtree honours the read-only
@@ -386,16 +425,18 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
   // with the same key), so a filter an approver set five minutes ago survived closing the window,
   // and a filter nobody can see is a filter that makes the next picture a quiet lie.
   const [filter, setFilter] = useState<SceneFilter>(empty);
-  const enumerated = ec2Enumerated(coverage);
+  const spec = specOf(policy);
+  const enumerated = enumeratedFor(policy, coverage);
   const facets = useMemo(() => facetsOf(policy), [policy]);
   // Unfiltered, for the closed-state summary and for the sentence that says what was narrowed away.
   const whole = useMemo(
-    () => ec2Scene(policy, accountId, null, enumerated), [policy, accountId, enumerated],
+    () => sceneOf(policy, accountId, null, enumerated), [policy, accountId, enumerated],
   );
   const scene = useMemo(
-    () => ec2Scene(policy, accountId, filter, enumerated), [policy, accountId, filter, enumerated],
+    () => sceneOf(policy, accountId, filter, enumerated),
+    [policy, accountId, filter, enumerated],
   );
-  if (!scene || !whole || !facets) return null;
+  if (!scene || !whole || !facets || !spec) return null;
 
   // Read off the UNFILTERED scene. The line beside a closed button says what the policy reaches;
   // a filter set inside the window is a property of the window, and letting it change this line
@@ -418,7 +459,7 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
         구성도 보기
       </button>
       <span className="muted small">
-        EC2 자원 {whole.kinds}종 · {whole.measured.toLocaleString()}개
+        {spec.words.title} 자원 {whole.kinds}종 · {whole.measured.toLocaleString()}개
         {whole.truncated && " 이상"} · {regionLabel}
         {whole.unslotted.length > 0 && ` · 자리 없는 유형 ${whole.unslotted.length}종`}
       </span>
@@ -445,7 +486,8 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
       >
         <div className="policy-dialog-body">
           <h4 id={`${uid}-h`}>
-            이 정책이 닿는 EC2 자원의 구성도 <span className="muted">— <code>{name}</code></span>
+            이 정책이 닿는 {spec.words.title} 자원의 구성도{" "}
+            <span className="muted">— <code>{name}</code></span>
           </h4>
 
           {/* ABOVE the picture and OUTSIDE the scrolling region below, so these two cannot scroll
@@ -454,75 +496,150 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
               the filter bar, so a screen reader reaches the caveats before the controls. */}
           <div className="topology-caveats" id={`${uid}-c`} tabIndex={-1} autoFocus>
             <p className="muted small">
-              이 그림은 자원을 <strong>유형에 따라 EC2 구성에서 놓이는 자리</strong>에 놓은 것이다.
-              어느 인스턴스가 어느 서브넷에 있는지, 어느 볼륨이 어느 인스턴스에 붙어 있는지는 이
-              평가에 들어 있지 않다 — 그래서 이 그림은 그것을 말하지 않는다.{" "}
-              <strong>테두리의 포함 관계는 측정한 것이 아니라 EC2의 일반적인 구성이다.</strong>
+              이 그림은 자원을{" "}
+              <strong>유형에 따라 {spec.words.title} 구성에서 놓이는 자리</strong>에 놓은 것이다.
+              어느 자원이 정확히 어디에 있는지는 이 평가가 유형 단위로 답하는 질문이 아니다 —
+              그래서 이 그림은 그것을 말하지 않는다.{" "}
+              <strong>
+                테두리의 포함 관계는 측정한 것이 아니라 {spec.words.title}의 일반적인 구성이다.
+              </strong>
             </p>
-            <p className="muted small">
-              자원마다 실제 값인 것은 <strong>계정과 리전과 개수</strong>뿐이다. 가용 영역은 평가에
-              없어서 테두리만 그리고 개수를 적지 않는다. 개수는 <strong>리전을 합친 수</strong>다 —
-              리전별로 보려면 위의 자원 목록에 리전마다 관리콘솔 링크가 있다. 자원끼리의 연결선은
-              그리지 않는다. 무엇이 무엇과 통신하는지는 이 평가가 답하지 않는 질문이다.
-            </p>
+            {/* The second paragraph differs per picture, because what each one measured differs.
+                EC2 measured nothing beyond the account and the region; Lambda and ECS have a VPC
+                frame whose count came from a real service call, and a reader must not read that
+                number as "these functions are in this VPC". */}
+            {scene.kind === "ec2" && (
+              <p className="muted small">
+                자원마다 실제 값인 것은 <strong>계정과 리전과 개수</strong>뿐이다. 가용 영역은
+                평가에 없어서 테두리만 그리고 개수를 적지 않는다. 개수는{" "}
+                <strong>리전을 합친 수</strong>다 — 리전별로 보려면 위의 자원 목록에 리전마다
+                관리콘솔 링크가 있다. 자원끼리의 연결선은 그리지 않는다. 무엇이 무엇과 통신하는지는
+                이 평가가 답하지 않는 질문이다.
+              </p>
+            )}
+            {scene.kind === "lambda" && (
+              <p className="muted small">
+                자원마다 실제 값인 것은 <strong>계정과 리전과 개수</strong>뿐이다. VPC 테두리는
+                조회기가 함수마다 <code>VpcConfig</code>를 읽어 확인한 것이고,{" "}
+                <strong>그 안에는 아무것도 그리지 않는다</strong> — 어느 함수가 그 VPC에 있는지는 이
+                그림이 말하지 않는다. VPC에 붙지 않은 함수가 보통이고 그것은 조회 실패가 아니다.
+                개수는 <strong>리전을 합친 수</strong>다. 자원끼리의 연결선은 그리지 않는다.
+              </p>
+            )}
+            {scene.kind === "ecs" && (
+              <p className="muted small">
+                자원마다 실제 값인 것은 <strong>계정과 리전과 개수</strong>뿐이다.{" "}
+                <strong>클러스터와 VPC는 나란히 그린다</strong> — 클러스터는 리전 단위의 묶음이고
+                VPC에 속하지 않으며, VPC도 클러스터에 속하지 않는다. VPC 테두리는 조회기가 서비스의
+                awsvpc 서브넷을 읽어 확인한 것이고 그 안에는 아무것도 그리지 않는다. 태스크는
+                조회하지 않는다 — 태스크의 서브넷은 모델이 이름을 정해 두지 않은 자리에 들어 있어서,
+                읽어 오면 못 읽은 것과 구별되지 않는다. 개수는 <strong>리전을 합친 수</strong>다.
+              </p>
+            )}
           </div>
 
           <div className="topology-scroll">
-          {/* The EC2 lookup failed, so the empty picture below is a fact about this assessment and
+          {/* The lookup failed, so the empty picture below is a fact about this assessment and
               not about the policy. The panel says this in a banner - which this window covers. */}
           {!scene.enumerated && (
             <p className="error">
-              이 평가는 <strong>EC2 자원 조회에 실패했다.</strong> 아래 그림이 비어 있는 것은 이
+              이 평가는 <strong>{spec.words.title} 자원 조회에 실패했다.</strong> 아래 그림이 비어 있는 것은 이
               정책이 닿는 자원이 없다는 뜻이 아니라 세어 보지 못했다는 뜻이다.
             </p>
           )}
 
-          <FilterBar facets={facets} filter={filter} onChange={setFilter} />
+          <FilterBar facets={facets} filter={filter} spec={spec} onChange={setFilter} />
+
+          {/* What the placement lookup did NOT answer, one sentence per reason, and only the
+              reasons that actually occurred. Summing them would make a denied permission and a
+              spent budget the same news; leaving them out would make either of them look like
+              "AWS says these are in no VPC", which is the one thing they are not. */}
+          <UnmeasuredNote unmeasured={scene.unmeasured} />
 
           {/* What the filter took away, in the picture's own units. An approver who narrows and
               then reads a small number has to be able to tell "this policy reaches little" from
               "I am looking at part of it", and the picture alone cannot say which. */}
           {scene.narrowed && (
             <p className="warn-inline">
-              고른 조건만 그렸다 — EC2 자원 {scene.kinds}종 {scene.measured.toLocaleString()}개.
+              고른 조건만 그렸다 — {spec.words.title} 자원 {scene.kinds}종{" "}
+              {scene.measured.toLocaleString()}개.
               조건 없이는 {whole.kinds}종 {whole.measured.toLocaleString()}개다.
               {scene.empty && " 고른 조건에 맞는 자원이 없어서 계정과 리전 테두리만 남았다."}
             </p>
           )}
 
           <div className="topology-figure" tabIndex={0} role="group" aria-label="자원 구성도">
-            <Figure scene={scene} name={name} uid={uid} />
+            <Figure scene={scene} name={name} title={spec.words.title} uid={uid} />
           </div>
 
           <ul className="topology-legend">
             <li>
               <strong>실선 테두리</strong> — 평가가 확인한 포함 관계다. 계정과 리전, 둘뿐이다.
             </li>
-            <li>
-              <strong>점선 테두리</strong> — EC2의 일반적인 자리다. 측정한 것이 아니다. 안에 무엇이
-              들어 있든 마찬가지다. 겹쳐진 순서는 AWS의 범위다 —{" "}
-              <strong>리전 ⊃ VPC ⊃ 가용 영역 ⊃ 서브넷.</strong> VPC는 리전의 모든 가용 영역에
-              걸쳐 있고, 가용 영역에 속하는 것은 서브넷이다.
-            </li>
-            <li>
-              <strong>Amazon EBS 테두리</strong> — 볼륨은 <strong>가용 영역 범위</strong>여서 그
-              안에 그린다. <strong>VPC에는 속하지 않는다</strong> — VPC 테두리 안에 보이는 것은
-              가용 영역이 그 안에 그려지기 때문이고, 볼륨이 VPC에 속한다는 뜻이 아니다.
-            </li>
+            {/* Every line below the first is conditional on the picture actually drawing the mark
+                it explains. A legend that describes an arrow the reader cannot see, or an Amazon
+                EBS border that is not in this picture, teaches them the legend is decoration. */}
+            {scene.frames.some((f) => f.dashed) && scene.kind === "ec2" && (
+              <li>
+                <strong>점선 테두리</strong> — EC2의 일반적인 자리다. 측정한 것이 아니다. 안에 무엇이
+                들어 있든 마찬가지다. 겹쳐진 순서는 AWS의 범위다 —{" "}
+                <strong>리전 ⊃ VPC ⊃ 가용 영역 ⊃ 서브넷.</strong> VPC는 리전의 모든 가용 영역에
+                걸쳐 있고, 가용 영역에 속하는 것은 서브넷이다.
+              </li>
+            )}
+            {scene.kind === "lambda" && (
+              <li>
+                <strong>점선 테두리</strong> — 자리를 나타낸다. VPC 테두리 위의 개수는 조회기가
+                <code> lambda ListFunctions</code>로 확인한 것이지만, 그 테두리가 무엇을 담고
+                있는지는 측정한 것이 아니다. 가용 영역과 서브넷 테두리는 <strong>없다</strong> —
+                함수 하나가 서브넷을 최대 16개까지 쓰기 때문에, 하나의 상자에 넣으면 그중 하나를
+                지목하는 것이 된다.
+              </li>
+            )}
+            {scene.kind === "ecs" && (
+              <li>
+                <strong>점선 테두리</strong> — 자리를 나타낸다.{" "}
+                <strong>클러스터와 VPC는 서로 포함하지 않는다</strong> — 클러스터는 리전 단위이고
+                그 서비스들은 서로 다른 VPC에 있을 수 있다. 가용 영역과 서브넷 테두리는 없다.
+              </li>
+            )}
+            {scene.kind === "ec2" && (
+              <li>
+                <strong>Amazon EBS 테두리</strong> — 볼륨은 <strong>가용 영역 범위</strong>여서 그
+                안에 그린다. <strong>VPC에는 속하지 않는다</strong> — VPC 테두리 안에 보이는 것은
+                가용 영역이 그 안에 그려지기 때문이고, 볼륨이 VPC에 속한다는 뜻이 아니다.
+              </li>
+            )}
+            {scene.frames.some((f) => f.id === "vpc" && /배치 확인/.test(f.count ?? "")) && (
+              <li>
+                <strong>개수가 적힌 VPC 테두리</strong> — 조회기가 배치를 <strong>읽어서</strong>
+                확인한 자원의 수다. 이 그림에서 서비스 호출로 얻은 유일한 숫자이고, 그래서
+                「자원 N개」가 아니라 「N개 배치 확인」이라고 적는다.{" "}
+                <strong>그 테두리 안에는 아무것도 그리지 않는다</strong> — 어느 자원인지는 이 그림이
+                말하지 않고, 그 자원들이 모두 같은 VPC에 있다고도 말하지 않는다.
+              </li>
+            )}
             <li>
               <strong>개수가 없는 테두리</strong> — 이 정책이 닿는 자원이 그 유형에 없거나
               (<code>인벤토리에 없음</code>), 평가가 아예 세지 않는다
               (<code>가용 영역 · 평가에 없음</code>).
             </li>
-            <li>
-              <strong>화살표 하나</strong> — 인터넷 게이트웨이가 VPC의 출입구라는 뜻이다.
-              이 계정에서 확인한 연결이 아니다.
-            </li>
+            {scene.link && (
+              <li>
+                <strong>화살표 하나</strong> — 인터넷 게이트웨이가 VPC의 출입구라는 뜻이다.
+                이 계정에서 확인한 연결이 아니다.
+              </li>
+            )}
             <li>
               <strong>민감 자원</strong> — 자원 판의 <strong>빨간 테두리</strong>와 빨간 개수,
               테두리 이름 옆의 <code>민감 N개</code>, 그리고 아래 표의 <code>민감</code> 칸,
-              셋이 같은 것을 말한다. <strong>보안 그룹 테두리의 빨강은 AWS의 그룹 색</strong>이고
-              민감도와 무관하다 — 안에 무엇이 있든 빨갛다.
+              셋이 같은 것을 말한다.
+              {scene.kind === "ec2" && (
+                <>
+                  {" "}<strong>보안 그룹 테두리의 빨강은 AWS의 그룹 색</strong>이고 민감도와
+                  무관하다 — 안에 무엇이 있든 빨갛다.
+                </>
+              )}
             </li>
             <li>
               <strong>*</strong> 정책이 자원을 지정하지 않았다 — 지금의 개수이고 앞으로 생기는
@@ -539,14 +656,13 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
             </p>
           )}
 
-          <SceneTable scene={scene} />
+          <SceneTable scene={scene} spec={spec} />
 
           {scene.omitted.length > 0 && (
             <p className="muted small">
               그림 밖 서비스:{" "}
               {scene.omitted.map((o) => `${o.service} ${o.total.toLocaleString()}개`).join(" · ")}
-              {" "}— 이 정책이 닿지만 EC2 구성도에 자리가 없는 서비스다. 위의 표는 EC2 자원만
-              담는다.
+              {" "}— {spec.words.omitted} 위의 표는 이 그림의 자원만 담는다.
             </p>
           )}
           </div>

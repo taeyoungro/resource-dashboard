@@ -1,0 +1,2065 @@
+{
+ "note": "Captured from server/ec2Topology.js at commit c8d8ca3, before the topology engine was extracted. server/topologyEc2.test.js asserts the engine still draws exactly this.",
+ "full": {
+  "scene": {
+   "width": 760,
+   "height": 824,
+   "frames": [
+    {
+     "id": "cloud",
+     "x": 1,
+     "y": 72,
+     "w": 758,
+     "h": 720,
+     "stroke": "#242F3E",
+     "width": 2,
+     "dashed": false,
+     "badge": "Group-AWS-Cloud.svg",
+     "label": "AWS 클라우드",
+     "count": null,
+     "note": "계정 718100330247",
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "region",
+     "x": 15,
+     "y": 104,
+     "w": 730,
+     "h": 674,
+     "stroke": "#00A4A6",
+     "width": 2,
+     "dashed": false,
+     "badge": "Group-Region.svg",
+     "label": "리전",
+     "count": null,
+     "note": "ap-northeast-2",
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "vpc",
+     "x": 29,
+     "y": 188,
+     "w": 702,
+     "h": 458,
+     "stroke": "#8C4FFF",
+     "width": 2,
+     "dashed": true,
+     "badge": "Group-Virtual-private-cloud-VPC.svg",
+     "label": "VPC",
+     "count": "3개",
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "az",
+     "x": 43,
+     "y": 272,
+     "w": 674,
+     "h": 242,
+     "stroke": null,
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "가용 영역",
+     "count": null,
+     "note": "평가에 없음",
+     "ghost": true,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "subnet",
+     "x": 57,
+     "y": 304,
+     "w": 484,
+     "h": 196,
+     "stroke": null,
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "서브넷",
+     "count": "5개",
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "sg",
+     "x": 71,
+     "y": 336,
+     "w": 456,
+     "h": 150,
+     "stroke": "#DD344C",
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "보안 그룹",
+     "count": "8개",
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "ebs",
+     "x": 555,
+     "y": 304,
+     "w": 148,
+     "h": 150,
+     "stroke": null,
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "Amazon EBS",
+     "count": null,
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    }
+   ],
+   "slots": [
+    {
+     "key": "ec2:instance",
+     "resourceType": "ec2:instance",
+     "x": 85,
+     "y": 368,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-EC2-Instance.svg",
+     "label": [
+      "인스턴스"
+     ],
+     "count": "40개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:instance — 인스턴스 40개"
+    },
+    {
+     "key": "ec2:volume",
+     "resourceType": "ec2:volume",
+     "x": 569,
+     "y": 336,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-Elastic-Block-Store-Volume.svg",
+     "label": [
+      "볼륨"
+     ],
+     "count": "12개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:volume — 볼륨 12개"
+    },
+    {
+     "key": "ec2:route-table",
+     "resourceType": "ec2:route-table",
+     "x": 43,
+     "y": 528,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Router.svg",
+     "label": [
+      "라우팅 테이블"
+     ],
+     "count": "6개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:route-table — 라우팅 테이블 6개"
+    },
+    {
+     "key": "ec2:snapshot",
+     "resourceType": "ec2:snapshot",
+     "x": 29,
+     "y": 660,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-Elastic-Block-Store-Snapshot.svg",
+     "label": [
+      "스냅샷"
+     ],
+     "count": "2개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:snapshot — 스냅샷 2개"
+    },
+    {
+     "key": "ec2:image",
+     "resourceType": "ec2:image",
+     "x": 161,
+     "y": 660,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-EC2-AMI.svg",
+     "label": [
+      "AMI"
+     ],
+     "count": "4개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:image — AMI 4개"
+    },
+    {
+     "key": "ec2:key-pair",
+     "resourceType": "ec2:key-pair",
+     "x": 293,
+     "y": 660,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "키 페어"
+     ],
+     "count": "2개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:key-pair — 키 페어 2개"
+    },
+    {
+     "key": "ec2:internet-gateway",
+     "resourceType": "ec2:internet-gateway",
+     "x": 597,
+     "y": 136,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Internet-Gateway.svg",
+     "label": [
+      "인터넷 게이트웨이"
+     ],
+     "count": "1개",
+     "sensitive": false,
+     "erase": true,
+     "title": "ec2:internet-gateway — 인터넷 게이트웨이 1개"
+    }
+   ],
+   "link": {
+    "cx": 657,
+    "glyph": "Res-Internet.svg",
+    "label": "인터넷",
+    "from": 62,
+    "to": 136
+   },
+   "foot": [
+    {
+     "text": "이 그림은 자원 유형을 EC2의 일반적인 자리에 놓은 것이다. 테두리의 포함 관계는 측정한 것이 아니다.",
+     "y": 812
+    }
+   ],
+   "rows": [
+    {
+     "resourceType": "ec2:instance",
+     "total": 40,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "인스턴스"
+     ],
+     "icon": "Res-Amazon-EC2-Instance.svg",
+     "rail": "compute",
+     "frame": "sg",
+     "countLabel": "40개"
+    },
+    {
+     "resourceType": "ec2:volume",
+     "total": 12,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "볼륨"
+     ],
+     "icon": "Res-Amazon-Elastic-Block-Store-Volume.svg",
+     "rail": "storage",
+     "frame": "ebs",
+     "countLabel": "12개"
+    },
+    {
+     "resourceType": "ec2:security-group",
+     "total": 8,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "보안 그룹"
+     ],
+     "icon": null,
+     "rail": null,
+     "frame": "sg",
+     "countLabel": "8개"
+    },
+    {
+     "resourceType": "ec2:route-table",
+     "total": 6,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "라우팅 테이블"
+     ],
+     "icon": "Res-Amazon-VPC-Router.svg",
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "6개"
+    },
+    {
+     "resourceType": "ec2:subnet",
+     "total": 5,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "서브넷"
+     ],
+     "icon": null,
+     "rail": null,
+     "frame": "subnet",
+     "countLabel": "5개"
+    },
+    {
+     "resourceType": "ec2:image",
+     "total": 4,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "AMI"
+     ],
+     "icon": "Res-Amazon-EC2-AMI.svg",
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "4개"
+    },
+    {
+     "resourceType": "ec2:vpc",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "VPC"
+     ],
+     "icon": null,
+     "rail": null,
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:key-pair",
+     "total": 2,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "키 페어"
+     ],
+     "icon": null,
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "2개"
+    },
+    {
+     "resourceType": "ec2:snapshot",
+     "total": 2,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "스냅샷"
+     ],
+     "icon": "Res-Amazon-Elastic-Block-Store-Snapshot.svg",
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "2개"
+    },
+    {
+     "resourceType": "ec2:internet-gateway",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "인터넷 게이트웨이"
+     ],
+     "icon": "Res-Amazon-VPC-Internet-Gateway.svg",
+     "rail": "edge",
+     "frame": "vpc",
+     "countLabel": "1개"
+    }
+   ],
+   "unslotted": [],
+   "omitted": [],
+   "regions": [
+    "ap-northeast-2"
+   ],
+   "truncated": false,
+   "measured": 83,
+   "kinds": 10,
+   "empty": false,
+   "narrowed": false,
+   "enumerated": true
+  },
+  "summary": "이 정책이 닿는 EC2 자원 10종 83개를 EC2의 일반적인 구성 자리에 놓은 그림이다. 리전은 ap-northeast-2 한 곳이다. VPC 3개, 서브넷 5개, 보안 그룹 8개, 인스턴스 40개, 볼륨 12개, 라우팅 테이블 6개, 스냅샷 2개, AMI 4개, 키 페어 2개, 인터넷 게이트웨이 1개. 테두리의 포함 관계는 측정한 것이 아니다."
+ },
+ "everySlot": {
+  "scene": {
+   "width": 760,
+   "height": 1288,
+   "frames": [
+    {
+     "id": "cloud",
+     "x": 1,
+     "y": 72,
+     "w": 758,
+     "h": 1184,
+     "stroke": "#242F3E",
+     "width": 2,
+     "dashed": false,
+     "badge": "Group-AWS-Cloud.svg",
+     "label": "AWS 클라우드",
+     "count": null,
+     "note": "계정 718100330247",
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "region",
+     "x": 15,
+     "y": 104,
+     "w": 730,
+     "h": 1138,
+     "stroke": "#00A4A6",
+     "width": 2,
+     "dashed": false,
+     "badge": "Group-Region.svg",
+     "label": "리전",
+     "count": null,
+     "note": "ap-northeast-2",
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "vpc",
+     "x": 29,
+     "y": 188,
+     "w": 702,
+     "h": 690,
+     "stroke": "#8C4FFF",
+     "width": 2,
+     "dashed": true,
+     "badge": "Group-Virtual-private-cloud-VPC.svg",
+     "label": "VPC",
+     "count": "3개",
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "az",
+     "x": 43,
+     "y": 272,
+     "w": 674,
+     "h": 242,
+     "stroke": null,
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "가용 영역",
+     "count": null,
+     "note": "평가에 없음",
+     "ghost": true,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "subnet",
+     "x": 57,
+     "y": 304,
+     "w": 484,
+     "h": 196,
+     "stroke": null,
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "서브넷",
+     "count": "3개",
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "sg",
+     "x": 71,
+     "y": 336,
+     "w": 456,
+     "h": 150,
+     "stroke": "#DD344C",
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "보안 그룹",
+     "count": "3개",
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "ebs",
+     "x": 555,
+     "y": 304,
+     "w": 148,
+     "h": 150,
+     "stroke": null,
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "Amazon EBS",
+     "count": null,
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    }
+   ],
+   "slots": [
+    {
+     "key": "ec2:instance",
+     "resourceType": "ec2:instance",
+     "x": 85,
+     "y": 368,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-EC2-Instance.svg",
+     "label": [
+      "인스턴스"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:instance — 인스턴스 3개"
+    },
+    {
+     "key": "ec2:network-interface",
+     "resourceType": "ec2:network-interface",
+     "x": 217,
+     "y": 368,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Elastic-Network-Interface.svg",
+     "label": [
+      "네트워크 인터페이스"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:network-interface — 네트워크 인터페이스 3개"
+    },
+    {
+     "key": "ec2:security-group-rule",
+     "resourceType": "ec2:security-group-rule",
+     "x": 349,
+     "y": 368,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "보안 그룹 규칙"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:security-group-rule — 보안 그룹 규칙 3개"
+    },
+    {
+     "key": "ec2:volume",
+     "resourceType": "ec2:volume",
+     "x": 569,
+     "y": 336,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-Elastic-Block-Store-Volume.svg",
+     "label": [
+      "볼륨"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:volume — 볼륨 3개"
+    },
+    {
+     "key": "ec2:route-table",
+     "resourceType": "ec2:route-table",
+     "x": 43,
+     "y": 528,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Router.svg",
+     "label": [
+      "라우팅 테이블"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:route-table — 라우팅 테이블 3개"
+    },
+    {
+     "key": "ec2:natgateway",
+     "resourceType": "ec2:natgateway",
+     "x": 175,
+     "y": 528,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-NAT-Gateway.svg",
+     "label": [
+      "NAT 게이트웨이"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:natgateway — NAT 게이트웨이 3개"
+    },
+    {
+     "key": "ec2:network-acl",
+     "resourceType": "ec2:network-acl",
+     "x": 307,
+     "y": 528,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Network-Access-Control-List.svg",
+     "label": [
+      "네트워크 ACL"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:network-acl — 네트워크 ACL 3개"
+    },
+    {
+     "key": "ec2:vpc-endpoint",
+     "resourceType": "ec2:vpc-endpoint",
+     "x": 439,
+     "y": 528,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Endpoints.svg",
+     "label": [
+      "VPC 엔드포인트"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:vpc-endpoint — VPC 엔드포인트 3개"
+    },
+    {
+     "key": "ec2:vpc-peering-connection",
+     "resourceType": "ec2:vpc-peering-connection",
+     "x": 571,
+     "y": 528,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Peering-Connection.svg",
+     "label": [
+      "VPC 피어링 연결"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:vpc-peering-connection — VPC 피어링 연결 3개"
+    },
+    {
+     "key": "ec2:elastic-ip",
+     "resourceType": "ec2:elastic-ip",
+     "x": 43,
+     "y": 644,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-EC2-Elastic-IP-Address.svg",
+     "label": [
+      "탄력적 IP"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:elastic-ip — 탄력적 IP 3개"
+    },
+    {
+     "key": "ec2:vpn-gateway",
+     "resourceType": "ec2:vpn-gateway",
+     "x": 175,
+     "y": 644,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-VPN-Gateway.svg",
+     "label": [
+      "가상 프라이빗",
+      "게이트웨이"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:vpn-gateway — 가상 프라이빗 게이트웨이 3개"
+    },
+    {
+     "key": "ec2:vpn-connection",
+     "resourceType": "ec2:vpn-connection",
+     "x": 307,
+     "y": 644,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-VPN-Connection.svg",
+     "label": [
+      "사이트 간 VPN 연결"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:vpn-connection — 사이트 간 VPN 연결 3개"
+    },
+    {
+     "key": "ec2:egress-only-internet-gateway",
+     "resourceType": "ec2:egress-only-internet-gateway",
+     "x": 439,
+     "y": 644,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "송신 전용",
+      "인터넷 게이트웨이"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:egress-only-internet-gateway — 송신 전용 인터넷 게이트웨이 3개"
+    },
+    {
+     "key": "ec2:dhcp-options",
+     "resourceType": "ec2:dhcp-options",
+     "x": 571,
+     "y": 644,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "DHCP 옵션 세트"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:dhcp-options — DHCP 옵션 세트 3개"
+    },
+    {
+     "key": "ec2:prefix-list",
+     "resourceType": "ec2:prefix-list",
+     "x": 43,
+     "y": 760,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "접두사 목록"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:prefix-list — 접두사 목록 3개"
+    },
+    {
+     "key": "ec2:snapshot",
+     "resourceType": "ec2:snapshot",
+     "x": 29,
+     "y": 892,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-Elastic-Block-Store-Snapshot.svg",
+     "label": [
+      "스냅샷"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:snapshot — 스냅샷 3개"
+    },
+    {
+     "key": "ec2:spot-instances-request",
+     "resourceType": "ec2:spot-instances-request",
+     "x": 161,
+     "y": 892,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-EC2-Spot-Instance.svg",
+     "label": [
+      "스팟 인스턴스 요청"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:spot-instances-request — 스팟 인스턴스 요청 3개"
+    },
+    {
+     "key": "ec2:customer-gateway",
+     "resourceType": "ec2:customer-gateway",
+     "x": 293,
+     "y": 892,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Customer-Gateway.svg",
+     "label": [
+      "고객 게이트웨이"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:customer-gateway — 고객 게이트웨이 3개"
+    },
+    {
+     "key": "ec2:image",
+     "resourceType": "ec2:image",
+     "x": 425,
+     "y": 892,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-EC2-AMI.svg",
+     "label": [
+      "AMI"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:image — AMI 3개"
+    },
+    {
+     "key": "ec2:key-pair",
+     "resourceType": "ec2:key-pair",
+     "x": 557,
+     "y": 892,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "키 페어"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:key-pair — 키 페어 3개"
+    },
+    {
+     "key": "ec2:launch-template",
+     "resourceType": "ec2:launch-template",
+     "x": 29,
+     "y": 1008,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "시작 템플릿"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:launch-template — 시작 템플릿 3개"
+    },
+    {
+     "key": "ec2:placement-group",
+     "resourceType": "ec2:placement-group",
+     "x": 161,
+     "y": 1008,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "배치 그룹"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:placement-group — 배치 그룹 3개"
+    },
+    {
+     "key": "ec2:capacity-reservation",
+     "resourceType": "ec2:capacity-reservation",
+     "x": 293,
+     "y": 1008,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "용량 예약"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:capacity-reservation — 용량 예약 3개"
+    },
+    {
+     "key": "ec2:host",
+     "resourceType": "ec2:host",
+     "x": 425,
+     "y": 1008,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "전용 호스트"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:host — 전용 호스트 3개"
+    },
+    {
+     "key": "ec2:fleet",
+     "resourceType": "ec2:fleet",
+     "x": 557,
+     "y": 1008,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "EC2 플릿"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:fleet — EC2 플릿 3개"
+    },
+    {
+     "key": "ec2:reserved-instances",
+     "resourceType": "ec2:reserved-instances",
+     "x": 29,
+     "y": 1124,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "예약 인스턴스"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:reserved-instances — 예약 인스턴스 3개"
+    },
+    {
+     "key": "ec2:transit-gateway",
+     "resourceType": "ec2:transit-gateway",
+     "x": 161,
+     "y": 1124,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "전송 게이트웨이"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:transit-gateway — 전송 게이트웨이 3개"
+    },
+    {
+     "key": "ec2:transit-gateway-attachment",
+     "resourceType": "ec2:transit-gateway-attachment",
+     "x": 293,
+     "y": 1124,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-AWS-Transit-Gateway-Attachment.svg",
+     "label": [
+      "전송 GW 연결"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:transit-gateway-attachment — 전송 GW 연결 3개"
+    },
+    {
+     "key": "ec2:internet-gateway",
+     "resourceType": "ec2:internet-gateway",
+     "x": 597,
+     "y": 136,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Internet-Gateway.svg",
+     "label": [
+      "인터넷 게이트웨이"
+     ],
+     "count": "3개",
+     "sensitive": false,
+     "erase": true,
+     "title": "ec2:internet-gateway — 인터넷 게이트웨이 3개"
+    }
+   ],
+   "link": {
+    "cx": 657,
+    "glyph": "Res-Internet.svg",
+    "label": "인터넷",
+    "from": 62,
+    "to": 136
+   },
+   "foot": [
+    {
+     "text": "이 그림은 자원 유형을 EC2의 일반적인 자리에 놓은 것이다. 테두리의 포함 관계는 측정한 것이 아니다.",
+     "y": 1276
+    }
+   ],
+   "rows": [
+    {
+     "resourceType": "ec2:capacity-reservation",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "용량 예약"
+     ],
+     "icon": null,
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:customer-gateway",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "고객 게이트웨이"
+     ],
+     "icon": "Res-Amazon-VPC-Customer-Gateway.svg",
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:dhcp-options",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "DHCP 옵션 세트"
+     ],
+     "icon": null,
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:egress-only-internet-gateway",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "송신 전용",
+      "인터넷 게이트웨이"
+     ],
+     "icon": null,
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:elastic-ip",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "탄력적 IP"
+     ],
+     "icon": "Res-Amazon-EC2-Elastic-IP-Address.svg",
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:fleet",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "EC2 플릿"
+     ],
+     "icon": null,
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:host",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "전용 호스트"
+     ],
+     "icon": null,
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:image",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "AMI"
+     ],
+     "icon": "Res-Amazon-EC2-AMI.svg",
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:instance",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "인스턴스"
+     ],
+     "icon": "Res-Amazon-EC2-Instance.svg",
+     "rail": "compute",
+     "frame": "sg",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:internet-gateway",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "인터넷 게이트웨이"
+     ],
+     "icon": "Res-Amazon-VPC-Internet-Gateway.svg",
+     "rail": "edge",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:key-pair",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "키 페어"
+     ],
+     "icon": null,
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:launch-template",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "시작 템플릿"
+     ],
+     "icon": null,
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:natgateway",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "NAT 게이트웨이"
+     ],
+     "icon": "Res-Amazon-VPC-NAT-Gateway.svg",
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:network-acl",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "네트워크 ACL"
+     ],
+     "icon": "Res-Amazon-VPC-Network-Access-Control-List.svg",
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:network-interface",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "네트워크 인터페이스"
+     ],
+     "icon": "Res-Amazon-VPC-Elastic-Network-Interface.svg",
+     "rail": "compute",
+     "frame": "sg",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:placement-group",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "배치 그룹"
+     ],
+     "icon": null,
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:prefix-list",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "접두사 목록"
+     ],
+     "icon": null,
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:reserved-instances",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "예약 인스턴스"
+     ],
+     "icon": null,
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:route-table",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "라우팅 테이블"
+     ],
+     "icon": "Res-Amazon-VPC-Router.svg",
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:security-group",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "보안 그룹"
+     ],
+     "icon": null,
+     "rail": null,
+     "frame": "sg",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:security-group-rule",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "보안 그룹 규칙"
+     ],
+     "icon": null,
+     "rail": "compute",
+     "frame": "sg",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:snapshot",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "스냅샷"
+     ],
+     "icon": "Res-Amazon-Elastic-Block-Store-Snapshot.svg",
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:spot-instances-request",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "스팟 인스턴스 요청"
+     ],
+     "icon": "Res-Amazon-EC2-Spot-Instance.svg",
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:subnet",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "서브넷"
+     ],
+     "icon": null,
+     "rail": null,
+     "frame": "subnet",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:transit-gateway",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "전송 게이트웨이"
+     ],
+     "icon": null,
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:transit-gateway-attachment",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "전송 GW 연결"
+     ],
+     "icon": "Res-AWS-Transit-Gateway-Attachment.svg",
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:volume",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "볼륨"
+     ],
+     "icon": "Res-Amazon-Elastic-Block-Store-Volume.svg",
+     "rail": "storage",
+     "frame": "ebs",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:vpc",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "VPC"
+     ],
+     "icon": null,
+     "rail": null,
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:vpc-endpoint",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "VPC 엔드포인트"
+     ],
+     "icon": "Res-Amazon-VPC-Endpoints.svg",
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:vpc-peering-connection",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "VPC 피어링 연결"
+     ],
+     "icon": "Res-Amazon-VPC-Peering-Connection.svg",
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:vpn-connection",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "사이트 간 VPN 연결"
+     ],
+     "icon": "Res-Amazon-VPC-VPN-Connection.svg",
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    },
+    {
+     "resourceType": "ec2:vpn-gateway",
+     "total": 3,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "가상 프라이빗",
+      "게이트웨이"
+     ],
+     "icon": "Res-Amazon-VPC-VPN-Gateway.svg",
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "3개"
+    }
+   ],
+   "unslotted": [],
+   "omitted": [],
+   "regions": [
+    "ap-northeast-2"
+   ],
+   "truncated": false,
+   "measured": 96,
+   "kinds": 32,
+   "empty": false,
+   "narrowed": false,
+   "enumerated": true
+  },
+  "summary": "이 정책이 닿는 EC2 자원 32종 96개를 EC2의 일반적인 구성 자리에 놓은 그림이다. 리전은 ap-northeast-2 한 곳이다. VPC 3개, 서브넷 3개, 보안 그룹 3개, 인스턴스 3개, 네트워크 인터페이스 3개, 보안 그룹 규칙 3개, 볼륨 3개, 라우팅 테이블 3개, NAT 게이트웨이 3개, 네트워크 ACL 3개, VPC 엔드포인트 3개, VPC 피어링 연결 3개, 탄력적 IP 3개, 가상 프라이빗 게이트웨이 3개, 사이트 간 VPN 연결 3개, 송신 전용 인터넷 게이트웨이 3개, DHCP 옵션 세트 3개, 접두사 목록 3개, 스냅샷 3개, 스팟 인스턴스 요청 3개, 고객 게이트웨이 3개, AMI 3개, 키 페어 3개, 시작 템플릿 3개, 배치 그룹 3개, 용량 예약 3개, 전용 호스트 3개, EC2 플릿 3개, 예약 인스턴스 3개, 전송 게이트웨이 3개, 전송 GW 연결 3개, 인터넷 게이트웨이 3개. 테두리의 포함 관계는 측정한 것이 아니다."
+ },
+ "filtered": {
+  "scene": {
+   "width": 760,
+   "height": 824,
+   "frames": [
+    {
+     "id": "cloud",
+     "x": 1,
+     "y": 72,
+     "w": 758,
+     "h": 720,
+     "stroke": "#242F3E",
+     "width": 2,
+     "dashed": false,
+     "badge": "Group-AWS-Cloud.svg",
+     "label": "AWS 클라우드",
+     "count": null,
+     "note": "계정 718100330247",
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "region",
+     "x": 15,
+     "y": 104,
+     "w": 730,
+     "h": 674,
+     "stroke": "#00A4A6",
+     "width": 2,
+     "dashed": false,
+     "badge": "Group-Region.svg",
+     "label": "리전",
+     "count": null,
+     "note": "ap-northeast-2",
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "vpc",
+     "x": 29,
+     "y": 188,
+     "w": 702,
+     "h": 458,
+     "stroke": "#8C4FFF",
+     "width": 2,
+     "dashed": true,
+     "badge": "Group-Virtual-private-cloud-VPC.svg",
+     "label": "VPC",
+     "count": "1개",
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "az",
+     "x": 43,
+     "y": 272,
+     "w": 674,
+     "h": 242,
+     "stroke": null,
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "가용 영역",
+     "count": null,
+     "note": "평가에 없음",
+     "ghost": true,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "subnet",
+     "x": 57,
+     "y": 304,
+     "w": 484,
+     "h": 196,
+     "stroke": null,
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "서브넷",
+     "count": "1개",
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "sg",
+     "x": 71,
+     "y": 336,
+     "w": 456,
+     "h": 150,
+     "stroke": "#DD344C",
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "보안 그룹",
+     "count": "1개",
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "ebs",
+     "x": 555,
+     "y": 304,
+     "w": 148,
+     "h": 150,
+     "stroke": null,
+     "width": 1.5,
+     "dashed": true,
+     "badge": null,
+     "label": "Amazon EBS",
+     "count": null,
+     "note": null,
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    }
+   ],
+   "slots": [
+    {
+     "key": "ec2:instance",
+     "resourceType": "ec2:instance",
+     "x": 85,
+     "y": 368,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-EC2-Instance.svg",
+     "label": [
+      "인스턴스"
+     ],
+     "count": "1개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:instance — 인스턴스 1개"
+    },
+    {
+     "key": "ec2:volume",
+     "resourceType": "ec2:volume",
+     "x": 569,
+     "y": 336,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-Elastic-Block-Store-Volume.svg",
+     "label": [
+      "볼륨"
+     ],
+     "count": "1개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:volume — 볼륨 1개"
+    },
+    {
+     "key": "ec2:route-table",
+     "resourceType": "ec2:route-table",
+     "x": 43,
+     "y": 528,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Router.svg",
+     "label": [
+      "라우팅 테이블"
+     ],
+     "count": "1개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:route-table — 라우팅 테이블 1개"
+    },
+    {
+     "key": "ec2:snapshot",
+     "resourceType": "ec2:snapshot",
+     "x": 29,
+     "y": 660,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-Elastic-Block-Store-Snapshot.svg",
+     "label": [
+      "스냅샷"
+     ],
+     "count": "1개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:snapshot — 스냅샷 1개"
+    },
+    {
+     "key": "ec2:image",
+     "resourceType": "ec2:image",
+     "x": 161,
+     "y": 660,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-EC2-AMI.svg",
+     "label": [
+      "AMI"
+     ],
+     "count": "1개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:image — AMI 1개"
+    },
+    {
+     "key": "ec2:key-pair",
+     "resourceType": "ec2:key-pair",
+     "x": 293,
+     "y": 660,
+     "w": 120,
+     "h": 104,
+     "icon": null,
+     "label": [
+      "키 페어"
+     ],
+     "count": "1개",
+     "sensitive": false,
+     "erase": false,
+     "title": "ec2:key-pair — 키 페어 1개"
+    },
+    {
+     "key": "ec2:internet-gateway",
+     "resourceType": "ec2:internet-gateway",
+     "x": 597,
+     "y": 136,
+     "w": 120,
+     "h": 104,
+     "icon": "Res-Amazon-VPC-Internet-Gateway.svg",
+     "label": [
+      "인터넷 게이트웨이"
+     ],
+     "count": "1개",
+     "sensitive": false,
+     "erase": true,
+     "title": "ec2:internet-gateway — 인터넷 게이트웨이 1개"
+    }
+   ],
+   "link": {
+    "cx": 657,
+    "glyph": "Res-Internet.svg",
+    "label": "인터넷",
+    "from": 62,
+    "to": 136
+   },
+   "foot": [
+    {
+     "text": "이 그림은 자원 유형을 EC2의 일반적인 자리에 놓은 것이다. 테두리의 포함 관계는 측정한 것이 아니다.",
+     "y": 812
+    }
+   ],
+   "rows": [
+    {
+     "resourceType": "ec2:image",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "AMI"
+     ],
+     "icon": "Res-Amazon-EC2-AMI.svg",
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "1개"
+    },
+    {
+     "resourceType": "ec2:instance",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "인스턴스"
+     ],
+     "icon": "Res-Amazon-EC2-Instance.svg",
+     "rail": "compute",
+     "frame": "sg",
+     "countLabel": "1개"
+    },
+    {
+     "resourceType": "ec2:internet-gateway",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "인터넷 게이트웨이"
+     ],
+     "icon": "Res-Amazon-VPC-Internet-Gateway.svg",
+     "rail": "edge",
+     "frame": "vpc",
+     "countLabel": "1개"
+    },
+    {
+     "resourceType": "ec2:key-pair",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "키 페어"
+     ],
+     "icon": null,
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "1개"
+    },
+    {
+     "resourceType": "ec2:route-table",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "라우팅 테이블"
+     ],
+     "icon": "Res-Amazon-VPC-Router.svg",
+     "rail": "network",
+     "frame": "vpc",
+     "countLabel": "1개"
+    },
+    {
+     "resourceType": "ec2:security-group",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "보안 그룹"
+     ],
+     "icon": null,
+     "rail": null,
+     "frame": "sg",
+     "countLabel": "1개"
+    },
+    {
+     "resourceType": "ec2:snapshot",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "스냅샷"
+     ],
+     "icon": "Res-Amazon-Elastic-Block-Store-Snapshot.svg",
+     "rail": "regional",
+     "frame": "region",
+     "countLabel": "1개"
+    },
+    {
+     "resourceType": "ec2:subnet",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "서브넷"
+     ],
+     "icon": null,
+     "rail": null,
+     "frame": "subnet",
+     "countLabel": "1개"
+    },
+    {
+     "resourceType": "ec2:volume",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "볼륨"
+     ],
+     "icon": "Res-Amazon-Elastic-Block-Store-Volume.svg",
+     "rail": "storage",
+     "frame": "ebs",
+     "countLabel": "1개"
+    },
+    {
+     "resourceType": "ec2:vpc",
+     "total": 1,
+     "truncated": false,
+     "scope": "listed",
+     "attribution": null,
+     "sensitive": 0,
+     "label": [
+      "VPC"
+     ],
+     "icon": null,
+     "rail": null,
+     "frame": "vpc",
+     "countLabel": "1개"
+    }
+   ],
+   "unslotted": [],
+   "omitted": [],
+   "regions": [
+    "ap-northeast-2"
+   ],
+   "truncated": false,
+   "measured": 10,
+   "kinds": 10,
+   "empty": false,
+   "narrowed": true,
+   "enumerated": true
+  },
+  "summary": "이 정책이 닿는 EC2 자원 10종 10개를 EC2의 일반적인 구성 자리에 놓은 그림이다. 리전은 ap-northeast-2 한 곳이다. VPC 1개, 서브넷 1개, 보안 그룹 1개, 인스턴스 1개, 볼륨 1개, 라우팅 테이블 1개, 스냅샷 1개, AMI 1개, 키 페어 1개, 인터넷 게이트웨이 1개. 테두리의 포함 관계는 측정한 것이 아니다."
+ },
+ "empty": {
+  "scene": {
+   "width": 760,
+   "height": 196,
+   "frames": [
+    {
+     "id": "cloud",
+     "x": 1,
+     "y": 72,
+     "w": 758,
+     "h": 92,
+     "stroke": "#242F3E",
+     "width": 2,
+     "dashed": false,
+     "badge": "Group-AWS-Cloud.svg",
+     "label": "AWS 클라우드",
+     "count": null,
+     "note": "계정 718100330247",
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "region",
+     "x": 15,
+     "y": 104,
+     "w": 730,
+     "h": 46,
+     "stroke": "#00A4A6",
+     "width": 2,
+     "dashed": false,
+     "badge": "Group-Region.svg",
+     "label": "리전",
+     "count": null,
+     "note": "이 정책이 닿는 EC2 자원이 없다",
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    }
+   ],
+   "slots": [],
+   "link": null,
+   "foot": [
+    {
+     "text": "이 그림은 자원 유형을 EC2의 일반적인 자리에 놓은 것이다. 테두리의 포함 관계는 측정한 것이 아니다.",
+     "y": 184
+    }
+   ],
+   "rows": [],
+   "unslotted": [],
+   "omitted": [],
+   "regions": [],
+   "truncated": false,
+   "measured": 0,
+   "kinds": 0,
+   "empty": true,
+   "narrowed": false,
+   "enumerated": true
+  },
+  "summary": "이 정책이 닿는 EC2 자원이 인벤토리에 없다. 계정과 리전 테두리만 그렸다."
+ },
+ "failedLookup": {
+  "scene": {
+   "width": 760,
+   "height": 196,
+   "frames": [
+    {
+     "id": "cloud",
+     "x": 1,
+     "y": 72,
+     "w": 758,
+     "h": 92,
+     "stroke": "#242F3E",
+     "width": 2,
+     "dashed": false,
+     "badge": "Group-AWS-Cloud.svg",
+     "label": "AWS 클라우드",
+     "count": null,
+     "note": "계정 718100330247",
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    },
+    {
+     "id": "region",
+     "x": 15,
+     "y": 104,
+     "w": 730,
+     "h": 46,
+     "stroke": "#00A4A6",
+     "width": 2,
+     "dashed": false,
+     "badge": "Group-Region.svg",
+     "label": "리전",
+     "count": null,
+     "note": "EC2 조회가 실패했다 — 없다는 뜻이 아니다",
+     "ghost": false,
+     "sensitive": 0,
+     "title": null
+    }
+   ],
+   "slots": [],
+   "link": null,
+   "foot": [
+    {
+     "text": "이 그림은 자원 유형을 EC2의 일반적인 자리에 놓은 것이다. 테두리의 포함 관계는 측정한 것이 아니다.",
+     "y": 184
+    }
+   ],
+   "rows": [],
+   "unslotted": [],
+   "omitted": [],
+   "regions": [],
+   "truncated": false,
+   "measured": 0,
+   "kinds": 0,
+   "empty": true,
+   "narrowed": false,
+   "enumerated": false
+  },
+  "summary": "이 평가는 EC2 자원 조회에 실패해서 그릴 것이 없다. 이 정책이 닿는 자원이 없다는 뜻이 아니다. 계정과 리전 테두리만 그렸다."
+ }
+}

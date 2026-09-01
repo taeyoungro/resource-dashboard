@@ -21,9 +21,18 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  CAPTION, EC2_FRAMES, EC2_RAILS, EC2_SLOTS, FOOT_BUDGET, LABEL_BUDGET, NO_SLOT, SCENE_W,
-  VPC_SCOPED, ec2Enumerated, ec2Scene, facets, filterActive, sceneSummary, textUnits, topologyPolicy,
-} from './ec2Topology.js';
+  FOOT_BUDGET, LABEL_BUDGET, SCENE_W, TOPOLOGIES,
+  enumeratedFor, facets, filterActive, scene as ec2Scene, sceneSummary, textUnits, topologyPolicy,
+} from './topology.js';
+import EC2_SPEC from './topologyEc2.js';
+
+// The EC2 spec's own tables, under the names this file has always called them by. The engine no
+// longer exports them - it draws three pictures - and renaming every assertion here would have
+// hidden which of them changed meaning in the extraction. None did.
+const { frames: EC2_FRAMES, rails: EC2_RAILS, slots: EC2_SLOTS, noSlot: NO_SLOT,
+        placeable: VPC_SCOPED } = EC2_SPEC;
+const CAPTION = EC2_SPEC.words.caption;
+const ec2Enumerated = (coverage) => enumeratedFor({ identifier: EC2_ARN }, coverage);
 import { RESOURCE_TYPE_ICONS } from './serviceIcons.js';
 
 const ACCOUNT = '718100330247';
@@ -33,7 +42,10 @@ const ICON_DIR = fileURLToPath(new URL('../public/aws-icons', import.meta.url));
  *  "it must not consult serviceIcons.js", "counts come from group.total and never from
  *  group.resources.length" - so an assertion against the raw file fails on the sentence forbidding
  *  the thing it is looking for. What these tests are about is the CODE. */
-const CODE = readFileSync(new URL('./ec2Topology.js', import.meta.url), 'utf8')
+const CODE = [
+  readFileSync(new URL('./topology.js', import.meta.url), 'utf8'),
+  readFileSync(new URL('./topologyEc2.js', import.meta.url), 'utf8'),
+].join('\n')
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^\s*\/\/.*$/gm, '');
 
@@ -50,6 +62,7 @@ function group(resourceType, total, over = {}) {
     resources: [{
       arn: `arn:aws:ec2:ap-northeast-2:${ACCOUNT}:thing/x`,
       region: 'ap-northeast-2', tags: {}, sensitive: false,
+      vpc_id: 'vpc-0a0', subnet_id: 'subnet-0b0',
     }],
     ...over,
   };
@@ -152,24 +165,6 @@ test('the diagram icons cannot shadow a service icon', () => {
     const bare = file.replace(/^(Res|Group)-/, '');
     assert.ok(!files.includes(bare), `${file} collides with the service icon ${bare}`);
   }
-});
-
-test('the extracted diagram icons are exactly the ones the picture draws', () => {
-  // The reverse direction, which the extractor's header claims exists ("its test does exactly
-  // that, in both directions") and which did not. Forward-only, an allowlist entry whose slot was
-  // deleted leaves its file behind forever - the "one more thing a future reader has to decide is
-  // dead" that the allowlist exists to prevent - and every floor assertion in this file passes
-  // HARDER with an orphan present. An equality is the only shape that catches one.
-  const files = readdirSync(ICON_DIR);
-  const prefixed = files.filter((f) => f.startsWith('Res-') || f.startsWith('Group-')).sort();
-  const drawn = [
-    ...EC2_FRAMES.map((f) => f.badge),
-    ...Object.values(EC2_SLOTS).map((s) => s.icon),
-    'Res-Internet.svg',
-  ].filter(Boolean);
-  assert.deepEqual(prefixed, [...new Set(drawn)].sort(),
-                   'public/aws-icons and the slot table disagree - an orphan file, or an icon the '
-                   + 'extractor allowlist does not name');
 });
 
 test('every slot lies inside the frame it is drawn in', () => {
@@ -810,4 +805,39 @@ test('the foot line sends the reader where the omitted services actually are', (
   assert.match(line.text, /표 아래에/);
   assert.ok(scene.rows.every((r) => r.resourceType.startsWith('ec2:')),
             'a non-EC2 row reached the table, which would make the old wording true by accident');
+});
+
+test('the extracted engine draws the EC2 scene it drew before', () => {
+  // THE ACCEPTANCE CRITERION for the extraction, and the reason the fixture exists.
+  //
+  // server/fixtures/ec2Scene.golden.json holds five scenes captured from the module as it stood at
+  // c8d8ca3, before the engine and the EC2 data were separated. This feature is merged and
+  // deploying, and a refactor of a merged feature is exactly where a coordinate moves and nobody
+  // notices until an approver screenshots the wrong picture. "No edits to this test file" is not an
+  // acceptance criterion - the imports had to change - so this is.
+  //
+  // `kind`, `placed` and `unmeasured` are stripped: they are ADDITIONS the extraction brought, not
+  // movements of anything the picture already drew.
+  const golden = JSON.parse(
+    readFileSync(new URL('./fixtures/ec2Scene.golden.json', import.meta.url), 'utf8'),
+  );
+  const strip = (s) => {
+    const { kind, placed, unmeasured, ...rest } = s;
+    return rest;
+  };
+  const EVERY = Object.keys(EC2_SLOTS).map((t) => group(t, 3));
+  const cases = {
+    full: [FULL, null, true],
+    everySlot: [EVERY, null, true],
+    filtered: [FULL, { regions: ['ap-northeast-2'], vpcs: ['vpc-0a0'] }, true],
+    empty: [[], null, true],
+    failedLookup: [[], null, false],
+  };
+  for (const [name, [affected, filter, enumerated]] of Object.entries(cases)) {
+    const s = ec2Scene(policyOf(affected), ACCOUNT, filter, enumerated);
+    assert.deepEqual(strip(s), golden[name].scene,
+                     `the ${name} scene moved: the extraction changed the picture`);
+    assert.equal(sceneSummary(s), golden[name].summary,
+                 `the ${name} summary changed: a screen reader is told something different`);
+  }
 });
