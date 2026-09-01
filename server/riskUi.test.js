@@ -821,8 +821,44 @@ test('the block dialog writes into the SHARED restriction set, never a copy', ()
                'RiskAnalysis is not given the shared restriction set');
   assert.match(DETAIL, /onRestrictions=\{setRestrictions\}/,
                'the dialog cannot write back into the shared set');
-  assert.match(DETAIL, /restrictDisabled=\{busy \|\| decided\}/,
-               'the block button outlives the decision');
+  // Both gates by name rather than the whole expression. Pinning the exact string made a STRONGER
+  // gate fail the test: closing the editor when nothing can say what is already restricted is an
+  // addition, and a test that forbids additions to a safety condition is a test that argues against
+  // safety. What has to hold is that neither of these two is dropped.
+  const gate = DETAIL.match(/restrictDisabled=\{([^}]*)\}/)?.[1] ?? '';
+  assert.ok(/\bbusy\b/.test(gate), 'the block button survives a write in flight');
+  assert.ok(/\bdecided\b/.test(gate), 'the block button outlives the decision');
+});
+
+test('the editor is closed when nothing can say what is already restricted', () => {
+  // The defect, as a user met it: event one restricts, event two opens an EMPTY form, and
+  // approving from it replaces the whole AdminDeny family with whatever is ticked - dropping every
+  // earlier restriction while the run reports success.
+  //
+  // The form is now seeded from what stands. When that cannot be established the seed is null, and
+  // null is not []: an empty form would be the same lie with a different cause, so the editor is
+  // closed instead. Approving with nothing ticked stays open and is safe - the writer reads an
+  // approval carrying no restrictions as saying nothing about them and carries them forward.
+  assert.match(DETAIL, /useState<Restriction\[\]>\(\s*\(\)\s*=>\s*detail\.restrictions_in_force \?\? \[\]/,
+               'the restriction editor still opens empty, which is the defect itself');
+  assert.match(DETAIL, /const inForceUnknown = detail\.restrictions_in_force === null/,
+               'null is not distinguished from [], so "nobody has said" reads as "nothing is set"');
+  // The three controls that AUTHOR restrictions, by name. Not every disabled gate in the file:
+  // approving with nothing ticked stays available on purpose, because an approval carrying no
+  // restrictions is read as saying nothing about them and carries the existing ones forward.
+  for (const control of ['RestrictionTemplates', 'Impact', 'RiskAnalysis']) {
+    const block = DETAIL.match(new RegExp(`<${control}[\\s\\S]{0,600}?/>`))?.[0] ?? '';
+    assert.ok(block, `${control} is no longer rendered here - this test cannot see it`);
+    assert.match(block, /(disabled|restrictDisabled)=\{[^}]*inForceUnknown[^}]*\}/,
+                 `${control} can author restrictions while what they would replace is unknown`);
+  }
+  // And the approver is told why, rather than finding a dead form.
+  assert.match(DETAIL, /지금 걸려 있는 제한을 확인할 수 없어/,
+               'the editor closes with no explanation on screen');
+  // Re-seeded per plan. Carrying one permission set's restrictions onto another's form would
+  // compose a decision against the wrong document.
+  assert.match(DETAIL, /seededFor\.current !== detail\.plan_id/,
+               'switching plans keeps the previous plan\'s restrictions in the form');
 });
 
 test('the dialog carries the editor rules over instead of reinventing them', () => {

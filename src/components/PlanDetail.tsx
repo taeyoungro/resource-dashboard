@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AssessmentState, Impact as Assessment, PassroleWithdrawal, PassroleWriter,
   PlanDetail as Detail, PlanRefusal, Restriction, RestrictionTemplate, RiskAnalysisCitation,
@@ -646,7 +646,27 @@ export function PlanDetail({
 }: Props) {
   const [reviewer, setReviewer] = useState("");
   const [comment, setComment] = useState("");
-  const [restrictions, setRestrictions] = useState<Restriction[]>([]);
+  // Opened with what is ALREADY standing, not empty.
+  //
+  // Empty was the defect. A second event on the same permission set showed a blank form, so an
+  // approver could not see the restrictions they had put in force - and approving from that blank
+  // form replaced the whole AdminDeny family with whatever was ticked this time, silently dropping
+  // every earlier one while the run reported success.
+  //
+  // Keyed on the plan id so switching plans re-seeds rather than carrying one permission set's
+  // restrictions onto another's form.
+  const [restrictions, setRestrictions] = useState<Restriction[]>(
+    () => detail.restrictions_in_force ?? [],
+  );
+  const seededFor = useRef<string | null>(detail.plan_id);
+  if (seededFor.current !== detail.plan_id) {
+    seededFor.current = detail.plan_id;
+    setRestrictions(detail.restrictions_in_force ?? []);
+  }
+  // Null is not []. Nobody has said what is standing - no writer has run for this permission set,
+  // or the last run could not say - and a decision composed against that would drop what it cannot
+  // see. The form is shown read-only and the button refuses; see the notice below.
+  const inForceUnknown = detail.restrictions_in_force === null;
   const [analysis, setAnalysis] = useState<RiskAnalysisCitation | null>(null);
   // Whose PassRole request this approver has ticked. Nobody, until somebody is.
   const [grantTo, setGrantTo] = useState<string[]>([]);
@@ -775,9 +795,24 @@ export function PlanDetail({
           and the enumerated set is the only fence those names can be checked against. */}
       {view === "passrole" ? null : detail.assessment ? (
         <>
+          {/* Editing is closed when nothing can say what is already standing.
+              Approving replaces the whole restriction family with what is ticked here, so ticking
+              anything without seeing what stands drops the rest - and the approver would have no
+              way to know. Approving with NOTHING ticked stays available and is safe: the writer
+              reads an approval carrying no restrictions as "this decision says nothing about them"
+              and carries the existing ones forward untouched. */}
+          {inForceUnknown && (
+            <div className="notice">
+              <strong>지금 걸려 있는 제한을 확인할 수 없어 제한 편집을 닫았습니다.</strong> 이
+              권한 세트에 대해 인라인 작성기가 아직 돌지 않았거나, 마지막 실행이 무엇이 걸렸는지
+              기록하지 못했습니다. 이 상태에서 제한을 고르면 <strong>화면에 보이지 않는 기존
+              제한이 함께 지워집니다</strong> — 승인은 그 가족 전체를 고른 것으로 교체하기
+              때문입니다. 제한 없이 승인하는 것은 안전합니다. 기존 제한은 그대로 이월됩니다.
+            </div>
+          )}
           <RestrictionTemplates
             assessment={detail.assessment}
-            disabled={busy || decided}
+            disabled={busy || decided || inForceUnknown}
             onApply={(seeded) => setRestrictions((current) => mergeTemplate(current, seeded))}
           />
           <Impact
@@ -785,7 +820,7 @@ export function PlanDetail({
             source={detail.assessment_source}
             restrictions={restrictions}
             onChange={setRestrictions}
-            disabled={busy || decided}
+            disabled={busy || decided || inForceUnknown}
           />
         </>
       ) : assessmentState === "in_progress" ? (
@@ -811,7 +846,7 @@ export function PlanDetail({
         assessment={detail.assessment ?? null}
         restrictions={restrictions}
         onRestrictions={setRestrictions}
-        restrictDisabled={busy || decided}
+        restrictDisabled={busy || decided || inForceUnknown}
       />
       )}
 

@@ -197,6 +197,43 @@ export function identityFromConfig(configJson) {
   return { accountId: parts[0], resource: parts[1] };
 }
 
+/**
+ * The permission set this plan is about, from the GENERATED document.
+ *
+ * The name is what joins a plan to the writer's record of it: inline_result is keyed by
+ * <account>:<permission set name>, and that name is not derivable here - the generator truncates
+ * the bare role name to nineteen characters to fit Identity Center's limit, and reimplementing that
+ * rule in a second language is how the two drift and the join silently returns nothing.
+ *
+ * Null for a plan that declares no permission set - a mirror role plan, or a config that could not
+ * be read. Every caller treats that the same as "no record", which is correct: there is no
+ * permission set whose restrictions could be in force.
+ */
+export function permissionSetFromConfig(configJson) {
+  const name = configJson?.resource?.aws_ssoadmin_permission_set?.ps?.name;
+  return typeof name === 'string' && name.trim() ? name.trim() : null;
+}
+
+/**
+ * The administrator restrictions standing on this permission set, as decisions.
+ *
+ * 무엇인가   이 권한 세트에 지금 걸려 있는 제한 전부를 승인자가 고른 결정 그대로. 문장이 아니다 -
+ *            체크박스를 되살리려면 결정이어야 하고, 문장에서는 intent 가 복원되지 않는다
+ * 어디 있나  마커 버킷의 inline_result/<계정>:<권한 세트>.json, 키 restrictions_in_force
+ * 누가 쓰나  인라인 작성기 하나 (code/inline_writer/inline_writer/result.py)
+ * 누가 읽나  여기, 그리고 계획 상세의 제한 편집기가 이 값으로 폼을 시드한다
+ *
+ * null and [] are different answers and the editor acts on the difference. [] is "nothing is
+ * restricted" and an empty form is then correct. null is "no run has said", and an empty form would
+ * then be a lie that costs the approver every restriction they cannot see - which is the defect
+ * this exists to close.
+ */
+export function restrictionsInForce(document) {
+  const value = document?.restrictions_in_force;
+  if (!Array.isArray(value)) return null;
+  return value.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry));
+}
+
 /** One line per resource the plan changes, from the machine-readable rendering. */
 export function changesFromPlan(planJson) {
   const changes = [];
@@ -1142,6 +1179,23 @@ export async function readPlan(s3, config, planId) {
   // artifact, so the panel showed the pre-grant state until an unrelated event caused a new
   // inspection - and the holders table, which is the only screen that can take a grant back,
   // showed nobody. See passroleLive.js.
+  // What restrictions are already standing on this permission set.
+  //
+  // Read here and not from the sweep, for the same reason the dispatch results are: this decides
+  // what the approver's form is seeded with, and a form seeded from an interval-old answer is a
+  // form that drops whatever was approved in between.
+  //
+  // Read even when nothing was dispatched. The results map above is filled only when the outcome
+  // names work orders, which is the PassRole path; a plan that only restricts names none, and that
+  // is exactly the plan whose form this has to fill.
+  const permissionSetName = permissionSetFromConfig(configJson);
+  const inForce = permissionSetName
+    ? await getJson(
+        s3, config.markerBucket,
+        `${config.inlineResultPrefix}${identity.accountId}:${permissionSetName}.json`,
+      ).then(restrictionsInForce).catch(() => null)
+    : null;
+
   const passrole = passroleFromPlan(planJson);
   const live = liveGrants({
     snapshot: passrole.granted_to,
@@ -1160,6 +1214,21 @@ export async function readPlan(s3, config, planId) {
     // The inspector's own word on whether there is anything to do. A plan with none is stored so
     // that it replaces the previous one, not because it is waiting for somebody.
     has_changes: manifest?.has_changes !== false,
+
+    // The restrictions already in force, as decisions, for the editor to open with. THREE-VALUED
+    // and the editor must act on all three:
+    //
+    //   [...]  these are standing. Open the form with them ticked; the approver adds and removes
+    //   []     nothing is standing. An empty form is correct
+    //   null   nobody has said. An empty form here would let an approval be composed against a set
+    //          it cannot see, and composing replaces the whole family - so every standing
+    //          restriction would be dropped by an approver who never saw one. The editor refuses
+    //          the decision instead of offering that
+    //
+    // Null happens on a permission set no writer has run for yet, on a plan that is not about a
+    // permission set at all, and after a run that could not say. All three are the same answer to
+    // the only question the editor asks.
+    restrictions_in_force: inForce,
 
     // What the applier did, if it has finished with this plan. Terminal: a plan with an outcome
     // has been dealt with and is not awaiting anything.
