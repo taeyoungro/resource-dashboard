@@ -1666,10 +1666,21 @@ test('the caveat survives a screenshot', () => {
 });
 
 test('the caveats cannot scroll away from the picture', () => {
+  // This test used to assert the dialog set NO overflow, on the belief that unset means unscrolled.
+  // It does not: the UA stylesheet gives `dialog:modal { overflow: auto }`, so setting nothing WAS
+  // setting auto, the whole window scrolled, and on any screen short enough the two caveat
+  // paragraphs went off the top - while this assertion and the comment beside it both said they
+  // could not. Saying nothing is not the same as saying none, and only `overflow: hidden` on the
+  // dialog says none.
   assert.match(CSS, /\.topology-figure[^}]*max-height/,
-               'the figure does not scroll, so the dialog does - and the caveats scroll off with it');
-  assert.ok(!/dialog\.policy-dialog\.topology-dialog[^}]*overflow/.test(CSS),
-            'the scroll moved onto the dialog, which takes the caveats off screen with it');
+               'the figure does not scroll, so a wide picture stretches the window instead');
+  assert.match(CSS, /dialog\.policy-dialog\.topology-dialog\s*\{[^}]*overflow:\s*hidden/,
+               'the dialog does not stop the UA scroll, so the caveats scroll off with it');
+  assert.match(CSS, /\.topology-scroll\s*\{[^}]*overflow:\s*auto/,
+               'nothing below the caveats scrolls, so the window grows past the viewport instead');
+  // And the caveats have to be OUTSIDE that scrolling region, or none of the above helps.
+  assert.ok(TOPOLOGY.indexOf('topology-caveats') < TOPOLOGY.indexOf('topology-scroll'),
+            'the caveats moved inside the scrolling region');
 });
 
 test('the component computes no coordinates of its own', () => {
@@ -1727,13 +1738,55 @@ test('the gate is not a policy-name compare in the page', () => {
             + 'the gate belongs in server/ec2Topology.js');
 });
 
-test('the dialog modifier does not break the backdrop or depend on source order', () => {
-  // The backdrop click test is an identity comparison against the dialog, which works only while
-  // .policy-dialog keeps padding:0 and the body carries all of it.
+test('the dialog modifier does not depend on source order', () => {
   assert.match(CSS, /dialog\.policy-dialog\.topology-dialog\b/,
                'the modifier ties .policy-dialog on specificity and wins only on where it landed');
-  assert.ok(!/dialog\.policy-dialog\.topology-dialog[^{]*\{[^}]*padding:/.test(CSS),
-            'the modifier put padding back on the dialog, so clicking outside no longer closes it');
+});
+
+test('closing by clicking outside is decided by where the pointer was', () => {
+  // e.target === dialog is TRUE for a click on the dialog's own scrollbar, and for a click event
+  // synthesised on the dialog after a mousedown inside and a mouseup outside. So dragging the
+  // scrollbar closed the window, and so did selecting a row in the table and releasing past the
+  // edge. The rect test asks what the reader is actually doing: did the pointer land outside the
+  // box. It also stops the behaviour depending on .policy-dialog keeping padding:0.
+  assert.ok(TOPOLOGY.includes('getBoundingClientRect'),
+            'the backdrop test is back to an identity comparison, which the scrollbar satisfies');
+  for (const needle of ['e.clientX', 'e.clientY']) {
+    assert.ok(TOPOLOGY.includes(needle), `the pointer position is not consulted (${needle})`);
+  }
+});
+
+test('the filter does not outlive the window it was set in', () => {
+  // PolicyTopology never unmounts - the sweep poll re-renders it with the same key - so the initial
+  // useState value is not a reset. A filter an approver set five minutes ago and cannot see is a
+  // filter that makes the next picture a quiet lie, which is what the comment beside it promised
+  // was impossible.
+  assert.match(TOPOLOGY, /onClose=\{\(\) => setFilter\(/,
+               'closing the window keeps the filter, so reopening it draws a narrowed picture');
+});
+
+test('the window says what it is and opens on the caveats', () => {
+  // showModal() focuses the first focusable descendant, which was the 전체 checkbox in the filter
+  // bar - past the two paragraphs that make the picture honest. A screen reader heard an unnamed
+  // dialog and landed on a control.
+  assert.ok(/aria-labelledby=\{`\$\{uid\}-h`\}/.test(TOPOLOGY), 'the window has no accessible name');
+  assert.ok(/aria-describedby=\{`\$\{uid\}-c`\}/.test(TOPOLOGY),
+            'the caveats are not what the window is described by');
+  assert.ok(/className="topology-caveats"[^>]*autoFocus/.test(TOPOLOGY),
+            'the window does not open on the caveats');
+});
+
+test('the legend describes the red the picture actually draws', () => {
+  // It said 빨간 테두리 — 민감 자원이 들어 있다, and was false in both directions: the 보안 그룹
+  // frame is stroked with AWS's own #DD344C whatever is inside it, and no frame ever turned red
+  // for holding a sensitive resource. The one conditional red is the resource PLATE.
+  const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('topology-legend'));
+  assert.ok(legend.includes('자원 판의'), 'the legend does not say which red is the conditional one');
+  assert.ok(legend.includes('AWS의 그룹 색'),
+            'the legend does not say the 보안 그룹 border is a family colour, not a warning');
+  assert.ok(TOPOLOGY.includes('topo-frame-sensitive'),
+            'a frame carries no sensitive marking, so the promise has no channel for frames');
+  assert.match(CSS, /\.topo-frame-sensitive\b/, 'the frame sensitive marking is unstyled');
 });
 
 test('every class the picture renders has a rule', () => {

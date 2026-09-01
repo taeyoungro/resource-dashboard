@@ -1,7 +1,7 @@
 // Types for ec2Topology.js, so the page can import a plain-JS module the test runner can load.
 // Same arrangement as blockPath.d.ts, and for the same reason.
 
-import type { ImpactPolicy } from "../src/types";
+import type { ImpactCoverage, ImpactPolicy } from "../src/types";
 
 export const SCENE_W: number;
 export const SKY: number;
@@ -17,6 +17,7 @@ export const EBS_W: number;
 export const FOOT_LINE: number;
 export const FOOT_PAD: number;
 export const LABEL_BUDGET: number;
+export const FOOT_BUDGET: number;
 export const CAPTION: string;
 
 export const DIAGRAMMED_POLICIES: Set<string>;
@@ -75,9 +76,13 @@ export interface Frame {
   label: string;
   count: string | null;
   note: string | null;
-  /** Drawn to hold a position rather than to report a measurement. The availability zone, always. */
+  /** Drawn to hold a position rather than to report a measurement. The availability zone, always.
+   *  The renderer fades it, so the frame that carries no count also does not read as one that does. */
   ghost: boolean;
-  sensitive: boolean;
+  /** How many of this frame's own resources the assessment marked sensitive. A COUNT and not a
+   *  flag: it is rendered on the label band, because the frame BORDER cannot carry it - the 보안
+   *  그룹 border is AWS's convention colour and is red whatever is inside it. */
+  sensitive: number;
   title: string | null;
 }
 
@@ -121,6 +126,9 @@ export interface Scene {
   /** Whether a filter narrowed this scene. An empty picture caused by a filter is not the same
    *  news as a policy that reaches nothing. */
   narrowed: boolean;
+  /** Whether the assessment enumerated EC2 at all. False makes an empty picture a statement about
+   *  the lookup rather than about the policy. */
+  enumerated: boolean;
 }
 
 /** What the picture can be narrowed by. null on a policy that gets no picture. */
@@ -153,9 +161,11 @@ export function facets(policy: ImpactPolicy): Facets | null;
 export function filterActive(filter: SceneFilter | null): boolean;
 export function topologyPolicy(identifier: string): "ec2" | null;
 export function textUnits(line: string): number;
+export function ec2Enumerated(coverage: ImpactCoverage | null | undefined): boolean;
 export function ec2Scene(
   policy: ImpactPolicy,
   accountId: string,
   filter?: SceneFilter | null,
+  enumerated?: boolean,
 ): Scene | null;
 export function sceneSummary(scene: Scene | null): string;
