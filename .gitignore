@@ -8,3 +8,7 @@ dist-ssr
 .DS_Store
 *.log
 tsconfig.tsbuildinfo
+
+# Scratch renders used to eyeball a component outside the app. Ignored because a git add -A
+# once swept a set of them into a product commit and they reached main.
+.verify-tmp
