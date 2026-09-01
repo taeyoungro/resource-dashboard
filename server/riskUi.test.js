@@ -1616,3 +1616,148 @@ test('the failures panel is on the failure tab and not on the other three', () =
   assert.match(renders[0], /tab === "failed"/,
                'the render of TaskFailures is not the guarded one');
 });
+
+// ---- 이 정책이 닿는 자원의 구성도 ------------------------------------------------------------
+//
+// The impact assessment as a picture. A picture says more than the list it replaces: putting an
+// instance inside a security group inside a subnet inside a VPC claims four things, and the
+// assessment measured none of them. Every test below is about that gap staying visible - the
+// sentences that name it, where they sit relative to the drawing, and the component staying a
+// renderer rather than growing a placement table of its own.
+//
+// The geometry half is in server/ec2Topology.test.js, because a slot escaping its frame is
+// invisible to any assertion made against source text.
+
+const TOPOLOGY = readFileSync(new URL('../src/components/Topology.tsx', import.meta.url), 'utf8');
+/** The component with its comments stripped. The prose explains at length what the code must NOT
+ *  do - "it never renders ServiceIcon", "a literal id=\"topo-arrow\" would collide" - so an
+ *  assertion against the raw file trips on the sentence forbidding the thing it looks for. The
+ *  Korean sentence tests above want the WHOLE file; these want the code. */
+const TOPOLOGY_CODE = TOPOLOGY.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+test('the window says the five things that make the picture honest', () => {
+  // Modelled on 'the per-policy view says the three things that make it honest', and for the same
+  // reason: the needle is the rendered Korean sentence, not an identifier that live render code
+  // would keep alive after the sentence was deleted.
+  assert.match(TOPOLOGY, /어느 인스턴스가 어느 서브넷에 있는지[\s\S]{0,200}들어 있지 않다/,
+               'nothing tells the reader the placement is by type rather than measured');
+  assert.ok(TOPOLOGY.includes('테두리의 포함 관계는 측정한 것이 아니'),
+            'the frames are not declared canonical rather than measured');
+  assert.ok(TOPOLOGY.includes('가용 영역은 평가에\n            없어서') || TOPOLOGY.includes('가용 영역은 평가에'),
+            'the window does not say why the availability zone frame carries no count');
+  assert.ok(TOPOLOGY.includes('리전을 합친 수'),
+            'the picture does not say the counts are added across regions');
+  assert.ok(TOPOLOGY.includes('이 계정에서 확인한 연결이 아니다'),
+            'the one arrow is not declared canonical');
+});
+
+test('the caveat is above the picture, not under it', () => {
+  assert.ok(TOPOLOGY.indexOf('측정한 것이 아니') < TOPOLOGY.indexOf('topology-figure'),
+            'the caveat sits below the drawing, where it is read after the wrong conclusion has '
+            + 'already formed');
+});
+
+test('the caveat survives a screenshot', () => {
+  // A caveat in the dialog body does not travel with a cropped image of the figure. The caption is
+  // a <text> inside the viewBox, so it does - and it comes out of the module, which is what the
+  // topology test pins.
+  assert.ok(TOPOLOGY.includes('topo-foot'),
+            'the picture renders no foot line, so the caption inside the viewBox is gone');
+});
+
+test('the caveats cannot scroll away from the picture', () => {
+  assert.match(CSS, /\.topology-figure[^}]*max-height/,
+               'the figure does not scroll, so the dialog does - and the caveats scroll off with it');
+  assert.ok(!/dialog\.policy-dialog\.topology-dialog[^}]*overflow/.test(CSS),
+            'the scroll moved onto the dialog, which takes the caveats off screen with it');
+});
+
+test('the component computes no coordinates of its own', () => {
+  // Every number in the drawing comes out of a module with unit tests behind it. A coordinate
+  // computed here is a coordinate nothing checks.
+  assert.ok(/ec2Topology\.js/.test(TOPOLOGY) && /ec2Scene\(/.test(TOPOLOGY),
+            'the component no longer gets its scene from the tested module');
+  assert.ok(!/const [A-Z_]{3,} = \d+;/.test(TOPOLOGY_CODE),
+            'the component grew a geometry constant of its own, so two files can disagree');
+});
+
+test('the component holds no slot table of its own', () => {
+  assert.ok(!/'ec2:instance'/.test(TOPOLOGY_CODE),
+            'the component built a placement table of its own, so the two tables can disagree');
+  assert.ok(!/resources\.length/.test(TOPOLOGY_CODE),
+            'the component counted the capped row list instead of the group total');
+});
+
+test('the diagram never renders the service icon', () => {
+  assert.ok(!TOPOLOGY_CODE.includes('resourceIconPath') && !TOPOLOGY_CODE.includes('<ServiceIcon'),
+            'the diagram falls back to the service icon, which puts an EC2 tile where a key pair is');
+});
+
+test('the picture has a text equivalent', () => {
+  for (const needle of ['role="img"', '<title', '<desc', 'sceneSummary(', 'topology-table']) {
+    assert.ok(TOPOLOGY.includes(needle), `the picture is missing ${needle}`);
+  }
+  assert.match(CSS, /\.topology-table\b/, "the table that is the picture's equal is unstyled");
+});
+
+test('the scroll region is reachable by keyboard', () => {
+  // A scrollable box no keyboard can reach is a box half the readers cannot read.
+  assert.ok(TOPOLOGY.includes('tabIndex={0}') && TOPOLOGY.includes('aria-label="자원 구성도"'),
+            'the figure cannot be scrolled without a mouse');
+  assert.match(CSS, /\.topology-figure:focus-visible/, 'the focused figure shows no focus ring');
+});
+
+test('the marker id cannot collide', () => {
+  assert.ok(TOPOLOGY.includes('useId()'),
+            'the arrow markers use a fixed id, so two policy blocks resolve to the same marker');
+  assert.ok(!/id="topo-[a-z]+"/.test(TOPOLOGY_CODE),
+            'a literal marker id would make every arrow on the page point at the first one');
+});
+
+test('the button sits between the groups and the restriction area', () => {
+  assert.ok(IMPACT.lastIndexOf('<GroupBlock') < IMPACT.indexOf('<PolicyTopology'),
+            'the picture is drawn above the groups it depicts');
+  assert.ok(IMPACT.indexOf('<PolicyTopology') < IMPACT.indexOf('<div className="restrict">'),
+            'the picture landed inside the restriction area, where it reads as a control');
+});
+
+test('the gate is not a policy-name compare in the page', () => {
+  assert.ok(!IMPACT.includes('AmazonEC2FullAccess'),
+            'a policy-name condition landed in a 1,700-line file where nobody will find it - '
+            + 'the gate belongs in server/ec2Topology.js');
+});
+
+test('the dialog modifier does not break the backdrop or depend on source order', () => {
+  // The backdrop click test is an identity comparison against the dialog, which works only while
+  // .policy-dialog keeps padding:0 and the body carries all of it.
+  assert.match(CSS, /dialog\.policy-dialog\.topology-dialog\b/,
+               'the modifier ties .policy-dialog on specificity and wins only on where it landed');
+  assert.ok(!/dialog\.policy-dialog\.topology-dialog[^{]*\{[^}]*padding:/.test(CSS),
+            'the modifier put padding back on the dialog, so clicking outside no longer closes it');
+});
+
+test('every class the picture renders has a rule', () => {
+  for (const cls of ['.topology-launch', '.topology-dialog', '.topology-figure', '.topology-svg',
+                     '.topology-legend', '.topology-table', '.topo-frame', '.topo-frame-sg',
+                     '.topo-slot', '.topo-slot-sensitive', '.topo-erase', '.topo-link',
+                     '.topo-foot', '.topo-ground']) {
+    assert.ok(CSS.includes(cls), `${cls} is rendered and has no rule`);
+  }
+});
+
+test('the stylesheet still sets no literal colour', () => {
+  // The four AWS group colours are emitted by the module as inline styles, so this feature's
+  // section adds none - which is what keeps the file's own banner true.
+  const section = CSS.slice(CSS.indexOf('이 정책이 닿는 자원의 구성도'))
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(!/#[0-9a-fA-F]{6}/.test(section),
+            'an AWS deck colour was hard-coded into the stylesheet instead of being emitted as an '
+            + 'inline style by server/ec2Topology.js');
+});
+
+test('the solid and dashed grammar is stated where it is used', () => {
+  assert.match(TOPOLOGY, /실선[\s\S]{0,300}점선/,
+               'the legend no longer distinguishes measured containment from canonical placement');
+  assert.ok(TOPOLOGY.includes('하한'), 'truncation does not reach the screen');
+  assert.ok(TOPOLOGY.includes('민감'), 'sensitivity does not reach the screen');
+});

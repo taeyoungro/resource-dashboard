@@ -20,6 +20,7 @@ import {
 } from "../../server/virtualResource.js";
 import { serviceFold } from "../../server/serviceFold.js";
 import { INTENT_LABEL, INTENT_NOTE, SECTIONS, isScoped } from "./intents";
+import { PolicyTopology } from "./Topology";
 
 /**
  * What the permission set will reach, and the place a restriction is chosen.
@@ -873,6 +874,13 @@ function PolicyBlock({
           ))}
         </details>
       )}
+
+      {/* The same answer as the group list above, as a picture. After the groups it depicts, on this
+          file's cause-before-result rule, and outside .restrict because a picture is not a
+          restriction. It renders nothing for a policy it has no topology for, so the policy name
+          this is scoped to lives in server/ec2Topology.js rather than in a condition here - a
+          policy-name compare in a 1,700-line file is one nobody finds later. */}
+      <PolicyTopology policy={policy} name={policyName(policy.identifier)} accountId={accountId} />
 
       {/* No checkbox in front of this. There used to be one - "이 정책에 제한을 건다" - and it was a
           second door in front of a door: the policy block is already collapsed, so opening it is the

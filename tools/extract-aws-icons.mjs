@@ -7,18 +7,64 @@
 // the meaningless imageN.svg filename, and not the slide labels - is the source of truth here, so
 // extraction needs no slide parsing at all.
 //
-// Only the 64px ARCHITECTURE (service) icons are taken. The deck also carries ~470 48px resource
-// icons (Res_*) - finer-grained than the panel currently renders - and category/group icons; if a
-// finer level is ever wanted, this is the file to widen.
+// Three families are taken, and the asymmetry between them is deliberate.
 //
-// Output goes to public/aws-icons/<Name>.svg, which vite copies into dist verbatim and the page
-// loads per-icon via <img src>. That is the point of static files over bundling: 291 icons sit on
-// disk (~450 KB), and a viewer downloads only the handful the current assessment actually shows.
+//   Arch_*_64    EVERY one. The impact panel renders an icon per service and it cannot know in
+//                advance which services an account holds, so the whole set has to be on disk.
+//                291 files, ~450 KB, and a viewer downloads only the handful one assessment shows.
+//   Group_*_32   THE THREE the resource diagram frames with. AWS-Cloud, Region, VPC.
+//   Res_*_48     AN ALLOWLIST, named one by one below.
 //
-// The 21 MB deck itself is NOT committed to this branch and NOT read at build time - this tool is
-// run by hand against a downloaded deck when AWS releases a new icon set, and the extracted SVGs
-// are committed. server/serviceIcons.test.js pins that every mapped icon file exists, so an
-// extraction that drops one fails the suite rather than a page render.
+// The last two are allowlisted rather than taken wholesale because the deck carries ~470 Res_*
+// icons and the diagram names eighteen. Extracting all of them would put 450 files in a diff
+// nobody can review to add a picture that renders eighteen, and every unused file is one more
+// thing a future reader has to decide is dead. A named list is a list somebody can check against
+// server/ec2Topology.js - and its test does exactly that, in both directions.
+//
+// The Res_ and Group_ output names are PREFIXED (Res-*.svg, Group-*.svg) so they cannot collide
+// with the Arch-derived names the service table keys on: Res_Amazon-EC2_Instance_48 and
+// Arch_Amazon-EC2_64 would otherwise both want to be Amazon-EC2.svg, and the second write would
+// silently replace the icon every policy summary line renders.
+//
+// Output goes to public/aws-icons/<Name>.svg, which vite copies into dist verbatim; the page loads
+// service icons per-icon via <img src> and the diagram's via SVG <image href>.
+//
+// The 21 MB deck IS committed (both at the repository root and under the extracted directory) but
+// is NOT read at build time - this tool is run by hand when AWS releases a new icon set, and the
+// extracted SVGs are what CI and the page use. server/serviceIcons.test.js and
+// server/ec2Topology.test.js each pin that every icon their table names exists on disk, so an
+// extraction that drops one fails the suite rather than a page rendering a blank box.
+
+/** The frames the resource diagram draws. Public-subnet_32 and Private-subnet_32 are deliberately
+ *  NOT here: the assessment carries nothing that tells a public subnet from a private one, and a
+ *  badge asserting either would be the dashboard claiming a routing fact it never measured. */
+const GROUPS = ['AWS-Cloud', 'Region', 'Virtual-private-cloud-VPC'];
+
+/** One per node the diagram draws, keyed to server/ec2Topology.js's EC2_SLOTS. Res_Internet_48 is
+ *  the far end of the diagram's one link. There is no key-pair, launch-template, placement-group,
+ *  host, fleet, reserved-instances, dhcp-options, prefix-list, security-group-rule or
+ *  egress-only-internet-gateway glyph in this deck - those slots render their label and no glyph,
+ *  which is the same contract the service table keeps: nothing rather than a guessed icon. */
+const RESOURCES = [
+  'Amazon-EC2_Instance',
+  'Amazon-EC2_Spot-Instance',
+  'Amazon-EC2_AMI',
+  'Amazon-EC2_Elastic-IP-Address',
+  'Amazon-VPC_Internet-Gateway',
+  'Amazon-VPC_NAT-Gateway',
+  'Amazon-VPC_Router',
+  'Amazon-VPC_Network-Access-Control-List',
+  'Amazon-VPC_Endpoints',
+  'Amazon-VPC_Peering-Connection',
+  'Amazon-VPC_VPN-Gateway',
+  'Amazon-VPC_VPN-Connection',
+  'Amazon-VPC_Customer-Gateway',
+  'Amazon-VPC_Elastic-Network-Interface',
+  'AWS-Transit-Gateway_Attachment',
+  'Amazon-Elastic-Block-Store_Volume',
+  'Amazon-Elastic-Block-Store_Snapshot',
+  'Internet',
+];
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -42,16 +88,34 @@ const entries = execFileSync('unzip', ['-Z1', deck], { maxBuffer: 1 << 24 })
   .filter((n) => n.startsWith('ppt/media/') && n.endsWith('.svg'));
 
 const ARCH = /<g id="Icon-Architecture\/64\/Arch_(.+?)_64"/;
+const GROUP = /<g id="Icon-Architecture-Group\/32\/(.+?)_32"/;
+const RES = /<g id="Icon-Resource\/[^/]+\/Res_(.+?)_48"/;
+
+const wantedGroups = new Set(GROUPS);
+const wantedResources = new Set(RESOURCES);
+
+/** The output name for one embedded SVG, or null when this file is not one of the three families
+ *  - or is a Res_/Group_ icon outside the allowlists above. */
+function named(svg) {
+  const arch = ARCH.exec(svg);
+  if (arch) return arch[1];
+  const group = GROUP.exec(svg);
+  if (group) return wantedGroups.has(group[1]) ? `Group-${group[1]}` : null;
+  const res = RES.exec(svg);
+  if (res) return wantedResources.has(res[1]) ? `Res-${res[1].replaceAll('_', '-')}` : null;
+  return null;
+}
 
 const seen = new Map();
 let skipped = 0;
 for (const entry of entries) {
   const svg = execFileSync('unzip', ['-p', deck, entry], { maxBuffer: 1 << 22 }).toString('utf-8');
-  const match = ARCH.exec(svg);
-  if (!match) {
+  const found = named(svg);
+  if (!found) {
     skipped += 1;
     continue;
   }
+  const match = [null, found];
   // The id is XML text, so entities arrive encoded (&amp;), and two icon names contain
   // characters Windows refuses in filenames (AWS-re:Post). A repository that cannot be checked
   // out on Windows is broken for half its users, so the name is decoded and sanitised before it
@@ -69,4 +133,20 @@ for (const entry of entries) {
   writeFileSync(join(outDir, `${name}.svg`), svg);
 }
 
-console.log(`extracted ${seen.size} service icons to public/aws-icons (${skipped} non-Arch svgs skipped)`);
+// Named rather than counted, because a MISSING allowlisted icon is the failure this tool can see
+// and the test suite would only see later. An id AWS renamed between decks silently produces one
+// fewer file, and a diagram slot then renders its label with no glyph - which is a legal state, so
+// nothing downstream would complain.
+const missing = [
+  ...GROUPS.filter((g) => !seen.has(`Group-${g}`)).map((g) => `Group-${g}`),
+  ...RESOURCES.filter((r) => !seen.has(`Res-${r.replaceAll('_', '-')}`))
+    .map((r) => `Res-${r.replaceAll('_', '-')}`),
+];
+const arch = [...seen.keys()].filter((n) => !n.startsWith('Group-') && !n.startsWith('Res-')).length;
+console.log(`extracted ${arch} service icons, ${seen.size - arch} diagram icons to `
+            + `public/aws-icons (${skipped} svgs skipped)`);
+if (missing.length > 0) {
+  console.error(`MISSING from the deck, so the allowlist and the deck disagree:\n  `
+                + missing.join('\n  '));
+  process.exit(1);
+}
