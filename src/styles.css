@@ -1441,14 +1441,29 @@ dialog.picker.block-path { width: min(44rem, 94vw); }
 .topology-launch { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0.6rem 0 0; }
 
 /* Two class names, so specificity (0,2,1) beats .policy-dialog's and this rule does not depend on
-   where in the file it lands. It sets width and NOTHING else: .policy-dialog's padding:0 is what
-   makes the backdrop-click test (e.target === dialog) work, and a padding here would silently
-   break closing the window by clicking outside it. */
+   where in the file it lands. Width and overflow only - closing the window by clicking outside it
+   no longer depends on any of this: the component compares the pointer against the dialog's own
+   rectangle rather than trusting e.target, which is the dialog itself for a click on its scrollbar
+   and for a mouseup that started inside. */
 dialog.policy-dialog.topology-dialog { width: min(796px, 94vw); }
 
-/* The scroll is on the FIGURE, not on the dialog, so the two caveat paragraphs above it stay on
-   screen while the picture moves - a caveat that scrolls away is a caveat somebody screenshots
-   without. A wide picture scrolls rather than shrinking: legible-and-scrollable beats
+/* The dialog itself does not scroll; .topology-scroll does. The UA stylesheet gives dialog:modal
+   `overflow: auto`, so setting nothing was not the same as setting none - the whole window scrolled
+   and the two caveat paragraphs went off the top on any screen short enough, which is the state the
+   caveats exist to prevent. Everything from the filter bar down moves; the heading, the caveats and
+   the 닫기 row stay. */
+dialog.policy-dialog.topology-dialog { overflow: hidden; }
+.topology-dialog .policy-dialog-body {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 6em);
+}
+.topology-scroll { overflow: auto; flex: 1 1 auto; min-height: 0; }
+/* Focused by showModal() so a screen reader reaches the caveats before the filter controls. It is
+   not an interactive target, so it takes no focus ring. */
+.topology-caveats:focus { outline: none; }
+
+/* The picture scrolls inside that, rather than shrinking: legible-and-scrollable beats
    fits-and-unreadable, and shrinking an 11px Korean label is not a smaller picture but an
    unreadable one. */
 .topology-figure {
@@ -1475,8 +1490,16 @@ dialog.policy-dialog.topology-dialog { width: min(796px, 94vw); }
 .topo-frame-note { fill: var(--muted); font-size: 11px; }
 /* The reference architecture draws this label red. AWS's own #DD344C is below the contrast floor
    the rest of this page clears for 12px text, so the border keeps AWS's colour and the label takes
-   the palette's own red. */
+   the palette's own red. This is a FAMILY colour like the VPC's purple - it says "security group",
+   not "sensitive", and the legend now says so. */
 .topo-frame-sg .topo-frame-label { fill: var(--danger); }
+/* Where a frame's sensitive count lands. The border cannot carry it: the one frame a reader would
+   read a red border on is red already, whatever is inside it. */
+.topo-frame-sensitive { fill: var(--danger); font-weight: 600; }
+/* The availability zone: a position the assessment never measured, drawn so it holds the shape
+   without reading as a frame that reported something. */
+.topo-ghost .topo-frame { stroke-opacity: 0.55; }
+.topo-ghost .topo-frame-label { fill: var(--muted); }
 
 .topo-slot { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
 /* The panel force-opens a policy block holding a sensitive resource, so a picture that dropped

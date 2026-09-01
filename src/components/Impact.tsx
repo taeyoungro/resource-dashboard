@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
-  Impact as Assessment, ImpactActionReference, ImpactGroup, ImpactPassRoleGrant, ImpactPolicy,
-  Restriction,
+  Impact as Assessment, ImpactActionReference, ImpactCoverage, ImpactGroup, ImpactPassRoleGrant,
+  ImpactPolicy, Restriction,
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
@@ -682,6 +682,7 @@ export function Impact({
           reference={assessment.action_reference ?? null}
           referenceError={assessment.coverage.reference ?? null}
           omitted={assessment.coverage.action_lists_omitted ?? []}
+          coverage={assessment.coverage}
           passroleGrant={(assessment.passrole_grants ?? [])
             .find((g) => g.identifier === policy.identifier) ?? null}
           fenceGrants={fenceGrants}
@@ -736,6 +737,7 @@ function PolicyBlock({
   reference,
   referenceError,
   omitted,
+  coverage,
   passroleGrant,
   fenceGrants,
   tagWriters,
@@ -750,6 +752,11 @@ function PolicyBlock({
   reference: ImpactActionReference | null;
   referenceError: string | null;
   omitted: string[];
+  /** What this assessment managed to enumerate. The diagram needs it: a policy with no EC2 groups
+   *  and a policy whose EC2 lookup FAILED are the same document shape and opposite news, and an
+   *  empty picture saying "이 정책이 닿는 EC2 자원이 없다" over a failed lookup is the most
+   *  load-bearing false sentence this panel can produce. */
+  coverage: ImpactCoverage;
   /** This policy's own PassRole grant, when it has one - what earns it a fence. */
   passroleGrant: ImpactPassRoleGrant | null;
   /** Bytes the fence will spend in the inline document, counted against the restriction budget. */
@@ -880,7 +887,12 @@ function PolicyBlock({
           restriction. It renders nothing for a policy it has no topology for, so the policy name
           this is scoped to lives in server/ec2Topology.js rather than in a condition here - a
           policy-name compare in a 1,700-line file is one nobody finds later. */}
-      <PolicyTopology policy={policy} name={policyName(policy.identifier)} accountId={accountId} />
+      <PolicyTopology
+        policy={policy}
+        name={policyName(policy.identifier)}
+        accountId={accountId}
+        coverage={coverage}
+      />
 
       {/* No checkbox in front of this. There used to be one - "이 정책에 제한을 건다" - and it was a
           second door in front of a door: the policy block is already collapsed, so opening it is the

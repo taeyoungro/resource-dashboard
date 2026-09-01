@@ -19,9 +19,11 @@
 // placement claim about key pairs.
 
 import { useId, useMemo, useRef, useState } from "react";
-import type { ImpactPolicy } from "../types";
+import type { ImpactCoverage, ImpactPolicy } from "../types";
 import type { Facets, Frame, Link, Scene, SceneFilter, Slot } from "../../server/ec2Topology.js";
-import { ec2Scene, facets as facetsOf, sceneSummary } from "../../server/ec2Topology.js";
+import {
+  FRAME_LABEL, ec2Enumerated, ec2Scene, facets as facetsOf, sceneSummary,
+} from "../../server/ec2Topology.js";
 
 /**
  * One frame: the box, its badge, and a label band of up to three parts.
@@ -35,7 +37,7 @@ function FrameShape({ frame }: { frame: Frame }) {
     // `.topo-frame-sg .topo-frame-label` - has to reach a <tspan> in a sibling <text>, and from
     // the rect it reaches nothing: the 보안 그룹 label rendered in the ordinary text colour while
     // its border was red, which is the one frame whose colour carries a meaning.
-    <g className={`topo-frame-${frame.id}`}>
+    <g className={frame.ghost ? `topo-frame-${frame.id} topo-ghost` : `topo-frame-${frame.id}`}>
       {/* The AWS group colour arrives as an inline STYLE and not as a stroke attribute. A
           presentation attribute loses to any stylesheet rule, and `.topo-frame` sets
           `stroke: var(--border)` for the frames whose colour this module does not assert - so a
@@ -57,6 +59,13 @@ function FrameShape({ frame }: { frame: Frame }) {
       <text className="topo-frame-text" x={frame.x + (frame.badge ? 34 : 10)} y={frame.y + 20}>
         <tspan className="topo-frame-label">{frame.label}</tspan>
         {frame.count && <tspan className="topo-frame-count" dx="6">{frame.count}</tspan>}
+        {/* On the label band, not on the border. The 보안 그룹 border is AWS's own colour for a
+            security group and is red whether or not anything inside it is sensitive, so a border
+            cannot be the channel - and before this the frames carried the sensitive thread on no
+            channel at all while the legend promised one. */}
+        {frame.sensitive > 0 && (
+          <tspan className="topo-frame-sensitive" dx="6">민감 {frame.sensitive}개</tspan>
+        )}
         {frame.note && <tspan className="topo-frame-note" dx="6">{frame.note}</tspan>}
       </text>
     </g>
@@ -125,12 +134,16 @@ function SlotShape({ slot }: { slot: Slot }) {
 function LinkShape({ link, uid }: { link: Link; uid: string }) {
   return (
     <g>
+      {/* refX is the TIP, not the centre. Centred, half of the lower arrowhead sat past the path's
+          end - which is exactly where the gateway plate's erase rect starts - so the head that
+          points at the VPC border was painted over by the thing it points at, on every scene that
+          draws the gateway. With the tip on the vertex the whole head stays on the visible side. */}
       <defs>
-        <marker id={`${uid}-up`} viewBox="0 0 8 8" refX="4" refY="4"
+        <marker id={`${uid}-up`} viewBox="0 0 8 8" refX="8" refY="4"
                 markerWidth="5" markerHeight="5" orient="auto-start-reverse">
           <path className="topo-link-marker" d="M 0 0 L 8 4 L 0 8 z" />
         </marker>
-        <marker id={`${uid}-down`} viewBox="0 0 8 8" refX="4" refY="4"
+        <marker id={`${uid}-down`} viewBox="0 0 8 8" refX="8" refY="4"
                 markerWidth="5" markerHeight="5" orient="auto">
           <path className="topo-link-marker" d="M 0 0 L 8 4 L 0 8 z" />
         </marker>
@@ -187,9 +200,13 @@ function Figure({ scene, name, uid }: { scene: Scene; name: string; uid: string 
  * without leaving the window, and a reader using a screen reader gets the whole answer from it.
  */
 function SceneTable({ scene }: { scene: Scene }) {
+  // FRAME_LABEL comes from the module rather than from a copy here. The copy was byte-identical
+  // until somebody added a frame, at which point the 자리 column printed the raw id while the
+  // drawing beside it printed the Korean name - and this file's own banner says it computes
+  // nothing, which a second table of labels quietly made untrue.
   const place = (row: Scene["rows"][number]) => {
     if (!row.frame) return <td className="none">없음</td>;
-    return <td>{FRAME_NAME[row.frame] ?? row.frame}</td>;
+    return <td>{FRAME_LABEL[row.frame] ?? row.frame}</td>;
   };
   return (
     <table className="topology-table">
@@ -229,6 +246,11 @@ function FacetPicker({ label, values, chosen, onChange }: {
   onChange: (next: string[]) => void;
 }) {
   const all = chosen.length === 0;
+  // A dimension with one value cannot narrow anything: 전체 and that one value are the same
+  // picture. It used to render as a live checkbox that collapsed straight back to 전체 on every
+  // click - a control that looked responsive and was not, sitting next to rows that explain in so
+  // many words why they are disabled. Said rather than mimed, in the same grammar.
+  const single = values.length === 1;
   const toggle = (id: string) => {
     const next = chosen.includes(id) ? chosen.filter((v) => v !== id) : [...chosen, id];
     // Ticking every value one by one lands on the same picture as 전체, so it collapses to 전체 -
@@ -239,21 +261,28 @@ function FacetPicker({ label, values, chosen, onChange }: {
   return (
     <div className="topology-facet">
       <span className="topology-facet-name">{label}</span>
-      <label className={all ? "topology-chip on" : "topology-chip"}>
-        <input type="checkbox" checked={all} onChange={() => onChange([])} />
-        전체
-      </label>
+      {!single && (
+        <label className={all ? "topology-chip on" : "topology-chip"}>
+          <input type="checkbox" checked={all} onChange={() => onChange([])} />
+          전체
+        </label>
+      )}
       {values.map((value) => (
         <label key={value.id}
-               className={chosen.includes(value.id) ? "topology-chip on" : "topology-chip"}>
+               className={single ? "topology-chip off"
+                 : chosen.includes(value.id) ? "topology-chip on" : "topology-chip"}
+               title={single ? "값이 하나뿐이라 좁힐 것이 없다" : undefined}>
           <input
             type="checkbox"
-            checked={chosen.includes(value.id)}
-            onChange={() => toggle(value.id)}
+            checked={single || chosen.includes(value.id)}
+            disabled={single}
+            readOnly={single}
+            onChange={single ? undefined : () => toggle(value.id)}
           />
           {value.id} <span className="muted">{value.total.toLocaleString()}</span>
         </label>
       ))}
+      {single && <span className="muted small">값이 하나뿐이라 좁힐 것이 없다</span>}
     </div>
   );
 }
@@ -329,17 +358,6 @@ function FilterBar({ facets, filter, onChange }: {
   );
 }
 
-/** The Korean frame names, for the 자리 column. Kept beside the table that prints them. */
-const FRAME_NAME: Record<string, string> = {
-  cloud: "AWS 클라우드",
-  region: "리전",
-  az: "가용 영역",
-  vpc: "VPC",
-  subnet: "서브넷",
-  sg: "보안 그룹",
-  ebs: "Amazon EBS",
-};
-
 /**
  * The button, the closed-state summary beside it, and the window.
  *
@@ -351,32 +369,44 @@ const FRAME_NAME: Record<string, string> = {
  * gate because it writes something; this one only reads, and an approver who cannot edit is
  * exactly the reader who most needs to see what the policy reaches.
  */
-export function PolicyTopology({ policy, name, accountId }: {
+export function PolicyTopology({ policy, name, accountId, coverage }: {
   policy: ImpactPolicy;
   /** The policy as a person names it - policyName(identifier). */
   name: string;
   accountId: string;
+  /** The assessment's own record of what it managed to enumerate. An empty picture and a failed
+   *  EC2 lookup are the same document shape and opposite news, and this is what tells them apart. */
+  coverage: ImpactCoverage | null;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const uid = useId();
-  // 전체 on every dimension, which is the picture the button promises. Held here rather than in the
-  // module so closing and reopening the window starts from everything again: a filter an approver
-  // set five minutes ago and cannot see is a filter that makes the next picture a quiet lie.
-  const [filter, setFilter] = useState<SceneFilter>(
-    { accounts: [], regions: [], vpcs: [], subnets: [] },
-  );
+  const empty: SceneFilter = { accounts: [], regions: [], vpcs: [], subnets: [] };
+  // 전체 on every dimension, which is the picture the button promises. Reset in onClose below, and
+  // not merely by the initial value: this component never unmounts (the sweep poll re-renders it
+  // with the same key), so a filter an approver set five minutes ago survived closing the window,
+  // and a filter nobody can see is a filter that makes the next picture a quiet lie.
+  const [filter, setFilter] = useState<SceneFilter>(empty);
+  const enumerated = ec2Enumerated(coverage);
   const facets = useMemo(() => facetsOf(policy), [policy]);
   // Unfiltered, for the closed-state summary and for the sentence that says what was narrowed away.
-  const whole = useMemo(() => ec2Scene(policy, accountId), [policy, accountId]);
-  const scene = useMemo(() => ec2Scene(policy, accountId, filter), [policy, accountId, filter]);
+  const whole = useMemo(
+    () => ec2Scene(policy, accountId, null, enumerated), [policy, accountId, enumerated],
+  );
+  const scene = useMemo(
+    () => ec2Scene(policy, accountId, filter, enumerated), [policy, accountId, filter, enumerated],
+  );
   if (!scene || !whole || !facets) return null;
 
   // Read off the UNFILTERED scene. The line beside a closed button says what the policy reaches;
   // a filter set inside the window is a property of the window, and letting it change this line
   // would make the panel disagree with itself for a reason nobody can see.
+  //
+  // A truncated enumeration makes the region list a floor exactly as it makes the count one, and
+  // this line carried 이상 on the count while stating the regions flat.
+  const floor = whole.truncated ? " 이상" : "";
   const regionLabel = whole.regions.length === 0 ? "리전 없음"
-    : whole.regions.length === 1 ? `리전 ${whole.regions[0]}`
-      : `리전 ${whole.regions.length}곳`;
+    : whole.regions.length === 1 ? `리전 ${whole.regions[0]}${floor}`
+      : `리전 ${whole.regions.length}곳${floor}`;
 
   return (
     <div className="topology-launch">
@@ -393,32 +423,59 @@ export function PolicyTopology({ policy, name, accountId }: {
         {whole.unslotted.length > 0 && ` · 자리 없는 유형 ${whole.unslotted.length}종`}
       </span>
 
-      {/* The backdrop click test is an identity comparison against the dialog itself, which works
-          only because .policy-dialog keeps padding:0 and .policy-dialog-body carries all of it.
-          The .topology-dialog modifier must never set padding - a test pins that. */}
+      {/* The click that closes this is decided by COORDINATES and not by identity. e.target is the
+          dialog itself for a click on the dialog's own scrollbar, and for a mouseup outside it
+          after a mousedown within - so dragging the scrollbar, or selecting a row in the table and
+          releasing past the edge, closed the window. The rect test asks the question the reader is
+          actually asking: did the pointer land outside the box. */}
       <dialog
         ref={dialog}
         className="policy-dialog topology-dialog"
-        onClick={(e) => { if (e.target === dialog.current) dialog.current?.close(); }}
+        aria-labelledby={`${uid}-h`}
+        aria-describedby={`${uid}-c`}
+        onClose={() => setFilter(empty)}
+        onClick={(e) => {
+          const box = dialog.current;
+          if (!box || e.target !== box) return;
+          const r = box.getBoundingClientRect();
+          const inside = e.clientX >= r.left && e.clientX <= r.right
+            && e.clientY >= r.top && e.clientY <= r.bottom;
+          if (!inside) box.close();
+        }}
       >
         <div className="policy-dialog-body">
-          <h4>이 정책이 닿는 EC2 자원의 구성도 <span className="muted">— <code>{name}</code></span></h4>
+          <h4 id={`${uid}-h`}>
+            이 정책이 닿는 EC2 자원의 구성도 <span className="muted">— <code>{name}</code></span>
+          </h4>
 
-          {/* ABOVE the picture, and the scroll is on the figure rather than on the dialog, so
-              these two cannot scroll away from what they qualify. A caveat that scrolls off is a
-              caveat somebody screenshots without. */}
-          <p className="muted small">
-            이 그림은 자원을 <strong>유형에 따라 EC2 구성에서 놓이는 자리</strong>에 놓은 것이다.
-            어느 인스턴스가 어느 서브넷에 있는지, 어느 볼륨이 어느 인스턴스에 붙어 있는지는 이
-            평가에 들어 있지 않다 — 그래서 이 그림은 그것을 말하지 않는다.{" "}
-            <strong>테두리의 포함 관계는 측정한 것이 아니라 EC2의 일반적인 구성이다.</strong>
-          </p>
-          <p className="muted small">
-            자원마다 실제 값인 것은 <strong>계정과 리전과 개수</strong>뿐이다. 가용 영역은 평가에
-            없어서 테두리만 그리고 개수를 적지 않는다. 개수는 <strong>리전을 합친 수</strong>다 —
-            리전별로 보려면 위의 자원 목록에 리전마다 관리콘솔 링크가 있다. 자원끼리의 연결선은
-            그리지 않는다. 무엇이 무엇과 통신하는지는 이 평가가 답하지 않는 질문이다.
-          </p>
+          {/* ABOVE the picture and OUTSIDE the scrolling region below, so these two cannot scroll
+              away from what they qualify. A caveat that scrolls off is a caveat somebody
+              screenshots without - and showModal() focuses this rather than the first checkbox in
+              the filter bar, so a screen reader reaches the caveats before the controls. */}
+          <div className="topology-caveats" id={`${uid}-c`} tabIndex={-1} autoFocus>
+            <p className="muted small">
+              이 그림은 자원을 <strong>유형에 따라 EC2 구성에서 놓이는 자리</strong>에 놓은 것이다.
+              어느 인스턴스가 어느 서브넷에 있는지, 어느 볼륨이 어느 인스턴스에 붙어 있는지는 이
+              평가에 들어 있지 않다 — 그래서 이 그림은 그것을 말하지 않는다.{" "}
+              <strong>테두리의 포함 관계는 측정한 것이 아니라 EC2의 일반적인 구성이다.</strong>
+            </p>
+            <p className="muted small">
+              자원마다 실제 값인 것은 <strong>계정과 리전과 개수</strong>뿐이다. 가용 영역은 평가에
+              없어서 테두리만 그리고 개수를 적지 않는다. 개수는 <strong>리전을 합친 수</strong>다 —
+              리전별로 보려면 위의 자원 목록에 리전마다 관리콘솔 링크가 있다. 자원끼리의 연결선은
+              그리지 않는다. 무엇이 무엇과 통신하는지는 이 평가가 답하지 않는 질문이다.
+            </p>
+          </div>
+
+          <div className="topology-scroll">
+          {/* The EC2 lookup failed, so the empty picture below is a fact about this assessment and
+              not about the policy. The panel says this in a banner - which this window covers. */}
+          {!scene.enumerated && (
+            <p className="error">
+              이 평가는 <strong>EC2 자원 조회에 실패했다.</strong> 아래 그림이 비어 있는 것은 이
+              정책이 닿는 자원이 없다는 뜻이 아니라 세어 보지 못했다는 뜻이다.
+            </p>
+          )}
 
           <FilterBar facets={facets} filter={filter} onChange={setFilter} />
 
@@ -443,7 +500,14 @@ export function PolicyTopology({ policy, name, accountId }: {
             </li>
             <li>
               <strong>점선 테두리</strong> — EC2의 일반적인 자리다. 측정한 것이 아니다. 안에 무엇이
-              들어 있든 마찬가지다.
+              들어 있든 마찬가지다. 겹쳐진 순서는 AWS의 범위다 —{" "}
+              <strong>리전 ⊃ VPC ⊃ 가용 영역 ⊃ 서브넷.</strong> VPC는 리전의 모든 가용 영역에
+              걸쳐 있고, 가용 영역에 속하는 것은 서브넷이다.
+            </li>
+            <li>
+              <strong>Amazon EBS 테두리</strong> — 볼륨은 <strong>가용 영역 범위</strong>여서 그
+              안에 그린다. <strong>VPC에는 속하지 않는다</strong> — VPC 테두리 안에 보이는 것은
+              가용 영역이 그 안에 그려지기 때문이고, 볼륨이 VPC에 속한다는 뜻이 아니다.
             </li>
             <li>
               <strong>개수가 없는 테두리</strong> — 이 정책이 닿는 자원이 그 유형에 없거나
@@ -455,10 +519,16 @@ export function PolicyTopology({ policy, name, accountId }: {
               이 계정에서 확인한 연결이 아니다.
             </li>
             <li>
+              <strong>민감 자원</strong> — 자원 판의 <strong>빨간 테두리</strong>와 빨간 개수,
+              테두리 이름 옆의 <code>민감 N개</code>, 그리고 아래 표의 <code>민감</code> 칸,
+              셋이 같은 것을 말한다. <strong>보안 그룹 테두리의 빨강은 AWS의 그룹 색</strong>이고
+              민감도와 무관하다 — 안에 무엇이 있든 빨갛다.
+            </li>
+            <li>
               <strong>*</strong> 정책이 자원을 지정하지 않았다 — 지금의 개수이고 앞으로 생기는
               것도 포함한다. <strong>⚠</strong> 참조가 동작별 자원 유형을 판정하지 못해 이 서비스의
               자원 전부가 들어 있다. <strong>†</strong> 목록이 잘렸다. 개수는 <strong>하한</strong>
-              이다. <strong>빨간 테두리</strong> 민감 자원이 들어 있다.
+              이다.
             </li>
           </ul>
 
@@ -475,9 +545,11 @@ export function PolicyTopology({ policy, name, accountId }: {
             <p className="muted small">
               그림 밖 서비스:{" "}
               {scene.omitted.map((o) => `${o.service} ${o.total.toLocaleString()}개`).join(" · ")}
-              {" "}— 이 정책이 닿지만 EC2 구성도에 자리가 없는 서비스다.
+              {" "}— 이 정책이 닿지만 EC2 구성도에 자리가 없는 서비스다. 위의 표는 EC2 자원만
+              담는다.
             </p>
           )}
+          </div>
 
           <div className="row">
             <button type="button" onClick={() => dialog.current?.close()}>닫기</button>
