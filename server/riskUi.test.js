@@ -1761,3 +1761,38 @@ test('the solid and dashed grammar is stated where it is used', () => {
   assert.ok(TOPOLOGY.includes('하한'), 'truncation does not reach the screen');
   assert.ok(TOPOLOGY.includes('민감'), 'sensitivity does not reach the screen');
 });
+
+test('the filter offers what the assessment can serve, and says why not for the rest', () => {
+  // The account and the region a resource sits in are facts on every row. Which VPC or subnet it
+  // sits in is not in the assessment at all - Resource Explorer returns an ARN, a type, a region,
+  // an account and tags - so a VPC filter would narrow nothing while looking like it narrowed
+  // something. The dimension is shown, disabled, with the reason.
+  assert.ok(TOPOLOGY.includes('<FilterBar'), 'the window offers no way to narrow the picture');
+  assert.ok(TOPOLOGY.includes('전체'), 'there is no way back to the unnarrowed picture');
+  assert.ok(TOPOLOGY_CODE.includes('facets.unavailable'),
+            'the dimensions this data cannot serve are not rendered, so a reader is left to guess '
+            + 'why there is no VPC filter');
+  assert.match(CSS, /\.topology-chip\.off/, 'an unavailable dimension is styled as an available one');
+  assert.ok(!/vpcId|subnet_id|vpc_id/.test(TOPOLOGY_CODE),
+            'the component reached for a VPC or subnet field, which no assessment carries');
+});
+
+test('a narrowed picture says what it left out', () => {
+  // Defect it prevents: an approver narrowing to one region, reading a small number, and carrying
+  // away "this policy reaches little". The picture alone cannot tell that from "I am looking at
+  // part of it".
+  assert.ok(TOPOLOGY.includes('고른 조건만 그렸다'),
+            'a filtered picture does not say it is filtered');
+  assert.ok(TOPOLOGY.includes('조건 없이는'),
+            'a filtered picture does not say what the whole would be');
+});
+
+test('the closed-state summary describes the policy, not the filter', () => {
+  // The line beside the button is a fact about the policy. Letting a filter set inside the window
+  // change it would make the panel disagree with itself for a reason nobody outside can see.
+  const summary = TOPOLOGY.slice(TOPOLOGY.indexOf('EC2 자원 {'), TOPOLOGY.indexOf('</span>',
+                                 TOPOLOGY.indexOf('EC2 자원 {')));
+  assert.ok(summary.includes('whole.kinds') && summary.includes('whole.measured'),
+            'the closed-state line reads the filtered scene, so collapsing the window leaves a '
+            + 'count that describes a filter nobody can see');
+});

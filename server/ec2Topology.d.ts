@@ -118,9 +118,32 @@ export interface Scene {
   measured: number;
   kinds: number;
   empty: boolean;
+  /** Whether a filter narrowed this scene. An empty picture caused by a filter is not the same
+   *  news as a policy that reaches nothing. */
+  narrowed: boolean;
 }
 
+/** What the picture can be narrowed by. null on a policy that gets no picture. */
+export interface Facets {
+  accounts: { id: string; total: number }[];
+  regions: { id: string; total: number }[];
+  /** Dimensions somebody will ask for that this assessment cannot serve, each with the reason. */
+  unavailable: { id: string; label: string; why: string }[];
+}
+
+/** null or an empty list on a dimension means 전체. */
+export interface SceneFilter {
+  accounts?: string[] | null;
+  regions?: string[] | null;
+}
+
+export function facets(policy: ImpactPolicy): Facets | null;
+export function filterActive(filter: SceneFilter | null): boolean;
 export function topologyPolicy(identifier: string): "ec2" | null;
 export function textUnits(line: string): number;
-export function ec2Scene(policy: ImpactPolicy, accountId: string): Scene | null;
+export function ec2Scene(
+  policy: ImpactPolicy,
+  accountId: string,
+  filter?: SceneFilter | null,
+): Scene | null;
 export function sceneSummary(scene: Scene | null): string;

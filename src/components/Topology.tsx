@@ -18,10 +18,10 @@
 // In the panel's list that is decoration; here an EC2 tile inside the 보안 그룹 frame is a
 // placement claim about key pairs.
 
-import { useId, useRef } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import type { ImpactPolicy } from "../types";
-import type { Frame, Link, Scene, Slot } from "../../server/ec2Topology.js";
-import { ec2Scene, sceneSummary } from "../../server/ec2Topology.js";
+import type { Facets, Frame, Link, Scene, SceneFilter, Slot } from "../../server/ec2Topology.js";
+import { ec2Scene, facets as facetsOf, sceneSummary } from "../../server/ec2Topology.js";
 
 /**
  * One frame: the box, its badge, and a label band of up to three parts.
@@ -213,6 +213,95 @@ function SceneTable({ scene }: { scene: Scene }) {
   );
 }
 
+/**
+ * One dimension of the filter: 전체 plus a checkbox per value, with the count beside it.
+ *
+ * "전체" is a real control and not a decoration - it is the state the window opens in, and the one
+ * an approver returns to after narrowing. It is rendered as its own checkbox rather than as a
+ * "clear" button so the three states an approver can be in (everything / some / nothing chosen)
+ * read the same way on every dimension.
+ */
+function FacetPicker({ label, values, chosen, onChange }: {
+  label: string;
+  values: { id: string; total: number }[];
+  /** Empty means 전체 - see keeps() in the module. */
+  chosen: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const all = chosen.length === 0;
+  const toggle = (id: string) => {
+    const next = chosen.includes(id) ? chosen.filter((v) => v !== id) : [...chosen, id];
+    // Ticking every value one by one lands on the same picture as 전체, so it collapses to 전체 -
+    // otherwise the window would hold two states that draw identically and an approver could not
+    // tell which one they were in.
+    onChange(next.length === values.length ? [] : next);
+  };
+  return (
+    <div className="topology-facet">
+      <span className="topology-facet-name">{label}</span>
+      <label className={all ? "topology-chip on" : "topology-chip"}>
+        <input type="checkbox" checked={all} onChange={() => onChange([])} />
+        전체
+      </label>
+      {values.map((value) => (
+        <label key={value.id}
+               className={chosen.includes(value.id) ? "topology-chip on" : "topology-chip"}>
+          <input
+            type="checkbox"
+            checked={chosen.includes(value.id)}
+            onChange={() => toggle(value.id)}
+          />
+          {value.id} <span className="muted">{value.total.toLocaleString()}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The filter bar: what the picture can be narrowed by, and what it cannot.
+ *
+ * The second half is the part that matters. Somebody looking at an EC2 diagram will reach for a VPC
+ * filter, and this assessment cannot serve one - Resource Explorer returns an ARN, a type, a region,
+ * an account and tags, and none of those says which VPC an instance is in. A control that appeared
+ * to narrow by VPC and quietly narrowed nothing would be exactly the lie the rest of this window is
+ * built to avoid, so the dimension is shown, disabled, with the reason on it.
+ */
+function FilterBar({ facets, filter, onChange }: {
+  facets: Facets;
+  filter: SceneFilter;
+  onChange: (next: SceneFilter) => void;
+}) {
+  return (
+    <div className="topology-filter">
+      {facets.accounts.length > 0 && (
+        <FacetPicker
+          label="계정"
+          values={facets.accounts}
+          chosen={filter.accounts ?? []}
+          onChange={(accounts) => onChange({ ...filter, accounts })}
+        />
+      )}
+      <FacetPicker
+        label="리전"
+        values={facets.regions}
+        chosen={filter.regions ?? []}
+        onChange={(regions) => onChange({ ...filter, regions })}
+      />
+      {facets.unavailable.map((dimension) => (
+        <div className="topology-facet" key={dimension.id}>
+          <span className="topology-facet-name">{dimension.label}</span>
+          <span className="topology-chip off" title={dimension.why}>
+            <input type="checkbox" disabled checked={false} readOnly />
+            고를 수 없다
+          </span>
+          <span className="muted small">{dimension.why}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** The Korean frame names, for the 자리 column. Kept beside the table that prints them. */
 const FRAME_NAME: Record<string, string> = {
   cloud: "AWS 클라우드",
@@ -243,12 +332,22 @@ export function PolicyTopology({ policy, name, accountId }: {
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const uid = useId();
-  const scene = ec2Scene(policy, accountId);
-  if (!scene) return null;
+  // 전체 on every dimension, which is the picture the button promises. Held here rather than in the
+  // module so closing and reopening the window starts from everything again: a filter an approver
+  // set five minutes ago and cannot see is a filter that makes the next picture a quiet lie.
+  const [filter, setFilter] = useState<SceneFilter>({ accounts: [], regions: [] });
+  const facets = useMemo(() => facetsOf(policy), [policy]);
+  // Unfiltered, for the closed-state summary and for the sentence that says what was narrowed away.
+  const whole = useMemo(() => ec2Scene(policy, accountId), [policy, accountId]);
+  const scene = useMemo(() => ec2Scene(policy, accountId, filter), [policy, accountId, filter]);
+  if (!scene || !whole || !facets) return null;
 
-  const regionLabel = scene.regions.length === 0 ? "리전 없음"
-    : scene.regions.length === 1 ? `리전 ${scene.regions[0]}`
-      : `리전 ${scene.regions.length}곳`;
+  // Read off the UNFILTERED scene. The line beside a closed button says what the policy reaches;
+  // a filter set inside the window is a property of the window, and letting it change this line
+  // would make the panel disagree with itself for a reason nobody can see.
+  const regionLabel = whole.regions.length === 0 ? "리전 없음"
+    : whole.regions.length === 1 ? `리전 ${whole.regions[0]}`
+      : `리전 ${whole.regions.length}곳`;
 
   return (
     <div className="topology-launch">
@@ -260,9 +359,9 @@ export function PolicyTopology({ policy, name, accountId }: {
         구성도 보기
       </button>
       <span className="muted small">
-        EC2 자원 {scene.kinds}종 · {scene.measured.toLocaleString()}개
-        {scene.truncated && " 이상"} · {regionLabel}
-        {scene.unslotted.length > 0 && ` · 자리 없는 유형 ${scene.unslotted.length}종`}
+        EC2 자원 {whole.kinds}종 · {whole.measured.toLocaleString()}개
+        {whole.truncated && " 이상"} · {regionLabel}
+        {whole.unslotted.length > 0 && ` · 자리 없는 유형 ${whole.unslotted.length}종`}
       </span>
 
       {/* The backdrop click test is an identity comparison against the dialog itself, which works
@@ -291,6 +390,19 @@ export function PolicyTopology({ policy, name, accountId }: {
             리전별로 보려면 위의 자원 목록에 리전마다 관리콘솔 링크가 있다. 자원끼리의 연결선은
             그리지 않는다. 무엇이 무엇과 통신하는지는 이 평가가 답하지 않는 질문이다.
           </p>
+
+          <FilterBar facets={facets} filter={filter} onChange={setFilter} />
+
+          {/* What the filter took away, in the picture's own units. An approver who narrows and
+              then reads a small number has to be able to tell "this policy reaches little" from
+              "I am looking at part of it", and the picture alone cannot say which. */}
+          {scene.narrowed && (
+            <p className="warn-inline">
+              고른 조건만 그렸다 — EC2 자원 {scene.kinds}종 {scene.measured.toLocaleString()}개.
+              조건 없이는 {whole.kinds}종 {whole.measured.toLocaleString()}개다.
+              {scene.empty && " 고른 조건에 맞는 자원이 없어서 계정과 리전 테두리만 남았다."}
+            </p>
+          )}
 
           <div className="topology-figure" tabIndex={0} role="group" aria-label="자원 구성도">
             <Figure scene={scene} name={name} uid={uid} />

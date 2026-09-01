@@ -30,9 +30,20 @@
 // icon: null and renders its plate and its label - the same never-guess contract the service table
 // keeps, rendered rather than described.
 //
-// Counts come from group.total and never from group.resources.length. The container caps the rows
-// it returns at 1000 and GroupBlock shows 50 of them; total is the true count, and a floor when the
-// group is truncated.
+// Counts come from group.total, which is what the container recorded (assess.py: total is the
+// number of rows it kept, capped at 1000 per query) and a floor when `truncated` says the cap was
+// hit. Never from group.resources.length here: the two agree today, and reading the field the
+// container publishes is what keeps them agreeing if the container ever learns a true count.
+//
+// WHAT CAN BE FILTERED, AND WHAT CANNOT. Every row carries an ARN and a region, so the account and
+// the region a resource sits in are facts and the picture can be narrowed to them - see facets()
+// and the filter argument to ec2Scene(). NOTHING carries VPC or subnet membership: Resource
+// Explorer's Search returns Arn, ResourceType, Region, Service, the owning account and Properties,
+// and the querier reads Properties for tags alone (inventory.py). An EC2 instance ARN is
+// arn:aws:ec2:<region>:<account>:instance/i-… and names no VPC. So "show me what is in this VPC"
+// is a question this data cannot answer, and a control that appeared to answer it would be the one
+// kind of lie this whole module is arranged against. facets() says so in a field rather than
+// leaving the screen to guess.
 //
 // Plain JS with a .d.ts beside it, same arrangement as blockPath.js and for the same reason:
 // node --test is the one test runner here and it cannot load TypeScript. Korean appears in this
@@ -282,6 +293,66 @@ function regionOf(resource) {
   return resource?.region || parseArn(resource?.arn ?? '')?.region || 'global';
 }
 
+/** The account a row belongs to, from its ARN. Empty when the ARN does not carry one. */
+function accountOf(resource) {
+  return parseArn(resource?.arn ?? '')?.account || '';
+}
+
+/**
+ * What the picture can be narrowed by, and what it cannot.
+ *
+ * accounts and regions are read off the rows the container enumerated, so they are facts about this
+ * assessment and the counts beside them are the same counts the picture draws.
+ *
+ * unavailable names the dimensions somebody will reasonably ask for and this data cannot serve,
+ * WITH the reason. It is a field rather than a sentence on the screen because the screen must not
+ * be the place that decides which filters are honest: a control that narrows nothing while looking
+ * like it narrowed something is worse than no control, and worse still than a control that says
+ * why it is not there.
+ */
+export function facets(policy) {
+  if (topologyPolicy(policy?.identifier) === null) return null;
+  const accounts = new Map();
+  const regions = new Map();
+  for (const group of policy?.affected ?? []) {
+    if (group?.service !== 'ec2') continue;
+    for (const resource of group.resources ?? []) {
+      const account = accountOf(resource);
+      const region = regionOf(resource);
+      if (account) accounts.set(account, (accounts.get(account) ?? 0) + 1);
+      regions.set(region, (regions.get(region) ?? 0) + 1);
+    }
+  }
+  const listed = (map) => [...map.entries()]
+    .map(([id, total]) => ({ id, total }))
+    .sort((a, b) => b.total - a.total || a.id.localeCompare(b.id));
+  return {
+    accounts: listed(accounts),
+    regions: listed(regions),
+    unavailable: [
+      { id: 'vpc', label: 'VPC',
+        why: '어느 자원이 어느 VPC에 있는지가 평가에 없다. 인벤토리는 ARN·유형·리전·계정·태그만 '
+          + '돌려주고, EC2 인스턴스 ARN은 VPC를 담지 않는다.' },
+      { id: 'subnet', label: '서브넷',
+        why: '같은 이유다. 서브넷 소속도 평가에 없어서, 고르더라도 걸러낼 근거가 없다.' },
+    ],
+  };
+}
+
+/** Whether a row survives the filter. A null or empty list on a dimension means 전체. */
+function keeps(filter, resource) {
+  if (!filter) return true;
+  const { accounts, regions } = filter;
+  if (accounts?.length && !accounts.includes(accountOf(resource))) return false;
+  if (regions?.length && !regions.includes(regionOf(resource))) return false;
+  return true;
+}
+
+/** Whether any dimension of the filter actually narrows anything. */
+export function filterActive(filter) {
+  return !!(filter && ((filter.accounts?.length ?? 0) > 0 || (filter.regions?.length ?? 0) > 0));
+}
+
 function countLabel(total, truncated) {
   return truncated ? `${total.toLocaleString()}개 이상†` : `${total.toLocaleString()}개`;
 }
@@ -297,8 +368,9 @@ function marks(group) {
  * Deterministic: two calls on the same input deepEqual. Nothing in here reads a clock, a random
  * source, or the length of a capped list.
  */
-export function ec2Scene(policy, accountId) {
+export function ec2Scene(policy, accountId, filter = null) {
   if (topologyPolicy(policy?.identifier) === null) return null;
+  const narrowed = filterActive(filter);
 
   // ---- pass 1: bucket ---------------------------------------------------------------------
   const frameCount = new Map();      // frame id -> { total, truncated, marks }
@@ -312,14 +384,22 @@ export function ec2Scene(policy, accountId) {
   let kinds = 0;
 
   for (const group of policy?.affected ?? []) {
-    const total = Number(group?.total) || 0;
+    // Unfiltered, the count is the field the container publishes. Filtered, it is the rows that
+    // survive - which is the SAME quantity, because assess.py sets total to the number of rows it
+    // kept. Both are floors when `truncated` says the enumeration hit its cap, and the picture
+    // marks them the same way, so narrowing the view never changes how sure a number is.
+    const kept = (group?.resources ?? []).filter((r) => keeps(filter, r));
+    const total = narrowed ? kept.length : (Number(group?.total) || 0);
     if (group?.service !== 'ec2') {
-      if (total > 0) omittedBy.set(group.service, (omittedBy.get(group.service) ?? 0) + total);
+      // An omitted service is counted whole. Its rows are not EC2 rows and the account/region
+      // filter is about the picture, not about the footnote that says what the picture leaves out.
+      const whole = Number(group?.total) || 0;
+      if (whole > 0) omittedBy.set(group.service, (omittedBy.get(group.service) ?? 0) + whole);
       continue;
     }
     if (total === 0) continue;
     if (group.truncated) truncated = true;
-    for (const resource of group.resources ?? []) regions.add(regionOf(resource));
+    for (const resource of kept) regions.add(regionOf(resource));
     measured += total;
     kinds += 1;
 
@@ -433,7 +513,9 @@ export function ec2Scene(policy, accountId) {
     if (f.id === 'az') return '평가에 없음';
     if (f.id === 'cloud') return accountId ? `계정 ${accountId}` : null;
     if (f.id === 'region') {
-      if (regionList.length === 0) return '이 정책이 닿는 EC2 자원이 없다';
+      if (regionList.length === 0) {
+        return narrowed ? '고른 조건에 맞는 자원이 없다' : '이 정책이 닿는 EC2 자원이 없다';
+      }
       const head = regionList.length === 1 ? regionList[0]
         : `${regionList.length}곳 — ${regionList.slice(0, 3).join(', ')}`
           + (regionList.length > 3 ? ` 외 ${regionList.length - 3}곳` : '');
@@ -561,6 +643,9 @@ export function ec2Scene(policy, accountId) {
     measured,
     kinds,
     empty: kinds === 0,
+    /** Whether a filter narrowed this scene. The screen says so; an empty picture that is empty
+     *  BECAUSE of a filter must not read as "this policy reaches nothing". */
+    narrowed,
   };
 }
 
@@ -583,7 +668,14 @@ export const CAPTION =
  */
 export function sceneSummary(scene) {
   if (!scene) return '';
-  if (scene.empty) return '이 정책이 닿는 EC2 자원이 인벤토리에 없다. 계정과 리전 테두리만 그렸다.';
+  // An empty picture has two causes and they are not the same news. "This policy reaches nothing"
+  // is a fact about the policy; "the filter matched nothing" is a fact about the filter, and
+  // reading the second as the first would tell an approver a policy is harmless.
+  if (scene.empty) {
+    return scene.narrowed
+      ? '고른 계정과 리전에 이 정책이 닿는 EC2 자원이 없다. 계정과 리전 테두리만 그렸다.'
+      : '이 정책이 닿는 EC2 자원이 인벤토리에 없다. 계정과 리전 테두리만 그렸다.';
+  }
   const placed = [
     ...scene.frames.filter((f) => f.count).map((f) => `${f.label} ${f.count}`),
     ...scene.slots.map((s) => `${s.label.join(' ')} ${s.count}`),
