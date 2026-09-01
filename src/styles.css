@@ -1430,3 +1430,79 @@ dialog.picker.block-path { width: min(44rem, 94vw); }
 .task-failures > h3 { margin: 0 0 0.4rem; color: var(--warn); font-size: 0.95rem; }
 .task-failures p { margin: 0.4rem 0; }
 .task-failures .decision { margin-top: 0.6rem; }
+
+/* ---- 이 정책이 닿는 자원의 구성도 --------------------------------------------------------------- */
+/* The impact assessment as a picture. Every colour here is an existing token; the four AWS group
+   colours the frames use are emitted by server/ec2Topology.js as SVG stroke attributes, so the
+   banner above stays true and a future theme has one place to override them. */
+
+/* The trigger row, mirroring .inline-preview's shape so the closed state already says what is
+   inside the window and an approver can skip opening it. */
+.topology-launch { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0.6rem 0 0; }
+
+/* Two class names, so specificity (0,2,1) beats .policy-dialog's and this rule does not depend on
+   where in the file it lands. It sets width and NOTHING else: .policy-dialog's padding:0 is what
+   makes the backdrop-click test (e.target === dialog) work, and a padding here would silently
+   break closing the window by clicking outside it. */
+dialog.policy-dialog.topology-dialog { width: min(796px, 94vw); }
+
+/* The scroll is on the FIGURE, not on the dialog, so the two caveat paragraphs above it stay on
+   screen while the picture moves - a caveat that scrolls away is a caveat somebody screenshots
+   without. A wide picture scrolls rather than shrinking: legible-and-scrollable beats
+   fits-and-unreadable, and shrinking an 11px Korean label is not a smaller picture but an
+   unreadable one. */
+.topology-figure {
+  max-height: 62vh;
+  overflow: auto;
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+/* A scrollable box no keyboard can reach is a box half the readers cannot read. */
+.topology-figure:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.topology-svg { display: block; max-width: none; }
+
+.topo-ground { fill: var(--bg); }
+/* Frames whose family colour this module has no business asserting: the availability zone, the
+   subnet, Amazon EBS. */
+.topo-frame { fill: none; stroke: var(--border); }
+.topo-frame-text { font-size: 12px; }
+.topo-frame-label { fill: var(--text); font-weight: 600; }
+.topo-frame-count { fill: var(--muted); }
+/* "평가에 없음", "인벤토리에 없음", the region list. Quieter than a count, because it is the
+   absence of one. */
+.topo-frame-note { fill: var(--muted); font-size: 11px; }
+/* The reference architecture draws this label red. AWS's own #DD344C is below the contrast floor
+   the rest of this page clears for 12px text, so the border keeps AWS's colour and the label takes
+   the palette's own red. */
+.topo-frame-sg .topo-frame-label { fill: var(--danger); }
+
+.topo-slot { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
+/* The panel force-opens a policy block holding a sensitive resource, so a picture that dropped
+   that thread would be the one regression that matters. It runs on two channels - the outline and
+   the count's colour - and the table under the figure carries it a third time. */
+.topo-slot-sensitive { stroke: var(--danger); stroke-width: 2; }
+.topo-slot-label { fill: var(--text); font-size: 11px; font-weight: 600; }
+.topo-slot-count { fill: var(--muted); font-size: 10px; }
+.topo-slot-count.sensitive { fill: var(--danger); }
+/* Painted under the internet gateway plate, knocking the VPC border out from under it: the
+   position is then the statement, and no arrow has to say "this is the boundary". */
+.topo-erase { fill: var(--bg); }
+
+/* Dashed and grey, like every canonical relation in this picture. */
+.topo-link { fill: none; stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.topo-link-marker { fill: var(--border); }
+.topo-link-label { fill: var(--muted); font-size: 11px; }
+.topo-foot { fill: var(--muted); font-size: 11px; }
+
+.topology-legend { margin: 8px 0; padding-left: 1.1rem; font-size: 12px; color: var(--muted); line-height: 1.7; }
+.topology-legend strong { color: var(--text); }
+
+/* The picture's equal, and the thing that makes it falsifiable: every number in the drawing has a
+   row here, and a type the drawing has no place for has a row here too. */
+.topology-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+.topology-table th, .topology-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.topology-table th { color: var(--muted); font-weight: 600; }
+.topology-table td.sensitive { color: var(--danger); }
+.topology-table td.none { color: var(--muted); }
