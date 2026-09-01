@@ -12,14 +12,15 @@
 //   Arch_*_64    EVERY one. The impact panel renders an icon per service and it cannot know in
 //                advance which services an account holds, so the whole set has to be on disk.
 //                291 files, ~450 KB, and a viewer downloads only the handful one assessment shows.
-//   Group_*_32   THE THREE the resource diagram frames with. AWS-Cloud, Region, VPC.
+//   Group_*_32   THE THREE the resource diagrams frame with. AWS-Cloud, Region, VPC.
 //   Res_*_48     AN ALLOWLIST, named one by one below.
 //
 // The last two are allowlisted rather than taken wholesale because the deck carries ~470 Res_*
-// icons and the diagram names eighteen. Extracting all of them would put 450 files in a diff
-// nobody can review to add a picture that renders eighteen, and every unused file is one more
+// icons and the three diagrams name twenty-one. Extracting all of them would put 450 files in a
+// diff nobody can review to add pictures that render twenty-one, and every unused file is one more
 // thing a future reader has to decide is dead. A named list is a list somebody can check against
-// server/ec2Topology.js - and its test does exactly that, in both directions.
+// the topology specs - and server/topology.test.js does exactly that, in both directions, over the
+// union of all three.
 //
 // The Res_ and Group_ output names are PREFIXED (Res-*.svg, Group-*.svg) so they cannot collide
 // with the Arch-derived names the service table keys on: Res_Amazon-EC2_Instance_48 and
@@ -32,10 +33,10 @@
 // The 21 MB deck IS committed (both at the repository root and under the extracted directory) but
 // is NOT read at build time - this tool is run by hand when AWS releases a new icon set, and the
 // extracted SVGs are what CI and the page use. server/serviceIcons.test.js and
-// server/ec2Topology.test.js each pin that every icon their table names exists on disk, so an
+// server/topology.test.js each pin that every icon their table names exists on disk, so an
 // extraction that drops one fails the suite rather than a page rendering a blank box.
 
-/** The frames the resource diagram draws. Public-subnet_32 and Private-subnet_32 are deliberately
+/** The frames the resource diagrams draw. Public-subnet_32 and Private-subnet_32 are deliberately
  *  NOT here: the assessment carries nothing that tells a public subnet from a private one, and a
  *  badge asserting either would be the dashboard claiming a routing fact it never measured. */
 const GROUPS = ['AWS-Cloud', 'Region', 'Virtual-private-cloud-VPC'];
@@ -70,7 +71,7 @@ const PINNED = {
   'Amazon-Kinesis-Video-Streams': 'Icon-Architecture-BG/64/Analytics',
 };
 
-/** One per node the diagram draws, keyed to server/ec2Topology.js's EC2_SLOTS. Res_Internet_48 is
+/** One per node the three diagrams draw, keyed to the specs' slot tables. Res_Internet_48 is
  *  the far end of the diagram's one link. There is no key-pair, launch-template, placement-group,
  *  host, fleet, reserved-instances, dhcp-options, prefix-list, security-group-rule,
  *  capacity-reservation or transit-gateway glyph in this deck - those twelve slots render their
@@ -96,6 +97,9 @@ const RESOURCES = [
   'Amazon-Elastic-Block-Store_Volume',
   'Amazon-Elastic-Block-Store_Snapshot',
   'Internet',
+  'AWS-Lambda_Lambda-Function',
+  'Amazon-Elastic-Container-Service_Service',
+  'Amazon-Elastic-Container-Service_Task',
 ];
 
 import { mkdirSync, writeFileSync } from 'node:fs';

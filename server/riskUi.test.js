@@ -1639,11 +1639,13 @@ test('the window says the five things that make the picture honest', () => {
   // Modelled on 'the per-policy view says the three things that make it honest', and for the same
   // reason: the needle is the rendered Korean sentence, not an identifier that live render code
   // would keep alive after the sentence was deleted.
-  assert.match(TOPOLOGY, /어느 인스턴스가 어느 서브넷에 있는지[\s\S]{0,200}들어 있지 않다/,
+  assert.match(TOPOLOGY, /유형에 따라 \{spec\.words\.title\} 구성에서 놓이는 자리/,
                'nothing tells the reader the placement is by type rather than measured');
+  assert.match(TOPOLOGY, /이 평가가 유형 단위로 답하는 질문이 아니다/,
+               'nothing says the per-resource placement is not what the assessment answers');
   assert.ok(TOPOLOGY.includes('테두리의 포함 관계는 측정한 것이 아니'),
             'the frames are not declared canonical rather than measured');
-  assert.ok(TOPOLOGY.includes('가용 영역은 평가에\n            없어서') || TOPOLOGY.includes('가용 영역은 평가에'),
+  assert.ok(TOPOLOGY.includes('가용 영역은'),
             'the window does not say why the availability zone frame carries no count');
   assert.ok(TOPOLOGY.includes('리전을 합친 수'),
             'the picture does not say the counts are added across regions');
@@ -1686,7 +1688,7 @@ test('the caveats cannot scroll away from the picture', () => {
 test('the component computes no coordinates of its own', () => {
   // Every number in the drawing comes out of a module with unit tests behind it. A coordinate
   // computed here is a coordinate nothing checks.
-  assert.ok(/ec2Topology\.js/.test(TOPOLOGY) && /ec2Scene\(/.test(TOPOLOGY),
+  assert.ok(/topology\.js/.test(TOPOLOGY) && /sceneOf\(/.test(TOPOLOGY),
             'the component no longer gets its scene from the tested module');
   assert.ok(!/const [A-Z_]{3,} = \d+;/.test(TOPOLOGY_CODE),
             'the component grew a geometry constant of its own, so two files can disagree');
@@ -1805,21 +1807,29 @@ test('the stylesheet still sets no literal colour', () => {
     .replace(/\/\*[\s\S]*?\*\//g, '');
   assert.ok(!/#[0-9a-fA-F]{6}/.test(section),
             'an AWS deck colour was hard-coded into the stylesheet instead of being emitted as an '
-            + 'inline style by server/ec2Topology.js');
+            + 'inline style by the topology spec');
 });
 
 test('the solid and dashed grammar is stated where it is used', () => {
-  assert.match(TOPOLOGY, /실선[\s\S]{0,300}점선/,
+  // Three pictures now, and the 점선 line is written once per picture because what the dashes
+  // mean differs - EC2 asserts a scoping order, Lambda and ECS assert that two frames do NOT
+  // contain each other. The 실선 line is shared and comes first in all three.
+  assert.match(TOPOLOGY, /실선[\s\S]{0,1200}점선/,
                'the legend no longer distinguishes measured containment from canonical placement');
+  assert.equal((TOPOLOGY.match(/<strong>점선 테두리<\/strong>/g) ?? []).length, 3,
+               'a picture lost its dashed-border sentence, or gained one it does not draw');
   assert.ok(TOPOLOGY.includes('하한'), 'truncation does not reach the screen');
   assert.ok(TOPOLOGY.includes('민감'), 'sensitivity does not reach the screen');
 });
 
-test('the filter offers all four dimensions a container records', () => {
+test('the filter offers every dimension a container records', () => {
   assert.ok(TOPOLOGY.includes('<FilterBar'), 'the window offers no way to narrow the picture');
   assert.ok(TOPOLOGY.includes('전체'), 'there is no way back to the unnarrowed picture');
-  for (const dimension of ['계정', '리전', 'VPC', '서브넷']) {
-    assert.ok(TOPOLOGY.includes(`label="${dimension}"`), `${dimension} cannot be chosen`);
+  // Rendered through one helper now, so the pin is on the call rather than on a literal prop - a
+  // dimension a spec does not name is not offered, and that decision belongs in the spec.
+  for (const [id, label] of [['accounts', '계정'], ['regions', '리전'], ['clusters', '클러스터'],
+                             ['vpcs', 'VPC'], ['subnets', '서브넷']]) {
+    assert.ok(TOPOLOGY.includes(`dimension("${id}", "${label}")`), `${label} cannot be chosen`);
   }
   // The component reads the facets the module computed and never a raw row field of its own: the
   // three meanings of a missing vpc_id are decided in one tested place.
@@ -1852,8 +1862,9 @@ test('a narrowed picture says what it left out', () => {
 test('the closed-state summary describes the policy, not the filter', () => {
   // The line beside the button is a fact about the policy. Letting a filter set inside the window
   // change it would make the panel disagree with itself for a reason nobody outside can see.
-  const summary = TOPOLOGY.slice(TOPOLOGY.indexOf('EC2 자원 {'), TOPOLOGY.indexOf('</span>',
-                                 TOPOLOGY.indexOf('EC2 자원 {')));
+  const at = TOPOLOGY.indexOf('{spec.words.title} 자원 {whole.kinds}');
+  assert.ok(at > 0, 'the closed-state line is gone, or no longer takes its noun from the spec');
+  const summary = TOPOLOGY.slice(at, TOPOLOGY.indexOf('</span>', at));
   assert.ok(summary.includes('whole.kinds') && summary.includes('whole.measured'),
             'the closed-state line reads the filtered scene, so collapsing the window leaves a '
             + 'count that describes a filter nobody can see');

@@ -1,23 +1,28 @@
-// The scene behind "구성도 보기": where each EC2 resource TYPE sits in a canonical EC2 picture.
+// The scene behind "구성도 보기": where each resource TYPE sits in a canonical picture of its
+// service. The ENGINE - one layout, three pictures. What each picture contains is a spec:
+// topologyEc2.js, topologyLambda.js, topologyEcs.js.
 //
 // The impact panel answers "what does this policy reach" as a list, and a list of thirty resource
 // types with counts beside them is a true answer nobody reads. This builds the same answer as a
 // picture - and the whole difficulty of a picture is that it says more than a list does. A list
 // that puts 인스턴스 and 볼륨 on consecutive lines has claimed nothing about them. A picture that
-// puts an instance inside a security group inside a subnet inside a VPC has claimed four things,
-// and this assessment measured none of them.
+// puts an instance inside a security group inside a subnet inside a VPC has claimed four things.
 //
-// So: NOTHING HERE DECIDES WHAT A RESOURCE IS CONNECTED TO. What the module places is the TYPE, at
-// the position AWS scopes that type to, which is a fact about EC2 rather than a fact about this
-// account. The assessment now records which VPC and which subnet a row sits in - the querier looks
-// it up - but it still says nothing about which volume is attached to which instance, and a
-// per-resource membership is not what a per-type picture draws anyway: the four dimensions below
-// are where those two fields do their work, as a filter over the same picture. Every frame that is
-// not measured is drawn dashed and says so, the caption inside the viewBox says so, and
-// sceneSummary() says so to a screen reader.
+// So: NOTHING HERE DECIDES WHAT A RESOURCE IS CONNECTED TO. What a picture places is the TYPE, at
+// the position AWS scopes that type to, which is a fact about the service rather than a fact about
+// this account. Every frame that is not measured is drawn dashed and says so, the caption inside
+// the viewBox says so, and sceneSummary() says so to a screen reader.
 //
-// The one thing the nesting DOES assert is AWS's own scoping - Region ⊃ VPC ⊃ 가용 영역 ⊃ 서브넷 -
-// and that is a claim the legend makes out loud, so it has to be right. See EC2_FRAMES.
+// THE ONE THING THE NESTING ASSERTS IS AWS'S SCOPING, and the legend claims it out loud, so each
+// spec has to get it right. EC2: 리전 ⊃ VPC ⊃ 가용 영역 ⊃ 서브넷. Lambda and ECS: neither has an
+// availability zone or a subnet frame at all, because a function attaches ENIs in up to sixteen
+// subnets and a service in up to sixteen, and one plate in one subnet box would name one of them.
+//
+// A MEASUREMENT NEVER CHANGES A BORDER. Solid means the assessment established the containment -
+// the account and the region, and nothing else in any picture. Where a lookup DID measure
+// something (a function's VPC, a service's subnets) the number goes on the label band and the
+// border stays dashed, because "N functions are in a VPC" is not "these functions are in THIS
+// VPC" and a solid box would say the second.
 //
 // The unit of the picture is the type, never the resource. One slot per ImpactGroup: one glyph, the
 // Korean type name, the count. Never forty instance icons, never an ARN, never i-0abc… That is a
@@ -38,28 +43,34 @@
 // hit. Never from group.resources.length here: the two agree today, and reading the field the
 // container publishes is what keeps them agreeing if the container ever learns a true count.
 //
-// WHAT CAN BE FILTERED. Four dimensions, and every one of them is a fact a container recorded.
+// WHAT CAN BE FILTERED. Every dimension is a fact a container recorded, never one inferred here.
 //
 //   account, region   on every row, from the ARN and from Resource Explorer's own Region
-//   vpc, subnet       on the EC2 types AWS scopes to one, from vpc_id / subnet_id
+//   vpc, subnet       from vpc_id / subnet_id / subnet_ids, on the types the querier can place
+//   cluster           ECS only, from the cluster ARN DescribeServices returned
 //
-// The last two arrive because the querier now asks for them. Resource Explorer's Search returns an
-// ARN, a type, a region, an owning account and Properties-as-tags, and no EC2 ARN carries a VPC -
-// so impact/inventory.py's _with_placement joins the membership on from the EC2 Describe calls,
-// one per operation per region that holds a row of the matching type.
+// None of those are in an ARN and Resource Explorer returns none of them, so impact/inventory.py
+// joins each on from a service call - one Describe per type per region for EC2, one paginated
+// ListFunctions per region for Lambda, batched DescribeServices for ECS.
 //
-// A row with no vpc_id is THREE different things and the filter must not flatten them: the type has
-// no VPC at all (a volume, a snapshot, an AMI, a key pair - zone- or region-scoped, and the absence
-// is a fact about EC2), the resource is genuinely unattached, or the querier could not look it up
-// (the permission is optional, and an older assessment predates the field entirely). unplaced()
-// counts the rows in that state so the screen can say how much of the picture a VPC filter cannot
-// speak for, rather than silently dropping them.
+// A ROW THE LOOKUP DID NOT PLACE IS NOT A ROW OUTSIDE THE VPC, and the filter must never flatten
+// the two. The type may have no VPC at all (a volume, a snapshot, an AMI - and, ordinarily, a
+// Lambda function: not being in a VPC is the common case and a fact); the lookup may have been
+// denied, budgeted out or unable to route its call; or the assessment may predate the field.
+// facets() counts each state so the screen can say how much of the picture a VPC filter cannot
+// speak for, rather than silently dropping it - and below COVERAGE_FLOOR the dimension is not
+// offered at all, because a chip reading `vpc-0abc 12` for a VPC that holds 120 is worse than no
+// chip.
 //
 // Plain JS with a .d.ts beside it, same arrangement as blockPath.js and for the same reason:
-// node --test is the one test runner here and it cannot load TypeScript. Korean appears in this
-// file only as label strings, which is where bucketPolicyGrade.js already puts them.
+// node --test is the one test runner here and it cannot load TypeScript. Korean lives in the
+// specs, not here; what Korean this file has left is the handful of sentences whose shape is the
+// same in every picture, and each takes its nouns from spec.words.
 
 import { parseArn } from './arn.js';
+import EC2_SPEC from './topologyEc2.js';
+import LAMBDA_SPEC from './topologyLambda.js';
+import ECS_SPEC from './topologyEcs.js';
 
 // ---- geometry ---------------------------------------------------------------------------------
 //
@@ -68,8 +79,6 @@ import { parseArn } from './arn.js';
 // coordinate in the output was computed here.
 
 export const SCENE_W = 760;
-/** Room above the cloud frame for the internet glyph and its label. */
-export const SKY = 72;
 export const FRAME_PAD = 14;
 /** The label band inside a frame: badge, label, count, note. */
 export const FRAME_HEAD = 32;
@@ -79,8 +88,9 @@ export const SLOT_H = 104;
 export const SLOT_GAP = 12;
 export const ICON = 48;
 export const BADGE = 20;
-/** One slot plus two pads: the EBS frame holds a single column. */
-export const EBS_W = 148;
+/** One slot plus two pads. A frame with `span: 'column'` is this wide - the width the Amazon EBS
+ *  frame has always had, named for what it holds rather than for the one frame that wanted it. */
+export const COLUMN_W = SLOT_W + 2 * FRAME_PAD;
 export const FOOT_LINE = 16;
 export const FOOT_PAD = 8;
 /** Label units that fit SLOT_W - 8 at 11px. See textUnits. */
@@ -94,210 +104,57 @@ export const LABEL_BUDGET = 10.1;
  */
 export const FOOT_BUDGET = (SCENE_W - 2 * FOOT_PAD) * LABEL_BUDGET / (SLOT_W - 8);
 
+/**
+ * Below this share of the rows a dimension applies to, the dimension is not offered - it is
+ * explained.
+ *
+ * A control that appears to narrow and narrows badly is the failure the filter exists to avoid,
+ * and "narrows badly" is not only the zero case. Under the ECS call budget a partly answered
+ * lookup is the ORDINARY state: with 40 of 400 services placed, a chip reading `vpc-0abc 12` is a
+ * VPC that probably holds 120, and an approver who narrows to it reads a tenth of the picture as
+ * the whole of it. Below the floor the dimension moves to `unavailable` WITH the fraction, which
+ * is a control that says why it is not there rather than one that quietly lies.
+ */
+export const COVERAGE_FLOOR = 0.5;
+
 // ---- what gets a picture ----------------------------------------------------------------------
 
+/** Every picture this module can draw, by kind. */
+export const TOPOLOGIES = { ec2: EC2_SPEC, lambda: LAMBDA_SPEC, ecs: ECS_SPEC };
+
 /**
- * The policies this module draws. One entry today, on the operator's direction: EC2 first.
+ * The policies this module draws, and which picture each gets.
  *
- * Widening it is one entry here plus one test - and a second canonical topology, which is the part
- * that is not free. A load balancer or an RDS instance has a place in an EC2 picture only by
- * accident, and a diagram that invents a home for a resource is the exact failure this feature
- * exists to avoid.
+ * Three entries, on the operator's direction: EC2 first, then Lambda and ECS. Widening it further
+ * is one entry here plus one spec - and a spec is a CANONICAL TOPOLOGY, which is the part that is
+ * not free. A load balancer has a place in an ECS picture only by accident, and a diagram that
+ * invents a home for a resource is the exact failure this feature exists to avoid.
  */
-export const DIAGRAMMED_POLICIES = new Set(['AmazonEC2FullAccess']);
+export const DIAGRAMMED_POLICIES = new Map([
+  ['AmazonEC2FullAccess', 'ec2'],
+  ['AWSLambda_FullAccess', 'lambda'],
+  ['AmazonECS_FullAccess', 'ecs'],
+]);
 
 /**
  * Which topology a policy identifier gets, or null.
  *
  * The identifier is an ARN for an AWS managed policy and a bare name for a customer managed one,
- * so it is reduced the same way policyName() reduces it for display. Exact set membership, never a
- * substring test: MyAmazonEC2FullAccessCopy is a different policy and gets no picture.
+ * so it is reduced the same way policyName() reduces it for display. Exact map membership, never a
+ * substring test: MyAmazonECS_FullAccessCopy is a different policy - possibly one that grants
+ * something else entirely - and gets no picture.
  */
 export function topologyPolicy(identifier) {
   if (typeof identifier !== 'string' || !identifier) return null;
   const name = parseArn(identifier)?.name ?? identifier;
-  return DIAGRAMMED_POLICIES.has(name) ? 'ec2' : null;
+  return DIAGRAMMED_POLICIES.get(name) ?? null;
 }
 
-// ---- the frames -------------------------------------------------------------------------------
-
-/**
- * The skeleton, outermost first. Painter order IS array order, so a frame is drawn before anything
- * it contains.
- *
- * parent is explicit rather than implied by nesting so that re-parenting - moving Amazon EBS under
- * the VPC, inserting a frame between two others - is a one-line edit that the layout walk, the
- * class names and the tests all follow automatically.
- *
- * THE NESTING IS AWS'S SCOPING, and it is the one thing in this picture that is a claim rather than
- * a placement: the legend says a dashed border is "EC2의 일반적인 자리다", which asserts canonicity,
- * so an arrangement AWS does not have is a false statement however clearly it is marked unmeasured.
- * Region ⊃ VPC ⊃ 가용 영역 ⊃ 서브넷: a VPC spans every availability zone in its region, and the
- * SUBNET is the zone-scoped thing. The picture had it the other way round - VPC inside 가용 영역 -
- * which told every reader that a VPC, and everything the policy reaches inside it, sits in one zone.
- *
- * 보안 그룹 is the one frame that is NOT a scoping box: a security group is VPC-scoped and attaches
- * to network interfaces rather than containing anything. It is drawn around what it protects
- * because that is how AWS's own reference architectures draw it, which makes it a drawing
- * convention rather than a scope - and the frame's colour is AWS's convention colour for it, not a
- * danger signal. See the legend, which now says so, and frame.sensitiveLabel, which is where a
- * sensitive count on a frame actually lands.
- *
- * The stroke literals are AWS's own group-badge fills, read out of the extracted files rather than
- * remembered: Group-AWS-Cloud.svg #242F3E, Group-Region.svg #00A4A6,
- * Group-Virtual-private-cloud-VPC.svg #8C4FFF. They live here rather than in styles.css because
- * that file's banner says nothing below it sets a literal colour, and as SVG presentation
- * attributes they stay overridable from CSS if a theme ever wants them.
- *
- * stroke: null means the renderer's class supplies var(--border) - the frames whose family colour
- * this module has no business asserting. The subnet is the one worth naming: AWS's public-subnet
- * badge is green and its private-subnet badge is teal, and the assessment carries nothing that
- * tells them apart, so drawing either would be claiming a routing fact nobody measured.
- */
-export const EC2_FRAMES = [
-  { id: 'cloud', parent: null, arrange: 'stack', rail: null, type: null,
-    stroke: '#242F3E', width: 2, dashed: false, badge: 'Group-AWS-Cloud.svg' },
-  { id: 'region', parent: 'cloud', arrange: 'stack', rail: 'regional', type: null,
-    stroke: '#00A4A6', width: 2, dashed: false, badge: 'Group-Region.svg' },
-  { id: 'vpc', parent: 'region', arrange: 'stack', rail: 'network', type: 'ec2:vpc',
-    stroke: '#8C4FFF', width: 2, dashed: true, badge: 'Group-Virtual-private-cloud-VPC.svg' },
-  { id: 'az', parent: 'vpc', arrange: 'row', rail: null, type: null,
-    stroke: null, width: 1.5, dashed: true, badge: null },
-  { id: 'subnet', parent: 'az', arrange: 'stack', rail: null, type: 'ec2:subnet',
-    stroke: null, width: 1.5, dashed: true, badge: null },
-  { id: 'sg', parent: 'subnet', arrange: 'stack', rail: 'compute', type: 'ec2:security-group',
-    stroke: '#DD344C', width: 1.5, dashed: true, badge: null },
-  { id: 'ebs', parent: 'az', arrange: 'stack', rail: 'storage', type: null,
-    stroke: null, width: 1.5, dashed: true, badge: null },
-];
-
-/** Frame id -> the Korean name on its label band. Here rather than in the component, beside the
- *  slot labels, so one file answers "what does this picture call things". */
-export const FRAME_LABEL = {
-  cloud: 'AWS 클라우드',
-  region: '리전',
-  az: '가용 영역',
-  vpc: 'VPC',
-  subnet: '서브넷',
-  sg: '보안 그룹',
-  ebs: 'Amazon EBS',
-};
-
-/** Rail id -> the frame whose interior it fills. `edge` is the exception and carries no frame: its
- *  one slot straddles the VPC border rather than sitting inside anything. */
-export const EC2_RAILS = {
-  regional: { frame: 'region' },
-  network: { frame: 'vpc' },
-  compute: { frame: 'sg' },
-  storage: { frame: 'ebs' },
-  edge: { frame: 'vpc', straddle: true },
-};
-
-// ---- the slot table ---------------------------------------------------------------------------
-
-/**
- * resource_type -> where it goes and what it is called.
- *
- *   kind 'frame'  the type IS one of the frames; its count lands on that frame's label band
- *   kind 'node'   the type is a plate in a rail
- *
- * A type's rail is decided by where AWS actually scopes the resource, which is an AWS fact. The
- * icon is a separate question with a separate answer: `icon: null` is honest and common - the deck
- * has no glyph for a key pair, a launch template, a placement group, a dedicated host, an EC2
- * fleet, a reserved instance, a DHCP option set, a prefix list, a security group rule or an
- * egress-only internet gateway, and those slots render their label alone.
- *
- * Only Res_*_48 glyphs, never an Arch_*_64: an Arch icon is an 80x80 opaque coloured tile and one
- * of those among 48px transparent line glyphs makes a node read as more important than its
- * neighbours for no reason a reader could name.
- *
- * A type absent from this table is NOT drawn. It is named in a foot line under the picture and it
- * gets a row in the table beside it - never nudged into a neighbouring frame, because a raw
- * resource_type does not fit a 120px cell and a mis-sized plate is how a drifted type gets a home
- * it did not earn.
- */
-export const EC2_SLOTS = {
-  // The three the frames themselves stand for.
-  'ec2:vpc': { kind: 'frame', frame: 'vpc' },
-  'ec2:subnet': { kind: 'frame', frame: 'subnet' },
-  'ec2:security-group': { kind: 'frame', frame: 'sg' },
-
-  // The boundary. Straddles the VPC border, which is what an internet gateway is.
-  'ec2:internet-gateway': { kind: 'node', rail: 'edge', label: ['인터넷 게이트웨이'],
-    icon: 'Res-Amazon-VPC-Internet-Gateway.svg' },
-
-  // Inside the security group, because that is what a security group is attached to.
-  'ec2:instance': { kind: 'node', rail: 'compute', label: ['인스턴스'],
-    icon: 'Res-Amazon-EC2-Instance.svg' },
-  'ec2:network-interface': { kind: 'node', rail: 'compute', label: ['네트워크 인터페이스'],
-    icon: 'Res-Amazon-VPC-Elastic-Network-Interface.svg' },
-  'ec2:security-group-rule': { kind: 'node', rail: 'compute', label: ['보안 그룹 규칙'],
-    icon: null },
-
-  // VPC-scoped. Res-Amazon-VPC-Router stands for ec2:route-table: the deck has no route-table
-  // glyph, and the VPC router is the same product's own glyph for the same function.
-  'ec2:route-table': { kind: 'node', rail: 'network', label: ['라우팅 테이블'],
-    icon: 'Res-Amazon-VPC-Router.svg' },
-  'ec2:natgateway': { kind: 'node', rail: 'network', label: ['NAT 게이트웨이'],
-    icon: 'Res-Amazon-VPC-NAT-Gateway.svg' },
-  'ec2:network-acl': { kind: 'node', rail: 'network', label: ['네트워크 ACL'],
-    icon: 'Res-Amazon-VPC-Network-Access-Control-List.svg' },
-  'ec2:vpc-endpoint': { kind: 'node', rail: 'network', label: ['VPC 엔드포인트'],
-    icon: 'Res-Amazon-VPC-Endpoints.svg' },
-  'ec2:vpc-peering-connection': { kind: 'node', rail: 'network', label: ['VPC 피어링 연결'],
-    icon: 'Res-Amazon-VPC-Peering-Connection.svg' },
-  'ec2:elastic-ip': { kind: 'node', rail: 'network', label: ['탄력적 IP'],
-    icon: 'Res-Amazon-EC2-Elastic-IP-Address.svg' },
-  'ec2:vpn-gateway': { kind: 'node', rail: 'network', label: ['가상 프라이빗', '게이트웨이'],
-    icon: 'Res-Amazon-VPC-VPN-Gateway.svg' },
-  'ec2:vpn-connection': { kind: 'node', rail: 'network', label: ['사이트 간 VPN 연결'],
-    icon: 'Res-Amazon-VPC-VPN-Connection.svg' },
-  'ec2:egress-only-internet-gateway': { kind: 'node', rail: 'network',
-    label: ['송신 전용', '인터넷 게이트웨이'], icon: null },
-  'ec2:dhcp-options': { kind: 'node', rail: 'network', label: ['DHCP 옵션 세트'], icon: null },
-  'ec2:prefix-list': { kind: 'node', rail: 'network', label: ['접두사 목록'], icon: null },
-
-  // Availability-zone scoped, which is why the Amazon EBS frame sits beside the 서브넷 inside the
-  // 가용 영역. A volume is created in one zone and can only attach to an instance in that zone.
-  'ec2:volume': { kind: 'node', rail: 'storage', label: ['볼륨'],
-    icon: 'Res-Amazon-Elastic-Block-Store-Volume.svg' },
-
-  // Region-scoped: these belong to no VPC and no availability zone.
-  //
-  // ec2:snapshot is here and NOT in the storage rail beside the volume it was taken from, which is
-  // the placement a reader expects and the one AWS does not have: a snapshot is stored in Amazon S3
-  // and scoped to the region (arn:aws:ec2:<region>::snapshot/snap-…, no account, no zone), so
-  // drawing it inside 가용 영역 said snapshot blast radius is zone-bounded the way a volume's is.
-  //
-  // ec2:spot-instances-request and ec2:customer-gateway are here for the same reason and were in
-  // the two tightest frames in the picture: a spot request is a region-scoped request that has not
-  // become an instance yet, and a customer gateway is the AWS-side record of an ON-PREMISES device,
-  // which is the one thing in EC2 that is definitionally outside every VPC.
-  'ec2:snapshot': { kind: 'node', rail: 'regional', label: ['스냅샷'],
-    icon: 'Res-Amazon-Elastic-Block-Store-Snapshot.svg' },
-  'ec2:spot-instances-request': { kind: 'node', rail: 'regional', label: ['스팟 인스턴스 요청'],
-    icon: 'Res-Amazon-EC2-Spot-Instance.svg' },
-  'ec2:customer-gateway': { kind: 'node', rail: 'regional', label: ['고객 게이트웨이'],
-    icon: 'Res-Amazon-VPC-Customer-Gateway.svg' },
-  'ec2:image': { kind: 'node', rail: 'regional', label: ['AMI'], icon: 'Res-Amazon-EC2-AMI.svg' },
-  'ec2:key-pair': { kind: 'node', rail: 'regional', label: ['키 페어'], icon: null },
-  'ec2:launch-template': { kind: 'node', rail: 'regional', label: ['시작 템플릿'], icon: null },
-  'ec2:placement-group': { kind: 'node', rail: 'regional', label: ['배치 그룹'], icon: null },
-  'ec2:capacity-reservation': { kind: 'node', rail: 'regional', label: ['용량 예약'], icon: null },
-  'ec2:host': { kind: 'node', rail: 'regional', label: ['전용 호스트'], icon: null },
-  'ec2:fleet': { kind: 'node', rail: 'regional', label: ['EC2 플릿'], icon: null },
-  'ec2:reserved-instances': { kind: 'node', rail: 'regional', label: ['예약 인스턴스'], icon: null },
-  'ec2:transit-gateway': { kind: 'node', rail: 'regional', label: ['전송 게이트웨이'], icon: null },
-  'ec2:transit-gateway-attachment': { kind: 'node', rail: 'regional', label: ['전송 GW 연결'],
-    icon: 'Res-AWS-Transit-Gateway-Attachment.svg' },
-};
-
-/**
- * EC2 types the neighbouring tables know about that this one deliberately does not draw, with the
- * reason. The drift test reads it: a type in RESOURCE_TYPE_ICONS or the console table must be
- * either a slot here or a written decision here, never an omission nobody made.
- */
-export const NO_SLOT = {};
+/** The spec a policy is drawn with, or null. */
+export function specOf(policy) {
+  const kind = topologyPolicy(policy?.identifier);
+  return kind ? TOPOLOGIES[kind] : null;
+}
 
 // ---- measuring text ---------------------------------------------------------------------------
 
@@ -306,7 +163,7 @@ export const NO_SLOT = {};
  *
  * SVG <text> does not wrap and gives no signal when it overflows, so a label longer than its cell
  * hangs out of the VPC frame in production and nothing anywhere says so. A test runs this over
- * every label in EC2_SLOTS, which turns "somebody will notice eventually" into a failing suite the
+ * every label in every spec, which turns "somebody will notice eventually" into a failing suite the
  * moment a slot with a long Korean name is added.
  *
  * Hangul syllables are full-width and Latin is not, so the two are counted differently. This is an
@@ -347,82 +204,148 @@ function vpcOf(resource) {
   return typeof value === 'string' && value ? value : '';
 }
 
-/** The subnet a row sits in. Empty for the types AWS does not scope to one. */
-function subnetOf(resource) {
-  const value = resource?.subnet_id;
+/**
+ * Every subnet a row NAMES, as a list.
+ *
+ * Two shapes, because they are two different facts and the querier records them separately. An EC2
+ * instance IS IN one subnet (`subnet_id`, a string). A Lambda function or an ECS service ATTACHES
+ * network interfaces IN up to sixteen (`subnet_ids`, a list) - AwsVpcConfiguration.subnets and
+ * VpcConfigResponse.SubnetIds are both max 16. Folding the plural into the singular would make the
+ * one type that can answer "which subnet is this in" unable to.
+ *
+ * A list of one for the EC2 shape, so `keeps` treats both identically and the EC2 filter behaves
+ * exactly as it did.
+ */
+function subnetsOf(resource) {
+  const one = resource?.subnet_id;
+  if (typeof one === 'string' && one) return [one];
+  const many = resource?.subnet_ids;
+  return Array.isArray(many) ? many.filter((v) => typeof v === 'string' && v) : [];
+}
+
+/** The ECS cluster a row belongs to, as the querier recorded it. Empty for every other picture. */
+function clusterOf(resource) {
+  const value = resource?.cluster;
   return typeof value === 'string' && value ? value : '';
 }
 
 /**
- * The EC2 types AWS scopes to a VPC, mirroring PLACEMENT in impact/inventory.py.
+ * What the placement lookup said about this row, or ''.
  *
- * Here so an unplaced volume is not counted against the placement lookup: a volume has no VPC by
- * definition, and folding it into "rows with no VPC recorded" would report a permission failure
- * that did not happen. The two tables are pinned against each other by a test.
+ * Seven states and an absent key is one of them - see impact/inventory.py's Resource.placement.
+ * The engine reads it for two things only: how many rows were measured into a VPC, and how many
+ * were not measured and WHY. It never turns it into a position.
  */
-export const VPC_SCOPED = new Set([
-  'ec2:vpc', 'ec2:instance', 'ec2:subnet', 'ec2:security-group', 'ec2:network-interface',
-  'ec2:natgateway', 'ec2:route-table', 'ec2:network-acl', 'ec2:vpc-endpoint',
-  'ec2:internet-gateway',
-]);
+function placementOf(resource) {
+  const value = resource?.placement;
+  return typeof value === 'string' && value ? value : '';
+}
 
 /**
  * What the picture can be narrowed by, and what it cannot.
  *
  * accounts and regions are read off the rows the container enumerated, so they are facts about this
- * assessment and the counts beside them are the same counts the picture draws.
+ * assessment and the counts beside them are the same counts the picture draws. vpc, subnet and
+ * cluster are read off the fields the placement lookup wrote, which is the same rule one step
+ * removed: the container measured them, not this file.
  *
  * unavailable names the dimensions somebody will reasonably ask for and this data cannot serve,
  * WITH the reason. It is a field rather than a sentence on the screen because the screen must not
  * be the place that decides which filters are honest: a control that narrows nothing while looking
  * like it narrowed something is worse than no control, and worse still than a control that says
- * why it is not there.
+ * why it is not there. Two ways in: a spec names it statically (ECS's 시작 유형 and 보안 그룹), or
+ * the lookup answered for too little of the picture - see COVERAGE_FLOOR.
  */
 export function facets(policy) {
-  if (topologyPolicy(policy?.identifier) === null) return null;
-  const accounts = new Map();
-  const regions = new Map();
-  const vpcs = new Map();
-  const subnets = new Map();
+  const spec = specOf(policy);
+  if (!spec) return null;
+  const counts = { accounts: new Map(), regions: new Map(), vpcs: new Map(), subnets: new Map(),
+                   clusters: new Map() };
   // Rows the placement lookup says nothing about. Counted rather than dropped: a VPC filter cannot
   // speak for them, and how many there are is the difference between "this VPC holds little" and
   // "most of this picture has no VPC recorded".
   let unplaced = 0;
   let placeable = 0;
+  // Per dimension: how many of the rows it applies to it can actually speak for. COVERAGE_FLOOR
+  // reads this. `applicable` is the rows a dimension could ever answer for - every row for account
+  // and region, only the placeable types for the rest - so a volume having no VPC is not counted
+  // against the lookup.
+  const known = { accounts: 0, regions: 0, vpcs: 0, subnets: 0, clusters: 0 };
+  const applicable = { accounts: 0, regions: 0, vpcs: 0, subnets: 0, clusters: 0 };
+  const bump = (map, key) => map.set(key, (map.get(key) ?? 0) + 1);
+
   for (const group of policy?.affected ?? []) {
-    if (group?.service !== 'ec2') continue;
-    const scoped = VPC_SCOPED.has(group.resource_type);
+    if (!spec.services.has(group?.service)) continue;
+    const scoped = spec.placeable.has(group.resource_type);
     for (const resource of group.resources ?? []) {
       const account = accountOf(resource);
       const region = regionOf(resource);
-      if (account) accounts.set(account, (accounts.get(account) ?? 0) + 1);
-      regions.set(region, (regions.get(region) ?? 0) + 1);
+      applicable.accounts += 1;
+      applicable.regions += 1;
+      if (account) { bump(counts.accounts, account); known.accounts += 1; }
+      bump(counts.regions, region);
+      known.regions += 1;
       if (!scoped) continue;
       placeable += 1;
+      applicable.vpcs += 1;
+      applicable.subnets += 1;
+      applicable.clusters += 1;
       const vpc = vpcOf(resource);
-      const subnet = subnetOf(resource);
-      if (vpc) vpcs.set(vpc, (vpcs.get(vpc) ?? 0) + 1); else unplaced += 1;
-      if (subnet) subnets.set(subnet, (subnets.get(subnet) ?? 0) + 1);
+      const cluster = clusterOf(resource);
+      const subnets = subnetsOf(resource);
+      // "AWS says this is in no VPC" is an ANSWER and not a gap, and the difference decides both
+      // numbers below. A Lambda function that is not VPC-attached is the ORDINARY case; counting
+      // it as a row the lookup could not speak for would put the VPC dimension under the coverage
+      // floor on a perfectly measured account, and would print "배치를 읽지 못했다" about eight
+      // functions AWS answered about. EC2 rows carry no `placement` at all, so for them this
+      // reduces to "has a vpc_id" and both numbers are exactly what they have always been.
+      const answered = !!vpc || placementOf(resource) === 'none';
+      if (vpc) bump(counts.vpcs, vpc);
+      if (answered) known.vpcs += 1; else unplaced += 1;
+      // A resource that names several subnets is counted under each of them, so the subnet chips
+      // can sum to more than the row count. The screen says so; folding it to one would be picking
+      // one of sixteen.
+      for (const subnet of subnets) bump(counts.subnets, subnet);
+      if (subnets.length > 0 || answered) known.subnets += 1;
+      if (cluster) { bump(counts.clusters, cluster); known.clusters += 1; }
     }
   }
+
   const listed = (map) => [...map.entries()]
     .map(([id, total]) => ({ id, total }))
     .sort((a, b) => b.total - a.total || a.id.localeCompare(b.id));
-  return {
-    accounts: listed(accounts),
-    regions: listed(regions),
-    vpcs: listed(vpcs),
-    subnets: listed(subnets),
-    unplaced,
-    placeable,
-    unavailable: [],
-  };
+
+  const out = { accounts: [], regions: [], vpcs: [], subnets: [], clusters: [] };
+  const coverage = {};
+  const unavailable = [...(spec.unavailable ?? [])];
+  for (const dimension of ['accounts', 'regions', 'vpcs', 'subnets', 'clusters']) {
+    coverage[dimension] = { known: known[dimension], applicable: applicable[dimension] };
+    if (!spec.dimensions.includes(dimension)) continue;
+    if (applicable[dimension] > 0
+        && known[dimension] / applicable[dimension] < COVERAGE_FLOOR) {
+      unavailable.push({
+        id: dimension,
+        label: DIMENSION_LABEL[dimension],
+        why: `배치를 확인한 것이 ${known[dimension].toLocaleString()}개뿐이라 `
+             + `(해당 ${applicable[dimension].toLocaleString()}개 중) 좁히면 그림의 수와 어긋난다.`,
+      });
+      continue;
+    }
+    out[dimension] = listed(counts[dimension]);
+  }
+  return { ...out, unplaced, placeable, coverage, unavailable };
 }
+
+/** The Korean name of each filter dimension. Used for the unavailable notice; the bar's own labels
+ *  come from the same table in the component. */
+export const DIMENSION_LABEL = {
+  accounts: '계정', regions: '리전', vpcs: 'VPC', subnets: '서브넷', clusters: '클러스터',
+};
 
 /** Whether a row survives the filter. A null or empty list on a dimension means 전체. */
 function keeps(filter, resource) {
   if (!filter) return true;
-  const { accounts, regions, vpcs, subnets } = filter;
+  const { accounts, regions, vpcs, subnets, clusters } = filter;
   if (accounts?.length && !accounts.includes(accountOf(resource))) return false;
   if (regions?.length && !regions.includes(regionOf(resource))) return false;
   // A row with no vpc_id does NOT match a chosen VPC. It is not evidence of belonging and it is not
@@ -430,14 +353,17 @@ function keeps(filter, resource) {
   // me what is in vpc-0abc" is the rows that say they are, with a count of the rows that say
   // nothing shown beside the picture rather than folded into it.
   if (vpcs?.length && !vpcs.includes(vpcOf(resource))) return false;
-  if (subnets?.length && !subnets.includes(subnetOf(resource))) return false;
+  // Intersection, because a resource can name several subnets. For the EC2 shape - one subnet -
+  // this is exactly the membership test it always was.
+  if (subnets?.length && !subnetsOf(resource).some((s) => subnets.includes(s))) return false;
+  if (clusters?.length && !clusters.includes(clusterOf(resource))) return false;
   return true;
 }
 
 /** Whether any dimension of the filter actually narrows anything. */
 export function filterActive(filter) {
   if (!filter) return false;
-  return ['accounts', 'regions', 'vpcs', 'subnets']
+  return ['accounts', 'regions', 'vpcs', 'subnets', 'clusters']
     .some((dimension) => (filter[dimension]?.length ?? 0) > 0);
 }
 
@@ -451,33 +377,42 @@ function marks(group) {
 }
 
 /**
- * Whether the assessment actually enumerated EC2, from its own coverage record.
+ * Whether the assessment actually enumerated the services this picture is about.
  *
- * The distinction this exists to keep: a policy with no EC2 groups and a policy whose EC2
- * enumeration FAILED are the same document shape - `affected` simply has no ec2 entry - and they
+ * The distinction this exists to keep: a policy with no groups for its own service and a policy
+ * whose enumeration FAILED are the same document shape - `affected` simply has no entry - and they
  * are opposite news. assess.py appends the service to `services_failed` and skips it, so the
  * assessment says which happened and the picture has to ask.
+ *
+ * False when ANY of the picture's services failed, because a picture missing part of its subject
+ * must not present the rest as the whole.
  */
-export function ec2Enumerated(coverage) {
-  if (!coverage) return true;
-  if ((coverage.services_failed ?? []).includes('ec2')) return false;
-  return !coverage.services_enumerated?.ec2?.error;
+export function enumeratedFor(policy, coverage) {
+  const spec = specOf(policy);
+  if (!spec || !coverage) return true;
+  const failed = new Set(coverage.services_failed ?? []);
+  for (const service of spec.services) {
+    if (failed.has(service)) return false;
+    if (coverage.services_enumerated?.[service]?.error) return false;
+  }
+  return true;
 }
 
 /**
  * Everything the window draws, or null when this policy gets no picture.
  *
- * `enumerated` false means the EC2 lookup failed, and the empty picture then says SO rather than
- * saying the policy reaches nothing. An empty scene is otherwise indistinguishable from a failed
- * one, and for AmazonEC2FullAccess - ec2:* on everything - "이 정책이 닿는 EC2 자원이 없다" is the
- * most load-bearing false sentence this feature can produce, printed over a picture somebody
+ * `enumerated` false means the lookup failed, and the empty picture then says SO rather than saying
+ * the policy reaches nothing. An empty scene is otherwise indistinguishable from a failed one, and
+ * for AmazonEC2FullAccess - ec2:* on everything - "이 정책이 닿는 EC2 자원이 없다" is the most
+ * load-bearing false sentence this feature can produce, printed over a picture somebody
  * screenshots. The panel says the same thing in a banner the modal covers.
  *
  * Deterministic: two calls on the same input deepEqual. Nothing in here reads a clock, a random
  * source, or the length of a capped list.
  */
-export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
-  if (topologyPolicy(policy?.identifier) === null) return null;
+export function scene(policy, accountId, filter = null, enumerated = true) {
+  const spec = specOf(policy);
+  if (!spec) return null;
   const narrowed = filterActive(filter);
 
   // ---- pass 1: bucket ---------------------------------------------------------------------
@@ -490,6 +425,14 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
   let truncated = false;
   let measured = 0;
   let kinds = 0;
+  // How many rows the QUERIER measured into a VPC, and how many it did not measure and why. This
+  // is the only number in the picture that comes from a service call rather than from Resource
+  // Explorer, and it is what a `measure: 'placed'` frame's existence and its band count are made
+  // of. `unmeasured` is kept broken out by reason rather than summed, because "the lookup was
+  // denied", "the budget ran out" and "AWS says this is in no VPC" are three different things and
+  // the screen says a different sentence for each.
+  let placed = 0;
+  const unmeasured = {};
 
   for (const group of policy?.affected ?? []) {
     // Unfiltered, the count is the field the container publishes. Filtered, it is the rows that
@@ -498,9 +441,9 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
     // marks them the same way, so narrowing the view never changes how sure a number is.
     const kept = (group?.resources ?? []).filter((r) => keeps(filter, r));
     const total = narrowed ? kept.length : (Number(group?.total) || 0);
-    if (group?.service !== 'ec2') {
-      // An omitted service is counted whole. Its rows are not EC2 rows and the account/region
-      // filter is about the picture, not about the footnote that says what the picture leaves out.
+    if (!spec.services.has(group?.service)) {
+      // An omitted service is counted whole. Its rows are not this picture's rows and the
+      // account/region filter is about the picture, not about the footnote naming what it omits.
       const whole = Number(group?.total) || 0;
       if (whole > 0) omittedBy.set(group.service, (omittedBy.get(group.service) ?? 0) + whole);
       continue;
@@ -508,10 +451,26 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
     if (total === 0) continue;
     if (group.truncated) truncated = true;
     for (const resource of kept) regions.add(regionOf(resource));
+    if (spec.placeable.has(group.resource_type)) {
+      for (const resource of kept) {
+        const state = placementOf(resource);
+        // 'none' is an ANSWER - AWS said this resource is in no VPC - so it is neither placed nor
+        // unmeasured. For a Lambda function that is the ordinary case, and counting it as a gap
+        // would print "배치를 읽지 못했다" about rows the lookup answered perfectly well about.
+        if (state === 'vpc') placed += 1;
+        else if (state !== 'none') {
+          // No recorded state at all is 'unanswered', which covers an assessment written before
+          // the lookup existed and a row the lookup skipped - and reading either as "AWS says this
+          // is in no VPC" would draw a missing permission as an architectural fact.
+          const reason = state || 'unanswered';
+          unmeasured[reason] = (unmeasured[reason] ?? 0) + 1;
+        }
+      }
+    }
     measured += total;
     kinds += 1;
 
-    const slot = EC2_SLOTS[group.resource_type];
+    const slot = spec.slots[group.resource_type];
     const row = {
       resourceType: group.resource_type,
       total,
@@ -527,11 +486,11 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
       // A frame-kind type is called by its FRAME's name - 보안 그룹, not ec2:security-group - so
       // the row, the drawing and the screen-reader summary all say the same word about it. The
       // table beside the picture prints the raw resource_type in its own column either way.
-      label: slot?.kind === 'frame' ? [FRAME_LABEL[slot.frame]]
+      label: slot?.kind === 'frame' ? [spec.frameLabel[slot.frame]]
         : (slot?.label ?? [group.resource_type]),
       icon: slot?.kind === 'node' ? (slot.icon ?? null) : null,
       rail: slot?.kind === 'node' ? slot.rail : null,
-      frame: slot?.kind === 'frame' ? slot.frame : (slot ? EC2_RAILS[slot.rail].frame : null),
+      frame: slot?.kind === 'frame' ? slot.frame : (slot ? spec.rails[slot.rail].frame : null),
       countLabel: countLabel(total, !!group.truncated) + marks(group),
     };
     rows.push(row);
@@ -551,7 +510,7 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
   // Stable order everywhere: the slot table's own insertion order inside a rail, biggest first in
   // the lists. Two calls must agree, and a reader comparing two screenshots must not see a
   // reshuffle that means nothing.
-  const order = Object.keys(EC2_SLOTS);
+  const order = Object.keys(spec.slots);
   for (const list of railSlots.values()) {
     list.sort((a, b) => order.indexOf(a.resourceType) - order.indexOf(b.resourceType));
   }
@@ -563,17 +522,27 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
     .sort((a, b) => b.total - a.total || a.service.localeCompare(b.service));
 
   // ---- pass 2: which frames are drawn, and how tall ----------------------------------------
-  const byId = new Map(EC2_FRAMES.map((f) => [f.id, f]));
-  const kidsOf = (id) => EC2_FRAMES.filter((f) => f.parent === id);
+  const byId = new Map(spec.frames.map((f) => [f.id, f]));
+  const kidsOf = (id) => spec.frames.filter((f) => f.parent === id);
   const railOf = (f) => (f.rail ? (railSlots.get(f.rail) ?? []) : []);
-  const igw = (railSlots.get('edge') ?? [])[0] ?? null;
+  const root = spec.frames.find((f) => f.parent === null);
+  // The rail whose one slot sits ON a border rather than inside a frame, if this picture has one.
+  // EC2's internet gateway is the only one in the codebase, and it stays the only one: a plate
+  // crossing a border is the loudest sentence available here, and it can only be said about
+  // something that is definitionally on that border.
+  const straddleRail = Object.entries(spec.rails).find(([, r]) => r.straddle)?.[0] ?? null;
+  const straddler = straddleRail ? ((railSlots.get(straddleRail) ?? [])[0] ?? null) : null;
 
   const drawn = (f) => {
-    if (f.id === 'cloud' || f.id === 'region') return true;
-    // The availability zone is a position, not a measurement - it is drawn whenever anything it
-    // would contain is, and it never carries a count.
-    if (f.id === 'az') return kidsOf('az').some(drawn);
-    if (f.id === 'vpc' && igw) return true;
+    if (f.always) return true;
+    // A ghost frame is a position, not a measurement - it is drawn whenever anything it would
+    // contain is, and it never carries a count.
+    if (f.ghost) return kidsOf(f.id).some(drawn);
+    // A `measure` frame is drawn only when the querier actually placed something into it. An empty
+    // VPC box on a Lambda picture would say every function is VPC-attached, when the ordinary
+    // account has none - which is the single biggest lie available in that picture.
+    if (f.measure === 'placed') return placed > 0;
+    if (straddler && straddleRail && spec.rails[straddleRail].frame === f.id) return true;
     return frameCount.has(f.id) || railOf(f).length > 0 || kidsOf(f.id).some(drawn);
   };
 
@@ -585,16 +554,25 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
     const inner = x + FRAME_PAD;
     const innerW = w - 2 * FRAME_PAD;
     const kids = kidsOf(f.id).filter(drawn);
-    if (f.arrange === 'row' && kids.length === 2) {
-      // The only row in the picture: the VPC and Amazon EBS side by side. EBS keeps a fixed width
-      // because it holds one column; the VPC takes the rest.
-      place(kids[0], inner, innerW - EBS_W - RAIL_GAP);
-      place(kids[1], inner + (innerW - EBS_W - RAIL_GAP) + RAIL_GAP, EBS_W);
+    if (f.arrange === 'row') {
+      // Side by side. A kid with `span: 'column'` keeps a fixed width because it holds exactly one
+      // column of slots; the rest share what is left. For EC2's one row - 서브넷 beside Amazon EBS
+      // - this is byte-identical to the two-kid split it replaces.
+      const fixed = kids.filter((k) => k.span).length;
+      const spent = fixed * COLUMN_W + RAIL_GAP * Math.max(0, kids.length - 1);
+      const free = Math.max(1, kids.length - fixed);
+      const share = (innerW - spent) / free;
+      let cursor = inner;
+      for (const kid of kids) {
+        const kw = kid.span ? COLUMN_W : share;
+        place(kid, cursor, kw);
+        cursor += kw + RAIL_GAP;
+      }
       return;
     }
-    for (const kid of kids) place(kid, inner, kid.id === 'ebs' ? EBS_W : innerW);
+    for (const kid of kids) place(kid, inner, kid.span ? COLUMN_W : innerW);
   };
-  place(byId.get('cloud'), 1, SCENE_W - 2);
+  place(root, 1, SCENE_W - 2);
 
   const cols = (f) => Math.max(1, Math.floor(
     (widthOf.get(f.id) - 2 * FRAME_PAD + SLOT_GAP) / (SLOT_W + SLOT_GAP),
@@ -608,11 +586,11 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
   // because a detached gateway exists - a 46px frame under a 104px plate. The plate erases what it
   // covers, so each of those was a picture with a border rubbed out and a plate lying across it.
   //
-  // Read off EC2_RAILS rather than written as 'vpc', so moving the straddle to another border moves
-  // its clearance with it.
-  const straddled = EC2_RAILS.edge.frame;
-  const straddleParent = byId.get(straddled)?.parent ?? null;
-  const headOf = (f) => (igw && (f.id === straddled || f.id === straddleParent)
+  // Read off the rails table rather than written as 'vpc', so moving the straddle to another
+  // border moves its clearance with it - and a picture with no straddle reserves nothing.
+  const straddled = straddleRail ? spec.rails[straddleRail].frame : null;
+  const straddleParent = straddled ? (byId.get(straddled)?.parent ?? null) : null;
+  const headOf = (f) => (straddler && (f.id === straddled || f.id === straddleParent)
     ? FRAME_HEAD + SLOT_H / 2 : FRAME_HEAD);
 
   const heightOf = new Map();
@@ -626,20 +604,24 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
     const contentH = kidsH + (kidsH > 0 && rail > 0 ? RAIL_GAP : 0) + rail;
     heightOf.set(f.id, headOf(f) + contentH + FRAME_PAD);
   };
-  measure(byId.get('cloud'));
+  measure(root);
 
   // ---- pass 3: place ------------------------------------------------------------------------
   const frames = [];
   const slots = [];
   const regionList = [...regions].sort();
 
+  // The notes every picture shares, in the order they are decided. The region band is here rather
+  // than in a spec because its three empty states - lookup failed, filter matched nothing, policy
+  // reaches nothing - are the same distinction in every picture and must not drift between them;
+  // only the noun changes, and it comes from the spec.
   const noteFor = (f) => {
-    if (f.id === 'az') return '평가에 없음';
-    if (f.id === 'cloud') return accountId ? `계정 ${accountId}` : null;
-    if (f.id === 'region') {
+    if (f.id === root.id) return accountId ? `계정 ${accountId}` : null;
+    if (f.rail && spec.rails[f.rail]?.frame === f.id && f.longNote) {
       if (regionList.length === 0) {
-        if (!enumerated) return 'EC2 조회가 실패했다 — 없다는 뜻이 아니다';
-        return narrowed ? '고른 조건에 맞는 자원이 없다' : '이 정책이 닿는 EC2 자원이 없다';
+        if (!enumerated) return `${spec.words.subject} 조회가 실패했다 — 없다는 뜻이 아니다`;
+        return narrowed ? '고른 조건에 맞는 자원이 없다'
+          : `이 정책이 닿는 ${spec.words.subject} 자원이 없다`;
       }
       const head = regionList.length === 1 ? regionList[0]
         : `${regionList.length}곳 — ${regionList.slice(0, 3).join(', ')}`
@@ -648,6 +630,10 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
       // group was cut, the set of regions is a floor exactly as the counts are.
       return truncated ? `${head} · 잘린 목록에서 읽은 것이다` : head;
     }
+    // Then whatever this picture wants to say about its own frames, and only then the engine's
+    // fallback for a frame that IS a type and has none of it.
+    const own = spec.noteFor?.(f.id, { accountId, narrowed, enumerated, placed, regionList });
+    if (own) return own;
     if (f.type && !frameCount.has(f.id)) return '인벤토리에 없음';
     return null;
   };
@@ -667,14 +653,20 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
    */
   const bandBudget = (f) => (widthOf.get(f.id) - (f.badge ? 34 : 10) - FRAME_PAD)
     * (LABEL_BUDGET / (SLOT_W - 8)) * (11 / 12);
-  const bandText = (f, count, sensitive) => `${FRAME_LABEL[f.id]}`
+  const bandText = (f, count, sensitive) => `${spec.frameLabel[f.id]}`
     + (count ? `  ${count.countLabel}` : '') + (sensitive > 0 ? `  민감 ${sensitive}개` : '');
 
   const walk = (f, y) => {
     const x = xOf.get(f.id);
     const w = widthOf.get(f.id);
     const h = heightOf.get(f.id);
-    const count = frameCount.get(f.id) ?? null;
+    // A frame's count is either its own type's count, or - for a frame that exists BECAUSE the
+    // querier measured something into it - what the querier measured. The second is the only
+    // number in any picture that came from a service call rather than from Resource Explorer, and
+    // it says what it is: `배치 확인`, not a resource count.
+    const count = f.measure === 'placed'
+      ? { countLabel: `${placed.toLocaleString()}개 배치 확인`, sensitive: 0 }
+      : (frameCount.get(f.id) ?? null);
     const sensitive = count?.sensitive ?? 0;
     const raw = noteFor(f);
     // Dropped rather than clipped when it does not fit. Every note this module writes is also said
@@ -688,18 +680,18 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
       width: f.width,
       dashed: f.dashed,
       badge: f.badge,
-      label: FRAME_LABEL[f.id],
+      label: spec.frameLabel[f.id],
       count: count ? count.countLabel : null,
       note,
       // The one frame that is a position rather than a measurement. The renderer fades it, so the
       // field carries the intention its name always claimed instead of being read by one assertion.
-      ghost: f.id === 'az',
+      ghost: !!f.ghost,
       // A COUNT, not a flag, and rendered on the label band rather than as a border colour. The
       // legend promised 빨간 테두리 for sensitive resources while the 보안 그룹 border was red
       // unconditionally and no frame ever turned red for being sensitive - false in both
       // directions, and the sensitive thread is the one the panel force-opens the block for.
       sensitive,
-      title: f.id === 'region' && regionList.length > 3 ? regionList.join(', ') : null,
+      title: f.longNote && regionList.length > 3 ? regionList.join(', ') : null,
     });
 
     const kids = kidsOf(f.id).filter(drawn);
@@ -740,33 +732,36 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
       });
     }
   };
-  walk(byId.get('cloud'), SKY);
+  walk(root, spec.sky);
 
-  // The one slot that is not inside anything. Its vertical centre sits exactly on the VPC border,
-  // which is what an internet gateway is; `erase` tells the renderer to knock the border out from
-  // under it so position itself is the statement and no arrow has to say "this is the boundary".
+  // The one slot that is not inside anything. Its vertical centre sits exactly on the border it
+  // straddles, which is what an internet gateway IS; `erase` tells the renderer to knock the border
+  // out from under it so position itself is the statement and no arrow has to say "this is the
+  // boundary". Only EC2 has one, and only because a gateway is definitionally on that border - a
+  // straddle asserted about a population that is partly measured would be the loudest sentence in
+  // the picture said about a fraction.
   let link = null;
-  if (igw) {
-    const vpc = frames.find((f) => f.id === 'vpc');
-    const x = vpc.x + vpc.w - FRAME_PAD - SLOT_W;
-    const y = vpc.y - SLOT_H / 2;
+  if (straddler) {
+    const host = frames.find((f) => f.id === straddled);
+    const x = host.x + host.w - FRAME_PAD - SLOT_W;
+    const y = host.y - SLOT_H / 2;
     slots.push({
-      key: 'ec2:internet-gateway',
-      resourceType: 'ec2:internet-gateway',
+      key: straddler.resourceType,
+      resourceType: straddler.resourceType,
       x, y, w: SLOT_W, h: SLOT_H,
-      icon: igw.icon,
-      label: igw.label,
-      count: igw.countLabel,
-      sensitive: igw.sensitive > 0,
+      icon: straddler.icon,
+      label: straddler.label,
+      count: straddler.countLabel,
+      sensitive: straddler.sensitive > 0,
       erase: true,
-      title: `${igw.resourceType} — ${igw.label.join(' ')} ${igw.countLabel}`,
+      title: `${straddler.resourceType} — ${straddler.label.join(' ')} ${straddler.countLabel}`,
     });
-    const cx = x + SLOT_W / 2;
-    link = { cx, glyph: 'Res-Internet.svg', label: '인터넷', from: 62, to: y };
+    const spelt = spec.rails[straddleRail].link;
+    if (spelt) link = { cx: x + SLOT_W / 2, ...spelt, to: y };
   }
 
   // ---- the foot lines, inside the viewBox ---------------------------------------------------
-  const cloud = frames.find((f) => f.id === 'cloud');
+  const cloud = frames.find((f) => f.id === root.id);
   const foot = [];
   if (unslotted.length > 0) {
     // Named until the line fits, and `외 N종` absorbs whatever that drops. This is the one line in
@@ -803,9 +798,9 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
     // promises. The omitted services are listed in their own paragraph after it.
     foot.push(`그림 밖 서비스 ${omitted.length}종 · 자원 ${total.toLocaleString()}개 — 표 아래에 적었다.`);
   }
-  foot.push(CAPTION);
+  foot.push(spec.words.caption);
 
-  const footTop = SKY + cloud.h + FOOT_PAD;
+  const footTop = spec.sky + cloud.h + FOOT_PAD;
   const footLines = foot.map((text, i) => ({ text, y: footTop + 12 + i * FOOT_LINE }));
 
   return {
@@ -826,21 +821,30 @@ export function ec2Scene(policy, accountId, filter = null, enumerated = true) {
     /** Whether a filter narrowed this scene. The screen says so; an empty picture that is empty
      *  BECAUSE of a filter must not read as "this policy reaches nothing". */
     narrowed,
-    /** Whether the assessment enumerated EC2 at all. False makes an empty picture a statement
-     *  about the LOOKUP and not about the policy - see ec2Enumerated. */
+    /** Whether the assessment enumerated this picture's services at all. False makes an empty
+     *  picture a statement about the LOOKUP and not about the policy - see enumeratedFor. */
     enumerated,
+    /** Which picture this is. */
+    kind: spec.kind,
+    /** Rows the querier measured into a VPC. 0 for EC2, which records no `placement`. */
+    placed,
+    /** Rows of a placeable type the lookup did not place, by reason. */
+    unmeasured,
   };
 }
 
 /**
- * The caption, drawn INSIDE the viewBox.
+ * The caption a picture draws INSIDE its viewBox, from the one noun that differs between them.
  *
  * The no-identities rule is a strong screenshot defence and not a complete one - a 보안 그룹 frame
  * with 인스턴스 40개 in it still travels - and a caveat in the dialog body does not travel with a
- * cropped image. This one does.
+ * cropped image. This one does. Built here rather than written out three times so the sentence
+ * cannot drift between pictures; `home` is the only part a spec supplies, and EC2's reproduces the
+ * string this caption has always carried, character for character.
  */
-export const CAPTION =
-  '이 그림은 자원 유형을 EC2의 일반적인 자리에 놓은 것이다. 테두리의 포함 관계는 측정한 것이 아니다.';
+export function captionFor(home) {
+  return `이 그림은 자원 유형을 ${home}에 놓은 것이다. 테두리의 포함 관계는 측정한 것이 아니다.`;
+}
 
 /**
  * The <desc>: what a screen reader is told the picture shows.
@@ -855,14 +859,15 @@ export function sceneSummary(scene) {
   // is a fact about the policy; "the filter matched nothing" is a fact about the filter; "the
   // lookup failed" is a fact about the assessment, and reading either of the last two as the first
   // would tell an approver a policy is harmless.
+  const words = TOPOLOGIES[scene.kind]?.words ?? { subject: '', summaryHome: '' };
   if (scene.empty) {
     if (!scene.enumerated) {
-      return '이 평가는 EC2 자원 조회에 실패해서 그릴 것이 없다. 이 정책이 닿는 자원이 없다는 '
-        + '뜻이 아니다. 계정과 리전 테두리만 그렸다.';
+      return `이 평가는 ${words.subject} 자원 조회에 실패해서 그릴 것이 없다. 이 정책이 닿는 `
+        + '자원이 없다는 뜻이 아니다. 계정과 리전 테두리만 그렸다.';
     }
     return scene.narrowed
-      ? '고른 계정과 리전에 이 정책이 닿는 EC2 자원이 없다. 계정과 리전 테두리만 그렸다.'
-      : '이 정책이 닿는 EC2 자원이 인벤토리에 없다. 계정과 리전 테두리만 그렸다.';
+      ? `고른 계정과 리전에 이 정책이 닿는 ${words.subject} 자원이 없다. 계정과 리전 테두리만 그렸다.`
+      : `이 정책이 닿는 ${words.subject} 자원이 인벤토리에 없다. 계정과 리전 테두리만 그렸다.`;
   }
   const placed = [
     ...scene.frames.filter((f) => f.count).map((f) => `${f.label} ${f.count}`),
@@ -875,8 +880,9 @@ export function sceneSummary(scene) {
   const region = scene.regions.length === 1
     ? `리전은 ${scene.regions[0]} 한 곳이다`
     : `리전은 ${scene.regions.length}곳이고 개수는 그것을 합친 수다`;
-  return `이 정책이 닿는 EC2 자원 ${scene.kinds}종 ${scene.measured.toLocaleString()}개${floor}를 `
-    + `EC2의 일반적인 구성 자리에 놓은 그림이다. ${region}`
+  return `이 정책이 닿는 ${words.subject} 자원 ${scene.kinds}종 `
+    + `${scene.measured.toLocaleString()}개${floor}를 `
+    + `${words.summaryHome}에 놓은 그림이다. ${region}`
     + (scene.truncated ? ' — 잘린 목록에서 읽은 하한이다' : '') + '. '
     // Empty when every type this policy reaches is one the picture has no slot for: the sentence
     // then said "…자리에 놓은 그림이다" about nothing placed, and left a stray ". ." behind it.
