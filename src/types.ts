@@ -570,10 +570,20 @@ export interface DecisionPayload {
   /**
    * The administrator's restriction, as DECISIONS rather than as a policy document.
    *
-   * Omitted for an ordinary approval, which is the common case. When present the server checks each
-   * one against the impact assessment and the inline writer recomposes the statements from them -
-   * this page never authors IAM content, because a defect here could otherwise write Allow where
-   * somebody clicked Deny.
+   * Three-valued, and the third value is why the key is optional rather than defaulted:
+   *
+   *   omitted   this decision says nothing about restrictions. The inline writer carries the family
+   *             standing on the permission set forward untouched, which is the common case
+   *   []        this decision says there are none. The writer CLEARS the family
+   *   [...]     this decision says exactly these. The writer replaces the family with them
+   *
+   * Sent empty only when the page's restriction editor was live - when it could show what already
+   * stands. An empty form on a screen that could not read the family in force means "nobody could
+   * fill this in", not "there are none", and the key is omitted there.
+   *
+   * When present the server checks each entry against the impact assessment and the inline writer
+   * recomposes the statements from them - this page never authors IAM content, because a defect
+   * here could otherwise write Allow where somebody clicked Deny.
    */
   restrictions?: Restriction[];
 
@@ -593,8 +603,10 @@ export interface DecisionPayload {
 
   /**
    * The digest of the assessment the restriction was chosen from. Required whenever restrictions is
-   * non-empty: a restriction names resources, and this is what establishes that the assessment which
-   * enumerated them is the one that is still stored.
+   * present AT ALL, empty included: a named restriction names resources and this establishes that
+   * the assessment which enumerated them is the one still stored, and a clear is written against the
+   * inline_sha256 that travels inside that same assessment - the digest of the restriction family
+   * the approver was shown, which the writer refuses to replace if it has moved.
    */
   expected_impact_sha256?: string;
 

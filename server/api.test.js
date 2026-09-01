@@ -344,7 +344,49 @@ test('a plain approval carries the digest when it matches, so the fence can be d
   });
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.equal(marker.expected_impact_sha256, ASSESSMENT_SHA);
-  assert.equal('restrictions' in marker, false, 'an empty restriction list must not travel');
+  assert.equal('restrictions' in marker, false,
+               'an approval that says nothing about restrictions must not carry the key - the '
+               + 'writer would read the empty list as a clear');
+});
+
+test('an approval that clears every restriction carries the empty list', async () => {
+  // The other half of the test above, and the distinction the whole three-valued shape exists for.
+  // An absent key says "this decision says nothing" and the writer carries the family forward; []
+  // says "there are none" and the writer clears it. Omitting the empty list is what made emptying
+  // the form change nothing: the run reported success and every restriction stayed in force.
+  const { route, s3 } = harness({ pushed: PUSHED });
+  await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({ restrictions: [], expected_impact_sha256: ASSESSMENT_SHA }),
+  });
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal('restrictions' in marker, true, 'a clear must travel as an answer, not as a silence');
+  assert.deepEqual(marker.restrictions, []);
+  assert.equal(marker.expected_impact_sha256, ASSESSMENT_SHA);
+});
+
+test('a clear with no digest is refused like any other restriction decision', async () => {
+  // The digest is what lets the applier read the assessment, and inline_sha256 travels inside it -
+  // the digest of the family the approver was shown. A clear without it deletes something nobody
+  // established anybody had looked at.
+  const { route } = harness({ pushed: PUSHED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID }, body: decision({ restrictions: [] }),
+    }),
+    /expected_impact_sha256 is required/,
+  );
+});
+
+test('a clear whose digest is not the stored one is refused', async () => {
+  const { route } = harness({ pushed: PUSHED });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({
+      params: { id: PLAN_ID },
+      body: decision({ restrictions: [], expected_impact_sha256: 'f'.repeat(64) }),
+    }),
+    /was re-assessed since it was shown/,
+  );
 });
 
 test('a plain approval with a stale or missing digest proceeds without one', async () => {
@@ -399,18 +441,21 @@ test('a restriction with no digest at all is refused', async () => {
   );
 });
 
-test('a denial cannot carry a restriction', async () => {
+test('a denial cannot decide restrictions, and an empty list is a decision', async () => {
   const { route } = harness({ pushed: PUSHED });
-  await assert.rejects(
-    () => route['POST /api/plans/:id/decision']({
-      params: { id: PLAN_ID },
-      body: decision({
-        decision: 'deny', comment: 'no', restrictions: [restriction],
-        expected_impact_sha256: ASSESSMENT_SHA,
+  for (const restrictions of [[restriction], []]) {
+    await assert.rejects(
+      () => route['POST /api/plans/:id/decision']({
+        params: { id: PLAN_ID },
+        body: decision({
+          decision: 'deny', comment: 'no', restrictions,
+          expected_impact_sha256: ASSESSMENT_SHA,
+        }),
       }),
-    }),
-    /a denial cannot carry a restriction/,
-  );
+      /a denial decides nothing about restrictions/,
+      `a denial carrying ${JSON.stringify(restrictions)} was accepted`,
+    );
+  }
 });
 
 

@@ -837,8 +837,8 @@ test('the editor is closed when nothing can say what is already restricted', () 
   //
   // The form is now seeded from what stands. When that cannot be established the seed is null, and
   // null is not []: an empty form would be the same lie with a different cause, so the editor is
-  // closed instead. Approving with nothing ticked stays open and is safe - the writer reads an
-  // approval carrying no restrictions as saying nothing about them and carries them forward.
+  // closed instead. Approving with nothing ticked stays open and is safe - a CLOSED editor sends no
+  // restrictions key at all, which the writer reads as saying nothing and carries them forward.
   assert.match(DETAIL, /useState<Restriction\[\]>\(\s*\(\)\s*=>\s*detail\.restrictions_in_force \?\? \[\]/,
                'the restriction editor still opens empty, which is the defect itself');
   assert.match(DETAIL, /const inForceUnknown = detail\.restrictions_in_force === null/,
@@ -859,6 +859,38 @@ test('the editor is closed when nothing can say what is already restricted', () 
   // compose a decision against the wrong document.
   assert.match(DETAIL, /seededFor\.current !== detail\.plan_id/,
                'switching plans keeps the previous plan\'s restrictions in the form');
+});
+
+test('an emptied form is a clear, and a closed editor is not', () => {
+  // The defect this pins, as a user met it: every restriction unticked, 승인 pressed, the run
+  // reports success, and every restriction is still in force. The approver could add and change but
+  // never remove - [] and "said nothing" were one value all the way down to the writer's compose().
+  //
+  // What separates them is whether the editor could be USED. It is closed with no assessment and
+  // closed when what stands cannot be read, and in both cases the form is empty because nobody
+  // could fill it - reading that as a clear would delete restrictions off a screen that never
+  // showed them. So the answer is null there and the array (empty or not) otherwise.
+  assert.match(
+    DETAIL,
+    /const decidable = decision === "approve" && !!detail\.assessment && !inForceUnknown/,
+    'an empty form is sent as a clear without establishing that the editor was live - a screen '
+    + 'that could not show the restrictions in force would delete them',
+  );
+  assert.match(
+    DETAIL,
+    /const active = decidable && \(chosen\.length > 0 \|\| standing\.length > 0\) \? chosen : null;/,
+    'the emit is not three-valued: null and [] are the same answer again. The empty answer travels '
+    + 'only when something stands to be cleared - with nothing standing the two answers have the '
+    + 'same outcome, and "says nothing" is the one that keeps a statement the record did not know '
+    + 'about',
+  );
+  const send = PAGE.match(/\.\.\.\((restrictions[^)]*)\?[^,]*restrictions[^,]*\)/)?.[1] ?? '';
+  assert.ok(/restrictions !== null/.test(send),
+            'PlanPage sends restrictions on a truthiness or length test, so the empty answer is '
+            + 'dropped on the wire and emptying the form goes back to meaning nothing');
+  // And the confirmation names it. A clear DELETES, and "제한 없이 승인합니다" does not say so.
+  assert.match(DETAIL, /지금 걸려 있는 제한 \$\{standing\.length\}건을 모두 해제합니다/,
+               'the confirmation does not tell the approver that every restriction comes off');
 });
 
 test('the dialog carries the editor rules over instead of reinventing them', () => {

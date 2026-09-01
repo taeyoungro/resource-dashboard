@@ -78,7 +78,7 @@ export function PlanPage({ state, error, onRefresh }: Props) {
     decision: "approve" | "deny",
     reviewer: string,
     comment: string,
-    restrictions: Restriction[],
+    restrictions: Restriction[] | null,
     passroleGrantTo: string[],
     passroleRevokeFrom: string[],
     analysis: RiskAnalysisCitation | null,
@@ -105,7 +105,10 @@ export function PlanPage({ state, error, onRefresh }: Props) {
         ...(detail.assessment_sha256
           ? { expected_impact_sha256: detail.assessment_sha256 }
           : {}),
-        ...(restrictions.length > 0 ? { restrictions } : {}),
+        // Sent whenever this decision has an answer, EMPTY INCLUDED - [] says there are none and
+        // the writer clears the family, where an absent key says nothing and it carries forward.
+        // Omitting the empty list is what made emptying the form change nothing.
+        ...(restrictions !== null ? { restrictions } : {}),
         // Whose PassRole request the approver ticked. Absent unless somebody did.
         ...(passroleGrantTo.length > 0 ? { passrole_grant_to: passroleGrantTo } : {}),
         // And whose grant the approver took back. Absent unless somebody did - and an absence here
