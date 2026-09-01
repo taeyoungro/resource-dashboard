@@ -1761,3 +1761,47 @@ test('the solid and dashed grammar is stated where it is used', () => {
   assert.ok(TOPOLOGY.includes('하한'), 'truncation does not reach the screen');
   assert.ok(TOPOLOGY.includes('민감'), 'sensitivity does not reach the screen');
 });
+
+test('the filter offers all four dimensions a container records', () => {
+  assert.ok(TOPOLOGY.includes('<FilterBar'), 'the window offers no way to narrow the picture');
+  assert.ok(TOPOLOGY.includes('전체'), 'there is no way back to the unnarrowed picture');
+  for (const dimension of ['계정', '리전', 'VPC', '서브넷']) {
+    assert.ok(TOPOLOGY.includes(`label="${dimension}"`), `${dimension} cannot be chosen`);
+  }
+  // The component reads the facets the module computed and never a raw row field of its own: the
+  // three meanings of a missing vpc_id are decided in one tested place.
+  assert.ok(!/resource\.vpc_id|\.subnet_id/.test(TOPOLOGY_CODE),
+            'the component reached into a row for placement instead of using the facets');
+});
+
+test('the rows the placement lookup could not place are counted on screen', () => {
+  // Defect it prevents: a denied optional permission reading as an empty VPC. A row with no vpc_id
+  // is not evidence of belonging and not evidence of not belonging, and folding it silently into
+  // "not in this VPC" turns a lookup failure into a claim about the account.
+  assert.ok(TOPOLOGY.includes('VPC를 알 수 없는 자원이'),
+            'nothing says how many resources a VPC filter cannot speak for');
+  assert.ok(TOPOLOGY.includes('이 자원들은 빠진다'),
+            'the window does not say that narrowing by VPC drops the unplaced rows');
+  assert.ok(TOPOLOGY.includes('VPC가 아예 없는'),
+            'a volume, which has no VPC by definition, is not distinguished from a lookup failure');
+});
+
+test('a narrowed picture says what it left out', () => {
+  // Defect it prevents: an approver narrowing to one region, reading a small number, and carrying
+  // away "this policy reaches little". The picture alone cannot tell that from "I am looking at
+  // part of it".
+  assert.ok(TOPOLOGY.includes('고른 조건만 그렸다'),
+            'a filtered picture does not say it is filtered');
+  assert.ok(TOPOLOGY.includes('조건 없이는'),
+            'a filtered picture does not say what the whole would be');
+});
+
+test('the closed-state summary describes the policy, not the filter', () => {
+  // The line beside the button is a fact about the policy. Letting a filter set inside the window
+  // change it would make the panel disagree with itself for a reason nobody outside can see.
+  const summary = TOPOLOGY.slice(TOPOLOGY.indexOf('EC2 자원 {'), TOPOLOGY.indexOf('</span>',
+                                 TOPOLOGY.indexOf('EC2 자원 {')));
+  assert.ok(summary.includes('whole.kinds') && summary.includes('whole.measured'),
+            'the closed-state line reads the filtered scene, so collapsing the window leaves a '
+            + 'count that describes a filter nobody can see');
+});

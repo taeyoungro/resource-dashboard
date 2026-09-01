@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   CAPTION, EC2_FRAMES, EC2_RAILS, EC2_SLOTS, LABEL_BUDGET, SCENE_W,
-  ec2Scene, sceneSummary, textUnits, topologyPolicy,
+  VPC_SCOPED, ec2Scene, facets, filterActive, sceneSummary, textUnits, topologyPolicy,
 } from './ec2Topology.js';
 import { RESOURCE_TYPE_ICONS } from './serviceIcons.js';
 
@@ -357,4 +357,221 @@ test('the caption travels inside the picture', () => {
   assert.equal(scene.foot.at(-1).text, CAPTION);
   assert.match(CAPTION, /측정한 것이 아니다/);
   assert.ok(scene.foot.at(-1).y < scene.height, 'the caption is drawn outside the viewBox');
+});
+
+// ---- narrowing the picture ---------------------------------------------------------------------
+//
+// The account and the region a resource sits in are facts every row carries, so the picture can be
+// narrowed to them. Which VPC or subnet a resource sits in is NOT in this assessment at all, and
+// the tests below pin that the module says so rather than offering a control that narrows nothing.
+
+/** A row in a named region and account, so the facet tests have something to separate. */
+function rowIn(region, account = ACCOUNT, kind = 'instance') {
+  return {
+    arn: `arn:aws:ec2:${region}:${account}:${kind}/${region}-${account}`,
+    region, tags: {}, sensitive: false,
+  };
+}
+
+const TWO_REGIONS = [
+  group('ec2:instance', 3, {
+    resources: [rowIn('ap-northeast-2'), rowIn('ap-northeast-2'), rowIn('us-east-1')],
+  }),
+  group('ec2:volume', 2, { resources: [rowIn('us-east-1', ACCOUNT, 'volume')] }),
+];
+
+test('the facets are read off the rows', () => {
+  const found = facets(policyOf(TWO_REGIONS));
+  assert.deepEqual(found.regions, [
+    { id: 'ap-northeast-2', total: 2 },
+    { id: 'us-east-1', total: 2 },
+  ]);
+  assert.deepEqual(found.accounts, [{ id: ACCOUNT, total: 4 }]);
+  assert.equal(facets(policyOf(TWO_REGIONS, 'AdministratorAccess')), null);
+});
+
+test('a region filter narrows the picture to that region', () => {
+  // Defect it prevents: a filter that renders a smaller picture without actually changing which
+  // resources it counts - which is the same picture with a smaller number under it.
+  const scene = ec2Scene(policyOf(TWO_REGIONS), ACCOUNT, { regions: ['us-east-1'] });
+  assert.ok(scene.narrowed);
+  assert.deepEqual(scene.regions, ['us-east-1']);
+  const instances = scene.slots.find((s) => s.resourceType === 'ec2:instance');
+  assert.equal(instances.count, '1개', 'the count is the whole group rather than the matching rows');
+  assert.equal(scene.measured, 2);
+});
+
+test('an account filter narrows on the ARN, which is where the account is', () => {
+  const mixed = [group('ec2:instance', 2, {
+    resources: [rowIn('us-east-1', ACCOUNT), rowIn('us-east-1', '999999999999')],
+  })];
+  const scene = ec2Scene(policyOf(mixed), ACCOUNT, { accounts: ['999999999999'] });
+  assert.equal(scene.measured, 1);
+  assert.equal(scene.slots[0].count, '1개');
+});
+
+test('the filter combines - both dimensions have to match', () => {
+  const scene = ec2Scene(policyOf(TWO_REGIONS), ACCOUNT,
+                         { accounts: [ACCOUNT], regions: ['ap-northeast-2'] });
+  assert.equal(scene.measured, 2, 'the two dimensions did not intersect');
+  assert.ok(!scene.slots.some((s) => s.resourceType === 'ec2:volume'),
+            'a type with no row in the chosen region was still drawn');
+});
+
+test('an empty picture says whether the FILTER emptied it', () => {
+  // Defect it prevents: a narrowed picture with nothing in it reading as "this policy reaches
+  // nothing", which is a statement about the policy and not about the filter.
+  const narrowed = ec2Scene(policyOf(TWO_REGIONS), ACCOUNT, { regions: ['eu-west-1'] });
+  assert.ok(narrowed.empty && narrowed.narrowed);
+  assert.match(sceneSummary(narrowed), /고른 계정과 리전에/);
+  assert.match(narrowed.frames.find((f) => f.id === 'region').note, /고른 조건에 맞는 자원이 없다/);
+
+  const whole = ec2Scene(policyOf([]), ACCOUNT);
+  assert.ok(whole.empty && !whole.narrowed);
+  assert.match(sceneSummary(whole), /인벤토리에 없다/);
+});
+
+test('전체 is the unfiltered picture, however it is spelled', () => {
+  const whole = ec2Scene(policyOf(TWO_REGIONS), ACCOUNT);
+  for (const filter of [null, {}, { regions: [] }, { accounts: [], regions: [] },
+                        { accounts: null, regions: null }]) {
+    assert.equal(filterActive(filter), false, `${JSON.stringify(filter)} counted as a filter`);
+    assert.deepEqual(ec2Scene(policyOf(TWO_REGIONS), ACCOUNT, filter), whole,
+                     `${JSON.stringify(filter)} drew something other than the whole picture`);
+  }
+});
+
+test('a filter never changes how sure a number is', () => {
+  // Filtered counts come from the rows and unfiltered ones from group.total, and assess.py sets
+  // total to the number of rows it kept - so the two are the same quantity and a truncated group is
+  // a floor either way. A filter that silently upgraded a floor to an exact count would be the
+  // picture claiming completeness it lost at the container.
+  const cut = [group('ec2:instance', 2, {
+    truncated: true, resources: [rowIn('us-east-1'), rowIn('ap-northeast-2')],
+  })];
+  const scene = ec2Scene(policyOf(cut), ACCOUNT, { regions: ['us-east-1'] });
+  assert.ok(scene.truncated, 'the scene forgot the group was truncated once it was filtered');
+  assert.match(scene.slots[0].count, /이상†/, 'a filtered count lost its floor marking');
+});
+
+test('a filter cannot change what the picture leaves out', () => {
+  // The omitted-services footnote is about the whole policy. Narrowing the drawing must not make a
+  // service the policy reaches look smaller than it is.
+  const affected = [
+    ...TWO_REGIONS,
+    { ...group('elasticloadbalancing:loadbalancer', 3), service: 'elasticloadbalancing' },
+  ];
+  const whole = ec2Scene(policyOf(affected), ACCOUNT);
+  const narrowed = ec2Scene(policyOf(affected), ACCOUNT, { regions: ['us-east-1'] });
+  assert.deepEqual(narrowed.omitted, whole.omitted);
+});
+
+test('narrowing keeps every geometric guarantee', () => {
+  // The layout does not get a second implementation for the filtered case, and this is what says
+  // so: a narrowed scene is still a scene, with the same containment and the same width.
+  const scene = ec2Scene(policyOf(FULL), ACCOUNT, { regions: ['ap-northeast-2'] });
+  assert.equal(scene.width, SCENE_W);
+  const frames = new Map(scene.frames.map((f) => [f.id, f]));
+  for (const slot of scene.slots) {
+    const rail = EC2_RAILS[EC2_SLOTS[slot.resourceType].rail];
+    const frame = frames.get(rail.frame);
+    assert.ok(slot.x >= frame.x && slot.x + slot.w <= frame.x + frame.w,
+              `${slot.resourceType} escaped ${frame.id} once the picture was narrowed`);
+  }
+});
+
+// ---- VPC and subnet, once the querier records them ---------------------------------------------
+//
+// No EC2 ARN carries a VPC and Resource Explorer does not return one, so impact/inventory.py's
+// _with_placement joins the membership on from the EC2 Describe calls and writes vpc_id / subnet_id
+// onto the row. These pin what the dashboard may conclude from that - and, just as importantly,
+// what it may not conclude from a row that has neither.
+
+function placed(region, vpc, subnet, kind = 'instance') {
+  return {
+    arn: `arn:aws:ec2:${region}:${ACCOUNT}:${kind}/${vpc}-${subnet}-${kind}`,
+    region, tags: {}, sensitive: false,
+    ...(vpc ? { vpc_id: vpc } : {}),
+    ...(subnet ? { subnet_id: subnet } : {}),
+  };
+}
+
+const TWO_VPCS = [
+  group('ec2:instance', 3, {
+    resources: [placed('us-east-1', 'vpc-a', 'subnet-a1'),
+                placed('us-east-1', 'vpc-a', 'subnet-a2'),
+                placed('us-east-1', 'vpc-b', 'subnet-b1')],
+  }),
+  group('ec2:volume', 2, {
+    resources: [placed('us-east-1', '', '', 'volume'), placed('us-east-1', '', '', 'volume')],
+  }),
+];
+
+test('the VPC and subnet facets come from what the querier recorded', () => {
+  const found = facets(policyOf(TWO_VPCS));
+  assert.deepEqual(found.vpcs, [{ id: 'vpc-a', total: 2 }, { id: 'vpc-b', total: 1 }]);
+  assert.deepEqual(found.subnets, [
+    { id: 'subnet-a1', total: 1 }, { id: 'subnet-a2', total: 1 }, { id: 'subnet-b1', total: 1 },
+  ]);
+});
+
+test('a type with no VPC is not counted as one the lookup failed on', () => {
+  // A volume is zone-scoped and has no VPC by definition. Folding it into "rows with no VPC
+  // recorded" would report a permission failure that did not happen, and would tell an approver the
+  // placement lookup is broken when it is working exactly as specified.
+  const found = facets(policyOf(TWO_VPCS));
+  assert.equal(found.unplaced, 0, 'a volume was counted as an unplaced VPC resource');
+  assert.equal(found.placeable, 3, 'placeable counts rows that could have a VPC, not every row');
+});
+
+test('a VPC-scoped row the querier could not place is counted and named', () => {
+  // The optional permission was denied, or the assessment predates the field. Either way a VPC
+  // filter cannot speak for the row, and the screen has to say how many there are - otherwise a
+  // denied permission reads as an empty VPC.
+  const unknown = [group('ec2:instance', 2, {
+    resources: [placed('us-east-1', 'vpc-a', 'subnet-a1'), placed('us-east-1', '', '')],
+  })];
+  const found = facets(policyOf(unknown));
+  assert.equal(found.unplaced, 1);
+  assert.equal(found.placeable, 2);
+});
+
+test('a VPC filter narrows to the rows that SAY they are in it', () => {
+  const scene = ec2Scene(policyOf(TWO_VPCS), ACCOUNT, { vpcs: ['vpc-a'] });
+  assert.ok(scene.narrowed);
+  assert.equal(scene.slots.find((s) => s.resourceType === 'ec2:instance').count, '2개');
+  assert.ok(!scene.slots.some((s) => s.resourceType === 'ec2:volume'),
+            'a volume, which has no VPC at all, survived a VPC filter');
+});
+
+test('a row with no recorded VPC never matches a chosen one', () => {
+  // Absence is not evidence of belonging and not evidence of not belonging. The picture shows the
+  // rows that say they are in the VPC; the count of rows that say nothing sits beside it.
+  const unknown = [group('ec2:instance', 2, {
+    resources: [placed('us-east-1', 'vpc-a', 'subnet-a1'), placed('us-east-1', '', '')],
+  })];
+  const scene = ec2Scene(policyOf(unknown), ACCOUNT, { vpcs: ['vpc-a'] });
+  assert.equal(scene.measured, 1);
+});
+
+test('a subnet filter narrows further than its VPC', () => {
+  const scene = ec2Scene(policyOf(TWO_VPCS), ACCOUNT, { vpcs: ['vpc-a'], subnets: ['subnet-a2'] });
+  assert.equal(scene.measured, 1);
+});
+
+test('every VPC-scoped type has a slot in the picture', () => {
+  // VPC_SCOPED mirrors PLACEMENT in impact/inventory.py. A type the querier places and this picture
+  // has no seat for would be a resource with a known VPC and nowhere to be drawn.
+  for (const type of VPC_SCOPED) {
+    assert.ok(type in EC2_SLOTS, `${type} is placed by the querier and has no slot`);
+  }
+});
+
+test('전체 still means unfiltered on the two new dimensions', () => {
+  const whole = ec2Scene(policyOf(TWO_VPCS), ACCOUNT);
+  for (const filter of [{ vpcs: [] }, { vpcs: [], subnets: [] },
+                        { accounts: [], regions: [], vpcs: null, subnets: null }]) {
+    assert.equal(filterActive(filter), false, `${JSON.stringify(filter)} counted as a filter`);
+    assert.deepEqual(ec2Scene(policyOf(TWO_VPCS), ACCOUNT, filter), whole);
+  }
 });

@@ -1506,3 +1506,36 @@ dialog.policy-dialog.topology-dialog { width: min(796px, 94vw); }
 .topology-table th { color: var(--muted); font-weight: 600; }
 .topology-table td.sensitive { color: var(--danger); }
 .topology-table td.none { color: var(--muted); }
+
+/* The filter bar. 계정 and 리전 narrow the picture; the dimensions the assessment cannot serve are
+   shown disabled with the reason beside them, because a control that appears to narrow and narrows
+   nothing is the one lie this window is arranged against. */
+.topology-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.topology-facet { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+/* Fixed width so the chips line up down the bar and the eye can compare rows rather than read them. */
+.topology-facet-name { min-width: 3.2rem; color: var(--muted); font-weight: 600; }
+.topology-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.topology-chip.on { border-color: var(--accent); color: var(--accent); }
+.topology-chip.on .muted { color: var(--accent); }
+/* A dimension this assessment cannot serve. Not hidden: somebody looking at an EC2 diagram will
+   reach for a VPC filter, and the useful answer is why it is not there. */
+.topology-chip.off { cursor: not-allowed; color: var(--muted); background: var(--bg); }
+.topology-chip input { margin: 0; }

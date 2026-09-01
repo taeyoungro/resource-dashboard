@@ -910,6 +910,19 @@ export interface ImpactResource {
    * by. Absent means there is no such name - not that the lookup failed.
    */
   alias?: string;
+  /**
+   * Where in the network this resource sits, for the EC2 types AWS scopes to a VPC or a subnet.
+   * Written by the impact querier's placement lookup (impact/inventory.py, _with_placement), which
+   * joins the membership on from the EC2 Describe calls - no EC2 ARN carries it and Resource
+   * Explorer does not return it.
+   *
+   * Absent means three different things and a reader must not flatten them: the type has no VPC at
+   * all (a volume, a snapshot, an AMI - zone- or region-scoped), the resource is genuinely
+   * unattached, or the lookup did not run. The last covers a denied optional permission and every
+   * assessment written before this field existed.
+   */
+  vpc_id?: string;
+  subnet_id?: string;
 }
 
 export interface ImpactCoverage {
