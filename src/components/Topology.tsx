@@ -46,6 +46,11 @@ import type {
   EdgeKind, GraphContainer, GraphEdge, GraphNode, GraphOverflow, RelationScene,
 } from "../../server/graph.js";
 import { G_ICON, KIND_LABEL, graphSummary, relationScene } from "../../server/graph.js";
+import type { FindingCard, ResourceFacts } from "../../server/resourceFacts.js";
+import { LEVEL_LABEL, gradesByResource, resourceFacts } from "../../server/resourceFacts.js";
+import { CATEGORY_LABEL, GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
+import { actionDocUrl } from "../../server/actionDocs.js";
+import type { Finding, ImpactActionReference } from "../types";
 
 /**
  * One frame: the box, its badge, and a label band of up to three parts.
@@ -267,7 +272,8 @@ function SceneTable({ scene, spec }: { scene: Scene; spec: TopologySpec }) {
  * see GraphFigure.
  */
 function GraphContainerShape({ box }: { box: GraphContainer }) {
-  const cls = `graph-box graph-box-${box.kind}${box.dashed ? " graph-box-dashed" : ""}`;
+  const cls = `graph-box graph-box-${box.kind}${box.dashed ? " graph-box-dashed" : ""}`
+    + (box.tint ? ` graph-box-${box.tint}` : "");
   return (
     <g className={cls}>
       <rect
@@ -308,13 +314,41 @@ function GraphContainerLabel({ box }: { box: GraphContainer }) {
  * type that has none leave the same plate. A type with no glyph prints its Korean name where the
  * glyph would be, so a plate is never a bare id.
  */
-function GraphNodeShape({ node }: { node: GraphNode }) {
-  // An instance: a frame holding its interfaces, which are nodes of their own painted after it.
-  // The head band carries what a plate would - the glyph, the Name or the id, the other one -
-  // and an empty frame says in one line why it is empty.
+function GraphNodeShape({ node, onToggle, onSelect, selected, mark }: {
+  node: GraphNode;
+  onToggle: (id: string) => void;
+  onSelect: (arn: string) => void;
+  selected: boolean;
+  /** The worst grade of a finding that NAMES this resource, or null. Drawn as a corner mark so an
+   *  approver does not have to click thirty plates to find the one a rule fired on. */
+  mark: string | null;
+}) {
+  // Every plate is a button: clicking it asks what this policy lets somebody do to this resource
+  // and what the two analyses found about it. An instance box answers that AND opens to show the
+  // interfaces it holds - one click, one subject, both halves of "tell me about this instance".
+  const type = node.resourceType.replace(":", "-");
+  const press = () => {
+    if (node.box && node.holds > 0) onToggle(node.id);
+    onSelect(node.arn);
+  };
+  const keyed = (e: { key: string; preventDefault: () => void }) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); press(); }
+  };
+  const marked = mark ? ` graph-node-marked graph-node-${mark.toLowerCase()}` : "";
+  const chosen = selected ? " graph-node-selected" : "";
   if (node.box) {
+    const openable = node.holds > 0;
     return (
-      <g className={`graph-node graph-node-box graph-node-${node.resourceType.replace(":", "-")}`}>
+      <g
+        className={`graph-node graph-node-box graph-node-${type} graph-node-toggle${marked}${chosen}`}
+        role="button"
+        tabIndex={0}
+        aria-expanded={openable ? node.open : undefined}
+        aria-pressed={selected}
+        aria-label={`${node.title.split("\n")[0]}${openable ? ` — 네트워크 인터페이스 ${node.holds}개 ${node.open ? "접기" : "펼치기"}` : ""} — 상세 보기`}
+        onClick={press}
+        onKeyDown={keyed}
+      >
         <rect
           className={node.sensitive ? "graph-plate graph-plate-box graph-plate-sensitive"
             : "graph-plate graph-plate-box"}
@@ -322,6 +356,7 @@ function GraphNodeShape({ node }: { node: GraphNode }) {
         >
           <title>{node.title}</title>
         </rect>
+        {mark && <circle className="graph-mark" cx={node.x + node.w - 8} cy={node.y + 8} r={4} />}
         {node.icon && (
           <image href={`/aws-icons/${node.icon}`} x={node.x + 8} y={node.y + 5} width={18} height={18} />
         )}
@@ -336,7 +371,15 @@ function GraphNodeShape({ node }: { node: GraphNode }) {
     );
   }
   return (
-    <g className={`graph-node graph-node-${node.resourceType.replace(":", "-")}`}>
+    <g
+      className={`graph-node graph-node-${type} graph-node-toggle${marked}${chosen}`}
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      aria-label={`${node.title.split("\n")[0]} — 상세 보기`}
+      onClick={press}
+      onKeyDown={keyed}
+    >
       {node.erase && (
         <rect className="topo-erase" x={node.x} y={node.y} width={node.w} height={node.h} />
       )}
@@ -346,6 +389,7 @@ function GraphNodeShape({ node }: { node: GraphNode }) {
       >
         <title>{node.title}</title>
       </rect>
+      {mark && <circle className="graph-mark" cx={node.x + node.w - 8} cy={node.y + 8} r={4} />}
       {node.icon ? (
         <image href={`/aws-icons/${node.icon}`} x={node.x + (node.w - G_ICON) / 2} y={node.y + 6}
                width={G_ICON} height={G_ICON} />
@@ -418,11 +462,15 @@ function GraphEdgeShape({ edge, uid }: { edge: GraphEdge; uid: string }) {
  * line never runs across a plate or a label; the foot last. The <desc> is graphSummary(), which
  * has its own unit test.
  */
-function GraphFigure({ scene, name, title, uid }:
-                     { scene: RelationScene; name: string; title: string; uid: string }) {
+function GraphFigure({ scene, name, title, uid, onToggle, onSelect, selected, marks }:
+                     { scene: RelationScene; name: string; title: string; uid: string;
+                       onToggle: (id: string) => void; onSelect: (arn: string) => void;
+                       selected: string | null; marks: Map<string, string> }) {
   return (
     // Fills the window's width (.graph-svg) and never shrinks below its own: the min-width is the
     // scene's width, so a narrow window scrolls the figure rather than making the labels smaller.
+    // A group and not an image: the instance boxes inside are buttons, and role="img" would fold
+    // them away from a screen reader.
     <svg
       className="topology-svg graph-svg"
       viewBox={`0 0 ${scene.width} ${scene.height}`}
@@ -431,7 +479,7 @@ function GraphFigure({ scene, name, title, uid }:
       style={{ minWidth: scene.width }}
       preserveAspectRatio="xMinYMin meet"
       fontFamily="inherit"
-      role="img"
+      role="group"
       aria-labelledby={`${uid}-gt ${uid}-gd`}
     >
       <title id={`${uid}-gt`}>{`${name}이 닿는 ${title} 자원 연결 관계도`}</title>
@@ -450,12 +498,164 @@ function GraphFigure({ scene, name, title, uid }:
       {scene.containers.map((c) => <GraphContainerLabel key={c.id} box={c} />)}
       {scene.overflow.map((o) => <GraphOverflowShape key={o.container} plate={o} />)}
       {/* Boxes before plates, so an interface is painted over the instance frame that holds it. */}
-      {scene.nodes.filter((n) => n.box).map((n) => <GraphNodeShape key={n.id} node={n} />)}
-      {scene.nodes.filter((n) => !n.box).map((n) => <GraphNodeShape key={n.id} node={n} />)}
+      {scene.nodes.filter((n) => n.box).map((n) => (
+        <GraphNodeShape key={n.id} node={n} onToggle={onToggle} onSelect={onSelect}
+                        selected={n.arn === selected} mark={marks.get(n.arn) ?? null} />
+      ))}
+      {scene.nodes.filter((n) => !n.box).map((n) => (
+        <GraphNodeShape key={n.id} node={n} onToggle={onToggle} onSelect={onSelect}
+                        selected={n.arn === selected} mark={marks.get(n.arn) ?? null} />
+      ))}
       {scene.foot.map((line) => (
         <text className="topo-foot" key={line.text} x={8} y={line.y}>{line.text}</text>
       ))}
     </svg>
+  );
+}
+
+/* ---- what one resource is, when a reader clicks it -------------------------------------------
+ * The picture answers "what is connected to what". This panel answers the other two questions an
+ * approver has about a resource they can now see: what does this policy let somebody DO to it,
+ * and did either analysis find anything about it. Both answers are computed in
+ * server/resourceFacts.js - which one of a finding's targets reaches THIS resource is a join with
+ * three outcomes and a test file, not a filter written inline in a component. */
+
+/** One action, linked to AWS's page for it when there is one. */
+function PanelAction({ action, level, makes }:
+                     { action: string; level: string | null; makes: boolean }) {
+  const href = actionDocUrl(action);
+  const name = <code>{action}</code>;
+  return (
+    <li className="panel-action">
+      <span className={`panel-level panel-level-${(level ?? "unknown").replace(/\s+/g, "-")}`}>
+        {level ? LEVEL_LABEL[level] ?? level : "등급 없음"}
+      </span>
+      {href ? (
+        <a className="action-doc" href={href} target="_blank" rel="noreferrer noopener"
+           title={`${action} · AWS 문서`}>{name}</a>
+      ) : name}
+      {/* An action that brings this type into being acts on resources that do not exist yet, so a
+          restriction naming today's ARNs is no scope for it. The picker says the same thing. */}
+      {makes && <span className="muted small">이 유형을 생성한다</span>}
+    </li>
+  );
+}
+
+/** One finding, as this panel shows it: the grade, what it is, and what fired it. */
+function PanelFinding({ card }: { card: FindingCard }) {
+  return (
+    <li className="panel-finding">
+      <div className="panel-finding-head">
+        <span className={GRADE_CLASS[card.grade]}>{GRADE_LABEL[card.grade]}</span>
+        <strong>{card.title}</strong>
+        <span className="muted small">{CATEGORY_LABEL[card.category] ?? card.category}</span>
+        <span className="muted small">{STATUS_LABEL[card.status] ?? card.status}</span>
+        {card.source === "model" && <span className="panel-source">AI</span>}
+        {!card.restrictable && <span className="muted small">차단 불가</span>}
+      </div>
+      <div className="panel-finding-why">
+        <span className="muted small">{card.reachLabel}</span>
+        {card.actions.length > 0 && (
+          <span className="panel-finding-actions">
+            {card.actions.map((a) => <code key={a}>{a}</code>)}
+          </span>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/**
+ * The panel. Everything in it is about ONE resource, and every sentence says where it came from:
+ * the actions from the assessment's own group, the findings from the two analyses, and the three
+ * counts that say which findings reach this resource and which only reach its type.
+ */
+function ResourcePanel({ facts, ran, onClose }:
+                       { facts: ResourceFacts; ran: boolean; onClose: () => void }) {
+  const { named, typed, elsewhere } = facts.findings;
+  return (
+    <aside className="graph-panel" aria-label={`${facts.id} 상세`}>
+      <div className="graph-panel-head">
+        <h5>
+          {facts.name ? <>{facts.name} <code>{facts.id}</code></> : <code>{facts.id}</code>}
+          {facts.sensitive && <span className="sensitive"> 민감</span>}
+        </h5>
+        <button type="button" onClick={onClose} aria-label="상세 닫기">닫기</button>
+      </div>
+      <p className="muted small">
+        <code>{facts.resourceType}</code> · {facts.region}
+        {facts.worstGrade && (
+          <> · 이 자원에 걸린 가장 높은 등급{" "}
+            <span className={GRADE_CLASS[facts.worstGrade]}>{GRADE_LABEL[facts.worstGrade]}</span>
+          </>
+        )}
+      </p>
+
+      <h6>이 정책이 이 자원에 허용하는 작업 {facts.actions.length}개</h6>
+      {/* The two facts that change what the list MEANS, and both come from the group rather than
+          from the resource: a policy that named no resource covers what is made next, and a group
+          the reference could not attribute lists every action of the service. */}
+      <p className="muted small">
+        {facts.scope === "*"
+          ? "이 정책은 자원을 지정하지 않았다 — 지금 있는 것과 앞으로 생기는 것 모두에 해당한다."
+          : "이 정책이 이름으로 지정한 자원이다."}
+        {facts.attribution === "service" && " 어느 작업이 이 유형에 닿는지 판정하지 못해 이 서비스의 작업 전부를 적었다."}
+        {facts.levels.length > 0 && ` 접근 수준: ${facts.levels.map((l) => `${l.label} ${l.count}`).join(" · ")}.`}
+      </p>
+      {facts.actions.length === 0 ? (
+        <p className="muted small">이 평가는 이 유형에 닿는 작업을 적지 않았다.</p>
+      ) : (
+        <ul className="panel-actions">
+          {facts.actions.map((a) => (
+            <PanelAction key={a.name} action={a.name} level={a.level} makes={a.makes} />
+          ))}
+        </ul>
+      )}
+
+      <h6>이 자원에 대한 분석</h6>
+      {!ran ? (
+        <p className="muted small">
+          아직 분석을 돌리지 않았다. 아래 <strong>위험 및 공격 경로</strong>에서 「정책 기반 분석」이나
+          「AI 분석」을 누르면 결과가 여기에 함께 나온다. <strong>지금 비어 있는 것은 발견이 없다는
+          뜻이 아니다.</strong>
+        </p>
+      ) : named.length === 0 && typed.length === 0 ? (
+        <p className="muted small">
+          이 자원을 지목한 발견이 없다.
+          {elsewhere > 0 && ` 같은 유형의 다른 자원에 걸린 발견은 ${elsewhere}개다.`}
+        </p>
+      ) : (
+        <>
+          {named.length > 0 && (
+            <>
+              <p className="muted small">이 자원을 지목한 발견 {named.length}개</p>
+              <ul className="panel-findings">
+                {named.map((c) => <PanelFinding key={c.id} card={c} />)}
+              </ul>
+            </>
+          )}
+          {/* Kept apart from the named ones, and said out loud. A finding whose sample was cut may
+              or may not reach this resource, and folding it in would put a grade on a resource
+              nothing said was reachable. */}
+          {typed.length > 0 && (
+            <>
+              <p className="muted small">
+                이 유형에 걸렸지만 <strong>이 자원인지는 알 수 없는</strong> 발견 {typed.length}개 —
+                목록이 잘려 자원 이름을 전부 담지 못했다.
+              </p>
+              <ul className="panel-findings">
+                {typed.map((c) => <PanelFinding key={c.id} card={c} />)}
+              </ul>
+            </>
+          )}
+          {elsewhere > 0 && (
+            <p className="muted small">
+              같은 유형의 <strong>다른</strong> 자원에만 걸린 발견 {elsewhere}개는 여기 적지 않았다.
+            </p>
+          )}
+        </>
+      )}
+    </aside>
   );
 }
 
@@ -654,7 +854,7 @@ function UnmeasuredNote({ unmeasured }: { unmeasured: Record<string, number> }) 
  * gate because it writes something; this one only reads, and an approver who cannot edit is
  * exactly the reader who most needs to see what the policy reaches.
  */
-export function PolicyTopology({ policy, name, accountId, coverage }: {
+export function PolicyTopology({ policy, name, accountId, coverage, reference, findings }: {
   policy: ImpactPolicy;
   /** The policy as a person names it - policyName(identifier). */
   name: string;
@@ -662,6 +862,12 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
   /** The assessment's own record of what it managed to enumerate. An empty picture and a failed
    *  EC2 lookup are the same document shape and opposite news, and this is what tells them apart. */
   coverage: ImpactCoverage | null;
+  /** The assessment's action reference, for each action's AWS access level. Null on an assessment
+   *  written before the container carried it - the panel then prints no level rather than a guess. */
+  reference?: ImpactActionReference | null;
+  /** Every finding both analyses produced, deduplicated by id. Empty until somebody runs one, and
+   *  the panel says which of the two it is - empty is not "nothing was found". */
+  findings?: Finding[];
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const uid = useId();
@@ -687,9 +893,24 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
   const wholeGraph = useMemo(
     () => relationScene(policy, accountId, null, enumerated), [policy, accountId, enumerated],
   );
+  // Which instance boxes are open. Closed by default: the picture shows the instance, its group
+  // lines and its volumes, and a click on the box opens it to show the interfaces inside.
+  const [expanded, setExpanded] = useState<string[]>([]);
   const graph = useMemo(
-    () => relationScene(policy, accountId, filter, enumerated),
-    [policy, accountId, filter, enumerated],
+    () => relationScene(policy, accountId, filter, enumerated, { expanded }),
+    [policy, accountId, filter, enumerated, expanded],
+  );
+  const toggle = (id: string) => setExpanded(
+    (prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]),
+  );
+  /** The resource whose panel is open, by ARN. Null is the picture with nothing chosen. */
+  const [chosen, setChosen] = useState<string | null>(null);
+  const found = findings ?? [];
+  // Which resources a finding NAMES, so the picture can mark them before anything is clicked.
+  const marks = useMemo(() => gradesByResource(policy, found), [policy, found]);
+  const facts = useMemo(
+    () => (chosen ? resourceFacts(policy, reference ?? null, found, chosen) : null),
+    [policy, reference, found, chosen],
   );
   // Which picture the window shows. Null is "not chosen", and the document then decides: an
   // assessment that recorded a placement or a link opens on the relationship picture, an older
@@ -877,9 +1098,28 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
 
           {view === "graph" && graph && (
             <>
-              <div className="topology-figure" tabIndex={0} role="group" aria-label="자원 연결 관계도">
-                <GraphFigure scene={graph} name={name} title={spec.words.title} uid={uid} />
+              {/* The picture and the panel side by side: clicking a plate must not scroll the
+                  thing you clicked out of view, which is what a panel below the figure does on a
+                  tall scene. The panel is the picture's equal here, as the table is below. */}
+              <div className="graph-with-panel">
+                <div className="topology-figure" tabIndex={0} role="group" aria-label="자원 연결 관계도">
+                  <GraphFigure scene={graph} name={name} title={spec.words.title} uid={uid}
+                               onToggle={toggle} onSelect={setChosen} selected={chosen}
+                               marks={marks} />
+                </div>
+                {facts && (
+                  <ResourcePanel facts={facts} ran={found.length > 0}
+                                 onClose={() => setChosen(null)} />
+                )}
               </div>
+              {!facts && (
+                <p className="muted small">
+                  자원 판을 누르면 <strong>이 정책이 그 자원에 허용하는 작업</strong>과{" "}
+                  <strong>정책 기반 분석·AI 분석이 그 자원에 대해 찾은 것</strong>이 옆에 열린다.
+                  {found.length > 0 && marks.size > 0
+                    && ` 발견이 지목한 자원 ${marks.size}개에는 판 모서리에 점을 찍었다.`}
+                </p>
+              )}
 
               <ul className="topology-legend">
                 <li>
@@ -894,13 +1134,26 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
                   </li>
                 )}
                 <li>
-                  <strong>인스턴스 상자</strong> — 안의 네트워크 인터페이스는 조회기가 읽은 부착이다.
-                  보안 그룹 선은 인터페이스가 아니라 인스턴스 상자로 향한다 — 인스턴스의 그룹은 그
-                  인터페이스의 그룹이다. 인터페이스가 이 평가에 없으면 상자는 비어 있고 그렇다고 적는다.
-                  볼륨은 상자 아래에 선으로 붙는다 — 부착이지 포함이 아니다.
+                  <strong>자리</strong> — 인터넷 게이트웨이는 VPC 위쪽 가운데에, 라우팅 테이블·네트워크
+                  ACL·엔드포인트는 가운데 열에, 가용 영역은 그 좌우에 같은 수로 놓는다. 보안 그룹과
+                  나머지는 그 위에 좌우로 번갈아 놓는다. 자리는 그리는 규칙이고, 소속은 테두리다.
                 </li>
                 <li>
-                  <strong>연결선</strong> — 종류마다 색이 다르다.{" "}
+                  <strong>인스턴스 상자</strong> — 누르면 붙은 네트워크 인터페이스가 안에 펼쳐지고, 다시
+                  누르면 접힌다. 접혀 있어도 아래 표에는 인터페이스가 「인스턴스 안」으로 있다.{" "}
+                  보안 그룹 선은 인터페이스가 아니라 인스턴스 상자로 향한다 — 인스턴스의 그룹은 그
+                  인터페이스의 그룹이고, 펼치든 접든 선은 같다. 인터페이스가 이 평가에 없으면 상자는
+                  비어 있고 그렇다고 적는다. 볼륨은 상자 아래에 선으로 붙는다 — 부착이지 포함이 아니다.
+                </li>
+                <li>
+                  <strong>연한 하늘색 서브넷</strong> — 퍼블릭: 연결된 라우팅 테이블(명시적 연결이
+                  없으면 VPC의 기본 테이블)에 인터넷 게이트웨이로 가는 경로가 있다.{" "}
+                  <strong>연한 초록 서브넷</strong> — 프라이빗: 그 경로가 없다. 색이 없으면 이 평가에
+                  그 서브넷의 라우팅 테이블이 없다.
+                </li>
+                <li>
+                  <strong>연결선</strong> — 전부 점선이고, 상자의 변에서 나와 직각으로만 꺾인다.
+                  종류마다 색이 다르다.{" "}
                   {(Object.keys(KIND_LABEL) as EdgeKind[]).map((kind) => (
                     <span key={kind} className="graph-legend-item">
                       <svg className="graph-legend-swatch" width="28" height="8" aria-hidden="true">
@@ -912,9 +1165,9 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
                 </li>
                 {graph.counts.implicitEdges > 0 && (
                   <li>
-                    <strong>점선 연결</strong> — 기본 라우팅 테이블에서 도출한 것이다. 명시적 연결이
-                    없는 서브넷은 VPC의 기본 라우팅 테이블을 쓴다는 AWS의 규칙이고, 조회기가 그 연결을
-                    읽은 것은 아니다.
+                    <strong>촘촘한 점선</strong> — 기본 라우팅 테이블에서 도출한 연결이다. 명시적
+                    연결이 없는 서브넷은 VPC의 기본 라우팅 테이블을 쓴다는 AWS의 규칙이고, 조회기가
+                    그 연결을 읽은 것은 아니다. 나머지 점선은 조회기가 읽은 것이다.
                   </li>
                 )}
                 {graph.edges.some((e) => e.kind === "route") && (

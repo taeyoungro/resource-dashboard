@@ -19,6 +19,11 @@
      third green, because it is not a degree of the same thing - nobody chose it, and what it bounds
      changes when an approved mirror role is attached. 5.47:1 on white. */
   --cut-fence: #0f766e;
+  /* The relationship picture's subnet fills: a public subnet on a pale sky blue, a private one on
+     a pale green, as the reference diagrams draw them. Fills under 11px text, so they stay this
+     light; the plates on them keep the ground colour. */
+  --subnet-public: #dff0fb;
+  --subnet-private: #e4f3e4;
 }
 
 * { box-sizing: border-box; }
@@ -1604,8 +1609,16 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
    and the table's 민감 column. */
 .graph-plate { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
 /* An instance: a frame on the panel colour, so the interface plates inside it - on the ground
-   colour - read as inside. */
+   colour - read as inside. One with interfaces to show is a button. */
 .graph-plate-box { fill: var(--panel); }
+.graph-node-toggle { cursor: pointer; outline: none; }
+.graph-node-toggle:hover .graph-plate-box { stroke: var(--accent); }
+/* The keyboard focus ring is the box's own stroke, not the browser's rectangle around the group. */
+.graph-node-toggle:focus-visible .graph-plate-box { stroke: var(--accent); stroke-width: 2; }
+/* A subnet's colour says public or private, decided by its route table - the tokens are in :root
+   with the rest of the palette. */
+.graph-box-public .graph-box-rect { fill: var(--subnet-public); }
+.graph-box-private .graph-box-rect { fill: var(--subnet-private); }
 .graph-plate-sensitive { stroke: var(--danger); stroke-width: 2; }
 /* What the budget left out of one container: a plate that is visibly not a resource. */
 .graph-plate-overflow { fill: var(--panel); stroke: var(--muted); }
@@ -1613,21 +1626,80 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
 .graph-node-label { fill: var(--text); font-size: 11px; font-weight: 600; }
 .graph-node-sub { fill: var(--muted); font-size: 10px; }
 
-/* The connections. One colour per kind, every one a palette token; the legend draws the same
-   classes on a 28px line, so it cannot drift from the picture. */
-.graph-edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
+/* The connections. Every one dashed and orthogonal - a dashed line is a relation, a solid line is
+   a border, and the eye keeps the two apart. One colour per kind, every one a palette token; the
+   legend draws the same classes on a 28px line, so it cannot drift from the picture. */
+.graph-edge { fill: none; stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 6 4; stroke-linejoin: miter; }
 .graph-edge-interface { stroke: var(--accent); }
 .graph-edge-volume { stroke: var(--cut-fence); }
 .graph-edge-security { stroke: var(--warn); }
 .graph-edge-association { stroke: var(--cut-partial); }
 .graph-edge-route { stroke: var(--text); }
-.graph-edge-image { stroke: var(--muted); stroke-dasharray: 1 3; stroke-linecap: round; }
+.graph-edge-image { stroke: var(--muted); }
 /* Derived rather than recorded: the main route table's association with a subnet that has no
-   explicit one. */
-.graph-edge-implicit { stroke-dasharray: 6 4; }
+   explicit one. A tighter dash than the recorded lines, so the two read apart. */
+.graph-edge-implicit { stroke-dasharray: 2 3; }
 .graph-edge-marker { fill: var(--text); }
 /* The ring on each end of a line, in the line's colour: where the line really stops, whatever it
    passes under on the way. */
 .graph-edge-end { fill: var(--bg); stroke-dasharray: none; }
 .graph-legend-item { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; white-space: nowrap; }
 .graph-legend-swatch { display: inline-block; vertical-align: middle; }
+
+/* ---- the resource panel: what one plate is, when a reader clicks it -------------------------- */
+/* Beside the picture rather than under it. A panel below scrolls the plate you just clicked out of
+   view on a tall scene, which is the one thing a click-to-inspect must not do. */
+.graph-with-panel { display: flex; align-items: flex-start; gap: 10px; }
+.graph-with-panel > .topology-figure { flex: 1 1 auto; min-width: 0; }
+.graph-panel {
+  flex: 0 0 22rem;
+  max-height: 78vh;
+  overflow: auto;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 12px;
+}
+.graph-panel-head { display: flex; align-items: baseline; gap: 8px; }
+.graph-panel-head h5 { margin: 0; font-size: 13px; flex: 1 1 auto; }
+.graph-panel-head button { padding: 0.1rem 0.5rem; font-size: 0.75rem; }
+.graph-panel h6 { margin: 12px 0 4px; font-size: 12px; }
+.graph-panel p { margin: 4px 0; line-height: 1.6; }
+.graph-panel .sensitive { color: var(--danger); font-weight: 600; }
+
+.panel-actions, .panel-findings { margin: 4px 0; padding: 0; list-style: none; }
+.panel-action { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; line-height: 1.5; }
+/* The access level, in the same grammar as the picker: the level is the sort key and the colour,
+   because "권한 관리" and "목록" are not two shades of the same news. */
+.panel-level {
+  flex: 0 0 3.6rem;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+.panel-level-Permissions-management, .panel-level-Write { color: var(--danger); font-weight: 600; }
+.panel-level-Tagging { color: var(--warn); }
+
+.panel-finding { padding: 6px 0; border-top: 1px solid var(--border); }
+.panel-finding:first-child { border-top: none; }
+.panel-finding-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.panel-finding-why { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.panel-finding-actions { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+/* The AI half, marked where it is drawn rather than in a section of its own: the two halves are
+   sorted together by grade, and an approver reading down the list has to see which is which. */
+.panel-source {
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* The plate a finding names, and the plate a reader chose. */
+.graph-mark { fill: var(--muted); }
+.graph-node-critical .graph-mark, .graph-node-high .graph-mark { fill: var(--danger); }
+.graph-node-medium .graph-mark { fill: var(--warn); }
+.graph-node-selected .graph-plate { stroke: var(--accent); stroke-width: 2; }
