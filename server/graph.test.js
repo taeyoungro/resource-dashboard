@@ -201,6 +201,8 @@ test('no two nodes overlap and no node crosses a container border it is not on',
       for (let j = i + 1; j < plates.length; j += 1) {
         const a = plates[i];
         const b = plates[j];
+        // An interface inside its instance's box is the one overlap the picture means.
+        if ((a.box && inside(b, a)) || (b.box && inside(a, b))) continue;
         assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y,
                   `${a.id ?? a.label} overlaps ${b.id ?? b.label}`);
       }
@@ -254,18 +256,55 @@ test('every edge joins two drawn things, or is counted as dangling - never inven
 });
 const RELATIONS_KINDS = { interface: 1, volume: 1, security: 1, association: 1, route: 1, image: 1 };
 
-test('the same fact seen from both ends is one line', () => {
-  // The instance records its volumes and the volume records its instance; the instance records
-  // its interfaces and the interface records its instance. Two Describes, one edge each.
+test('the same fact seen from both ends is one line, or one border', () => {
+  // The instance records its volumes and the volume records its instance: two Describes, one
+  // edge. The instance records its interfaces and the interface records its instance: two
+  // Describes, and the interface is drawn INSIDE the instance - no line at all.
   const scene = sceneOf(ACCOUNT());
   const between = (a, b) => scene.edges.filter((e) => [e.from, e.to].sort().join() === [a, b].sort().join());
   assert.equal(between('i-0aaa111', 'vol-1').length, 1);
   assert.equal(between('i-0aaa111', 'vol-1')[0].kind, 'volume');
-  assert.equal(between('i-0aaa111', 'eni-1').length, 1);
-  assert.equal(between('i-0aaa111', 'eni-1')[0].kind, 'interface');
-  // And the instance's own security groups are its interface's - drawn from the interface, once.
-  assert.equal(between('i-0aaa111', 'sg-web').length, 0, 'the group edge was drawn from both ends');
-  assert.equal(between('eni-1', 'sg-web').length, 1);
+  assert.equal(between('i-0aaa111', 'eni-1').length, 0, 'a line was drawn to an interface inside the box');
+  // And the instance's own security groups are its interface's: one line per (instance, group),
+  // from the box, whichever of the two records named it.
+  assert.equal(between('i-0aaa111', 'sg-web').length, 1);
+  assert.equal(between('i-0aaa111', 'sg-ssh').length, 1);
+  assert.equal(between('eni-1', 'sg-web').length, 0, 'the group line went to the interface inside the box');
+  assert.equal(between('eni-2', 'sg-web').length, 0);
+});
+
+test('an interface attached to an instance is drawn inside it, and the group line goes to the instance', () => {
+  const scene = sceneOf(ACCOUNT());
+  const by = boxes(scene);
+  const web = by.get('i-0aaa111');
+  assert.equal(web.box, true, 'the instance is not a box');
+  assert.equal(web.holds, 2);
+  for (const eni of ['eni-1', 'eni-2']) assert.ok(inside(by.get(eni), web), `${eni} is not inside its instance`);
+  assert.ok(inside(web, by.get('subnet:subnet-a1')), 'the box is not inside its subnet');
+  // The unattached interfaces keep their own plates and their own group lines.
+  assert.equal(by.get('eni-6').box, false);
+  assert.ok(scene.edges.some((e) => e.kind === 'security' && [e.from, e.to].includes('eni-6')));
+  // The NAT gateway's interface is an attachment drawn as a line, not a box.
+  assert.ok(scene.edges.some((e) => e.kind === 'interface' && [e.from, e.to].sort().join() === 'eni-nat,nat-1'));
+  // An instance whose interfaces are not in the assessment is an empty box that says so.
+  const bare = sceneOf([g('ec2:instance', [row('instance', 'i-1', { vpc_id: 'vpc-x', subnet_id: 'subnet-x' })])]);
+  const box = bare.nodes.find((n) => n.id === 'i-1');
+  assert.equal(box.box, true);
+  assert.equal(box.holds, 0);
+  assert.match(box.note, /평가에 없다/);
+  // A box wraps its interfaces to the width its subnet offers: three zones, six interfaces.
+  const wide = sceneOf([
+    g('ec2:subnet', ['a', 'b', 'c'].map((z) => row('subnet', `subnet-${z}`,
+      { vpc_id: 'vpc-w', subnet_id: `subnet-${z}`, zone: `us-east-1${z}` }))),
+    g('ec2:instance', [row('instance', 'i-w', { vpc_id: 'vpc-w', subnet_id: 'subnet-a', zone: 'us-east-1a',
+      links: { network_interface: Array.from({ length: 6 }, (_, i) => `eni-w${i}`) } })]),
+    g('ec2:network-interface', Array.from({ length: 6 }, (_, i) => row('network-interface', `eni-w${i}`,
+      { vpc_id: 'vpc-w', subnet_id: 'subnet-a', zone: 'us-east-1a', links: { instance: ['i-w'] } }))),
+  ]);
+  const wb = boxes(wide);
+  assert.ok(inside(wb.get('i-w'), wb.get('subnet:subnet-a')), 'the box overflows its subnet');
+  for (let i = 0; i < 6; i += 1) assert.ok(inside(wb.get(`eni-w${i}`), wb.get('i-w')), `eni-w${i} is outside the box`);
+  assert.equal(wide.edges.length, 0, 'a line was drawn between a box and what it holds');
 });
 
 test('a subnet with no explicit route-table association gets the main table, dashed and derived', () => {
@@ -459,12 +498,13 @@ test('a line leaves by the side facing its other end and never runs under the pl
   };
   const edge = (from, to) => scene.edges.find((e) => e.from === from && e.to === to)
     ?? assert.fail(`${from} -> ${to} is not drawn`);
-  assert.ok(!runsUnder(edge('eni-3', 'sg-db'), 'i-0bbb222'), 'the group line runs under the instance beside the interface');
+  // The group line leaves the instance box outward and never runs under the interface it holds.
+  assert.ok(!runsUnder(edge('i-0bbb222', 'sg-db'), 'eni-3'), 'the group line runs under the interface inside the box');
   const igw = edge('rtb-main', 'igw-1');
   assert.equal(igw.points.length, 4, 'the route to the gateway on the border is not routed over the band');
   for (const id of ['rtb-priv', 'acl-default']) assert.ok(!runsUnder(igw, id), `the route runs under ${id}`);
   // Adjacent plates are joined straight, and every line's ends are its first and last points.
-  assert.equal(edge('i-0aaa111', 'eni-1').points.length, 2);
+  assert.equal(edge('nat-1', 'eni-nat').points.length, 2);
   for (const e of scene.edges) {
     assert.ok(e.points.length === 2 || e.points.length === 4, `${e.from} -> ${e.to} has ${e.points.length} points`);
     assert.deepEqual([e.x1, e.y1], [e.points[0].x, e.points[0].y]);

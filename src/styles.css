@@ -1603,6 +1603,9 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
 /* One resource. 민감 runs on the same two channels as the type picture's plate: the outline here
    and the table's 민감 column. */
 .graph-plate { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
+/* An instance: a frame on the panel colour, so the interface plates inside it - on the ground
+   colour - read as inside. */
+.graph-plate-box { fill: var(--panel); }
 .graph-plate-sensitive { stroke: var(--danger); stroke-width: 2; }
 /* What the budget left out of one container: a plate that is visibly not a resource. */
 .graph-plate-overflow { fill: var(--panel); stroke: var(--muted); }
