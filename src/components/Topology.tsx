@@ -309,6 +309,32 @@ function GraphContainerLabel({ box }: { box: GraphContainer }) {
  * glyph would be, so a plate is never a bare id.
  */
 function GraphNodeShape({ node }: { node: GraphNode }) {
+  // An instance: a frame holding its interfaces, which are nodes of their own painted after it.
+  // The head band carries what a plate would - the glyph, the Name or the id, the other one -
+  // and an empty frame says in one line why it is empty.
+  if (node.box) {
+    return (
+      <g className={`graph-node graph-node-box graph-node-${node.resourceType.replace(":", "-")}`}>
+        <rect
+          className={node.sensitive ? "graph-plate graph-plate-box graph-plate-sensitive"
+            : "graph-plate graph-plate-box"}
+          x={node.x} y={node.y} width={node.w} height={node.h} rx={4}
+        >
+          <title>{node.title}</title>
+        </rect>
+        {node.icon && (
+          <image href={`/aws-icons/${node.icon}`} x={node.x + 8} y={node.y + 5} width={18} height={18} />
+        )}
+        <text className="graph-box-text" x={node.x + (node.icon ? 30 : 10)} y={node.y + 18}>
+          <tspan className="graph-node-label">{node.label}</tspan>
+          <tspan className="graph-node-sub" dx="6">{node.sub}</tspan>
+        </text>
+        {node.note && (
+          <text className="graph-node-sub" x={node.x + 10} y={node.y + 50}>{node.note}</text>
+        )}
+      </g>
+    );
+  }
   return (
     <g className={`graph-node graph-node-${node.resourceType.replace(":", "-")}`}>
       {node.erase && (
@@ -423,7 +449,9 @@ function GraphFigure({ scene, name, title, uid }:
       ))}
       {scene.containers.map((c) => <GraphContainerLabel key={c.id} box={c} />)}
       {scene.overflow.map((o) => <GraphOverflowShape key={o.container} plate={o} />)}
-      {scene.nodes.map((n) => <GraphNodeShape key={n.id} node={n} />)}
+      {/* Boxes before plates, so an interface is painted over the instance frame that holds it. */}
+      {scene.nodes.filter((n) => n.box).map((n) => <GraphNodeShape key={n.id} node={n} />)}
+      {scene.nodes.filter((n) => !n.box).map((n) => <GraphNodeShape key={n.id} node={n} />)}
       {scene.foot.map((line) => (
         <text className="topo-foot" key={line.text} x={8} y={line.y}>{line.text}</text>
       ))}
@@ -865,6 +893,12 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
                     값이고 테두리만 빌린 것이다.
                   </li>
                 )}
+                <li>
+                  <strong>인스턴스 상자</strong> — 안의 네트워크 인터페이스는 조회기가 읽은 부착이다.
+                  보안 그룹 선은 인터페이스가 아니라 인스턴스 상자로 향한다 — 인스턴스의 그룹은 그
+                  인터페이스의 그룹이다. 인터페이스가 이 평가에 없으면 상자는 비어 있고 그렇다고 적는다.
+                  볼륨은 상자 아래에 선으로 붙는다 — 부착이지 포함이 아니다.
+                </li>
                 <li>
                   <strong>연결선</strong> — 종류마다 색이 다르다.{" "}
                   {(Object.keys(KIND_LABEL) as EdgeKind[]).map((kind) => (

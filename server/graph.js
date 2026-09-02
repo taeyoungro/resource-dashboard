@@ -311,10 +311,14 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       // The zone is worth a line only where nothing around the node says it - the region band. A
       // volume drawn beside its instance is in that instance's zone, and the subnet frame says so.
       sub: n.name ? shortId(id) : (extra.zoneSub && n.zone ? n.zone : n.typeLabel),
-      x, y: yy, w: NODE_W, h: NODE_H, sensitive: n.sensitive, arn: n.arn,
+      x, y: yy, w: extra.w ?? NODE_W, h: extra.h ?? NODE_H, sensitive: n.sensitive, arn: n.arn,
       title: `${n.typeLabel} ${id}${n.name ? ` (${n.name})` : ''}` + (n.zone ? ` · ${n.zone}` : '')
         + `\n${n.arn}`,
       erase: !!extra.erase,
+      // A box rather than a plate: an instance, drawn as a frame with its interfaces inside.
+      box: !!extra.box,
+      holds: extra.holds ?? 0,
+      note: extra.note ?? null,
     });
     drawnNodes += 1;
   };
@@ -325,56 +329,71 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
                       label: `외 ${count.toLocaleString()}개` });
     },
   });
-  /** An instance and everything drawn beside it: its interfaces to the right, volumes below. */
-  const instanceCard = (id) => {
+  /**
+   * An instance and everything drawn with it. The instance is a BOX holding its interfaces: an
+   * interface's Attachment.InstanceId is a recorded membership, and a border is what this picture
+   * says a recorded membership with - so the interfaces sit inside, in rows that wrap to the width
+   * the box is given, and no line is drawn to them. Volumes hang below the box, left-aligned: a
+   * disk is attached, not contained, and its line is the one an approver most wants to see.
+   *
+   * An instance whose interfaces are not in the assessment - the policy does not reach them, or
+   * the assessment predates the links - is a box of plate height holding one sentence, so it
+   * cannot be read as an instance with no interface.
+   */
+  const instanceCard = (id, innerW, extra = {}) => {
     const enis = [...(eniOf.get(id) ?? [])].sort();
     const vols = ids.filter((v) => attachedTo.get(v) === id);
-    const cols = enis.length > 0 ? 2 : 1;
-    const leftH = (1 + vols.length) * NODE_H + vols.length * NODE_GAP;
-    const rightH = enis.length * NODE_H + Math.max(0, enis.length - 1) * NODE_GAP;
+    const cols = Math.max(1, Math.min(enis.length,
+      Math.floor((innerW - 2 * PAD + NODE_GAP) / (NODE_W + NODE_GAP))));
+    const rows = Math.ceil(enis.length / cols);
+    const boxW = cols * NODE_W + (cols - 1) * NODE_GAP + 2 * PAD;
+    const boxH = enis.length > 0 ? HEAD + PAD + rows * NODE_H + (rows - 1) * NODE_GAP + PAD : NODE_H;
     return {
       ids: [id, ...enis, ...vols],
-      w: cols * NODE_W + (cols - 1) * NODE_GAP,
-      h: Math.max(leftH, rightH),
+      w: boxW,
+      h: boxH + vols.length * (NODE_H + NODE_GAP),
       place: (x, yy) => {
-        emit(id, x, yy);
-        vols.forEach((v, i) => emit(v, x, yy + (i + 1) * (NODE_H + NODE_GAP)));
-        enis.forEach((e, i) => emit(e, x + NODE_W + NODE_GAP, yy + i * (NODE_H + NODE_GAP)));
+        emit(id, x, yy, { ...extra, box: true, w: boxW, h: boxH, holds: enis.length,
+                          note: enis.length > 0 ? null : '네트워크 인터페이스가 이 평가에 없다' });
+        enis.forEach((e, i) => emit(e, x + PAD + (i % cols) * (NODE_W + NODE_GAP),
+                                    yy + HEAD + PAD + Math.floor(i / cols) * (NODE_H + NODE_GAP)));
+        vols.forEach((v, i) => emit(v, x, yy + boxH + NODE_GAP + i * (NODE_H + NODE_GAP)));
       },
     };
   };
+  /** The card for a row, once the width it may take is known. */
+  const cardFor = (id, innerW, extra = {}) => (nodes.get(id).resourceType === 'ec2:instance'
+    ? instanceCard(id, innerW, extra) : nodeCard(id, extra));
 
-  // Cards per subnet, per VPC band, per region band.
-  const subnetCards = new Map();     // subnet id -> [card]
-  const bandCards = new Map();       // vpc id -> [card]
-  const regionCards = [];
+  // Members per subnet, per VPC band, per region band. Cards are made at layout time, when the
+  // width a container offers is known - an instance box wraps its interfaces to that width.
+  const subnetMembers = new Map();   // subnet id -> [id]
+  const bandMembers = new Map();     // vpc id -> [id]
+  const regionMembers = [];
   const edgeNodes = new Map();       // vpc id -> igw id (straddles the VPC top border)
-  const push = (map, key, card) => { if (!map.has(key)) map.set(key, []); map.get(key).push(card); };
+  const push = (map, key, id) => { if (!map.has(key)) map.set(key, []); map.get(key).push(id); };
   for (const id of ids) {
     const n = nodes.get(id);
     const at = placeOf(n);
     if (at === null || at.card) continue;
-    if (at.edge) { if (!edgeNodes.has(at.edge)) edgeNodes.set(at.edge, id); else regionCards.push(nodeCard(id)); continue; }
-    if (at.subnet) push(subnetCards, at.subnet, n.resourceType === 'ec2:instance' ? instanceCard(id) : nodeCard(id));
-    else if (at.vpcBand) push(bandCards, at.vpcBand, nodeCard(id));
-    else regionCards.push(nodeCard(id, { zoneSub: true }));
+    if (at.edge) { if (!edgeNodes.has(at.edge)) edgeNodes.set(at.edge, id); else regionMembers.push(id); continue; }
+    if (at.subnet) push(subnetMembers, at.subnet, id);
+    else if (at.vpcBand) push(bandMembers, at.vpcBand, id);
+    else regionMembers.push(id);
   }
 
   // Order inside a subnet: instances first (they are the hubs), then everything else, each by id.
-  for (const [, cards] of subnetCards) {
-    cards.sort((a, b) => {
-      const ai = nodes.get(a.ids[0]).resourceType === 'ec2:instance' ? 0 : 1;
-      const bi = nodes.get(b.ids[0]).resourceType === 'ec2:instance' ? 0 : 1;
-      return ai - bi || a.ids[0].localeCompare(b.ids[0]);
-    });
+  const isInstance = (id) => (nodes.get(id).resourceType === 'ec2:instance' ? 0 : 1);
+  for (const [, members] of subnetMembers) {
+    members.sort((a, b) => isInstance(a) - isInstance(b) || a.localeCompare(b));
   }
   // Order inside a VPC band: security groups, route tables, ACLs, endpoints, the rest.
   const BAND_ORDER = ['ec2:security-group', 'ec2:route-table', 'ec2:network-acl', 'ec2:vpc-endpoint'];
-  for (const [, cards] of bandCards) {
-    cards.sort((a, b) => {
-      const ai = BAND_ORDER.indexOf(nodes.get(a.ids[0]).resourceType);
-      const bi = BAND_ORDER.indexOf(nodes.get(b.ids[0]).resourceType);
-      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.ids[0].localeCompare(b.ids[0]);
+  for (const [, members] of bandMembers) {
+    members.sort((a, b) => {
+      const ai = BAND_ORDER.indexOf(nodes.get(a).resourceType);
+      const bi = BAND_ORDER.indexOf(nodes.get(b).resourceType);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.localeCompare(b);
     });
   }
 
@@ -406,7 +425,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     let cy = vpc.y + HEAD + (edgeNodes.has(vpcId) ? NODE_H / 2 : 0);
 
     // The VPC band: groups, tables, ACLs, endpoints.
-    const band = budgeted(bandCards.get(vpcId) ?? [], vpc.id);
+    const band = budgeted((bandMembers.get(vpcId) ?? []).map((id) => cardFor(id, vpc.w - 2 * PAD)), vpc.id);
     const bandH = flow(band, vpc.x + PAD, cy, vpc.w - 2 * PAD);
     if (bandH > 0) cy += bandH + ROW_GAP;
 
@@ -436,7 +455,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
                       dashed: !info.present, badge: null, measured: true,
                       title: subnetRow?.arn ?? null };
         containers.push(sub);
-        const cards = budgeted(subnetCards.get(subnetId) ?? [], sub.id, CARDS_PER_SUBNET);
+        const cards = budgeted((subnetMembers.get(subnetId) ?? []).map((id) => cardFor(id, sub.w - 2 * PAD)),
+                               sub.id, CARDS_PER_SUBNET);
         const contentH = flow(cards, sub.x + PAD, sub.y + HEAD, sub.w - 2 * PAD);
         sub.h = HEAD + contentH + PAD;
         sy += sub.h + ROW_GAP;
@@ -450,22 +470,21 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     y = vpc.y + vpc.h + ROW_GAP;
   }
 
+  // The internet gateways: one per VPC, straddling its top border at the right. Before the region
+  // band, so one whose VPC was not drawn can still fall into it.
+  for (const [vpcId, igwId] of edgeNodes) {
+    const vpc = containers.find((c) => c.id === `vpc:${vpcId}`);
+    if (!vpc) { regionMembers.push(igwId); continue; }
+    emit(igwId, vpc.x + vpc.w - PAD - NODE_W, vpc.y - NODE_H / 2, { erase: true });
+  }
+
   // The region band: what is in no VPC.
-  const regionBand = budgeted(regionCards, 'region');
+  const regionBand = budgeted(regionMembers.map((id) => cardFor(id, regionW, { zoneSub: true })), 'region');
   const bandH = flow(regionBand, regionX, y, regionW);
   if (bandH > 0) y += bandH + ROW_GAP;
   region.h = (y - ROW_GAP) - region.y + PAD;
   if (vpcList.length === 0 && bandH === 0) region.h = HEAD + PAD;
   cloud.h = region.y + region.h + PAD - cloud.y;
-
-  // The internet gateways: one per VPC, straddling its top border at the right.
-  const straddlers = [];
-  for (const [vpcId, igwId] of edgeNodes) {
-    const vpc = containers.find((c) => c.id === `vpc:${vpcId}`);
-    if (!vpc) { regionCards.push(nodeCard(igwId)); continue; }
-    emit(igwId, vpc.x + vpc.w - PAD - NODE_W, vpc.y - NODE_H / 2, { erase: true });
-    straddlers.push(igwId);
-  }
 
   // ---- 5. edges ------------------------------------------------------------------------------
   const drawn = new Map(placedNodes.map((n) => [n.id, n]));
@@ -567,6 +586,17 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
 
   // Explicit links, both directions folded to one edge. Targets that are containers (subnets,
   // VPCs) resolve to the container; targets that are neither drawn nor a container are dangling.
+  //
+  // An interface drawn INSIDE its instance's box is a special case twice over. No line joins the
+  // two - the border says it. And a group line does not go to the interface but to the instance
+  // that holds it: that is where a reader looks for "what groups does this instance have", and the
+  // instance's own SecurityGroups field is its primary interface's groups anyway, so both records
+  // fold into one line per (instance, group).
+  const boxedIn = new Map();                            // interface id -> instance id it is drawn in
+  for (const n of placedNodes) {
+    if (!n.box) continue;
+    for (const e of eniOf.get(n.id) ?? []) if (drawn.has(e)) boxedIn.set(e, n.id);
+  }
   const explicitRtb = new Map();                        // subnet id -> Set(rtb id)
   const mainRtb = new Map();                            // vpc id -> rtb id
   for (const n of placedNodes) {
@@ -580,10 +610,10 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       for (const target of targets) {
         if (relation === 'main') { mainRtb.set(target, n.id); continue; }
         if (relation === 'default') continue;             // a flag; the ACL's own label says it
-        if (relation === 'security_group' && src.resourceType === 'ec2:instance'
-            && (eniOf.get(n.id)?.size ?? 0) > 0) {
-          // The instance's groups ARE its primary interface's groups. When the interface is drawn
-          // the edge goes from it, once, rather than twice from two ends of the same fact.
+        if (relation === 'network_interface' && boxedIn.get(target) === n.id) continue;
+        if (relation === 'instance' && boxedIn.get(n.id) === target) continue;
+        if (relation === 'security_group' && boxedIn.has(n.id) && drawn.has(target)) {
+          addEdge('security', boxedIn.get(n.id), target, relation);
           continue;
         }
         if (drawn.has(target)) { addEdge(kind, n.id, target, relation); continue; }
@@ -712,7 +742,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
 }
 
 export const KIND_LABEL = {
-  interface: '인스턴스—네트워크 인터페이스',
+  // An instance's own interfaces are drawn inside it, so this line is the other attachments: a NAT
+  // gateway's, an endpoint's.
+  interface: '네트워크 인터페이스 부착',
   volume: '인스턴스—볼륨',
   security: '보안 그룹 소속',
   association: '서브넷 연결(라우팅 테이블·ACL·엔드포인트)',

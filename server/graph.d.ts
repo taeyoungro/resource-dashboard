@@ -58,6 +58,13 @@ export interface GraphNode {
   title: string;
   /** Paint the ground behind this node first: it straddles a VPC border (an internet gateway). */
   erase: boolean;
+  /** A box rather than a plate: an instance, drawn as a frame with its interfaces inside it. Its
+   *  w and h are the frame's; the interfaces are nodes of their own, placed inside. */
+  box: boolean;
+  /** How many interfaces the box holds. */
+  holds: number;
+  /** One sentence inside an empty box - the interfaces are not in this assessment. */
+  note: string | null;
 }
 
 /** A plate standing for what the budget left out of one container. */

@@ -1961,3 +1961,16 @@ test('the closed-state line counts the connections off the unfiltered graph', ()
   assert.ok(summary.includes('wholeGraph.counts.edges'), 'the closed state does not say how many connections there are');
   assert.ok(!/[^A-Za-z]graph\.counts/.test(summary), 'the closed-state count reads the filtered graph');
 });
+
+test('an instance is a box holding its interfaces, and the legend says so', () => {
+  assert.ok(TOPOLOGY.includes('node.box'), 'the renderer draws no box for an instance');
+  assert.match(CSS, /\.graph-plate-box\b/, 'the instance box is unstyled');
+  const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('topology-legend'));
+  assert.ok(legend.includes('인스턴스 상자'), 'the legend does not explain the instance box');
+  assert.ok(legend.includes('보안 그룹 선은 인터페이스가 아니라 인스턴스 상자로 향한다'),
+            'the legend does not say where a group line ends');
+  // Boxes are painted before plates, or the frame would cover the interfaces inside it.
+  const figure = TOPOLOGY.slice(TOPOLOGY.indexOf('function GraphFigure'), TOPOLOGY.indexOf('function GraphTable'));
+  assert.ok(figure.indexOf('filter((n) => n.box)') < figure.indexOf('filter((n) => !n.box)'),
+            'plates are painted before the boxes that hold them');
+});
