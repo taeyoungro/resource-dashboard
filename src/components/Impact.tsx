@@ -20,6 +20,7 @@ import {
 } from "../../server/virtualResource.js";
 import { serviceFold } from "../../server/serviceFold.js";
 import { anyAnswered, everyFinding } from "../../server/analysisFindings.js";
+import { containmentState } from "../../server/blockPath.js";
 import type { FindingsByScope } from "../../server/analysisFindings";
 import { INTENT_LABEL, INTENT_NOTE, SECTIONS, isScoped } from "./intents";
 import { PolicyTopology } from "./Topology";
@@ -798,6 +799,23 @@ function PolicyBlock({
   // collide, so the page no longer builds one.
   const ours = restrictions.filter((r) => r.policy === policy.identifier);
 
+  /**
+   * How far the decision being composed cuts one finding's path.
+   *
+   * Here rather than in the diagram because the three things it reads are here: the restrictions
+   * this form is composing, the permission set's protected actions, and the PassRole fence. Read
+   * off the WHOLE restriction list and not `ours` - containmentState matches on the finding's own
+   * policyName, and a finding on this diagram can name a policy this block is not about.
+   *
+   * The same call the analysis page makes, so the badge on a card opened from the picture says what
+   * the badge on the same card below it says. Two screens disagreeing about whether a path is cut
+   * is worse than neither saying it.
+   */
+  const containmentOf = useMemo(
+    () => (finding: Finding) => containmentState(finding, restrictions, protectedActions, fenceGrants),
+    [restrictions, protectedActions, fenceGrants],
+  );
+
   // Wildcards cannot be restricted - with NotResource a wildcard action denies everything outside the
   // list, including the baseline. What the policy literally names is offered as its own group; the
   // concrete actions BEHIND a wildcard now arrive in actions_offerable, expanded by the container from
@@ -922,6 +940,7 @@ function PolicyBlock({
         reference={reference}
         findings={findings}
         analysed={analysed}
+        containmentOf={containmentOf}
       />
 
       {/* No checkbox in front of this. There used to be one - "이 정책에 제한을 건다" - and it was a

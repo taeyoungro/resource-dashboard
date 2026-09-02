@@ -1471,11 +1471,20 @@ dialog.policy-dialog.topology-dialog {
    caveats exist to prevent. Everything from the filter bar down moves; the heading, the caveats and
    the 닫기 row stay. */
 dialog.policy-dialog.topology-dialog { overflow: hidden; }
-.topology-dialog .policy-dialog-body {
+/* The CHILD, not any descendant. The finding card's window is a dialog nested inside this one and
+   carries a .policy-dialog-body of its own; under a descendant selector it inherited this window's
+   full-height flex column, which is the layout for a picture and not for a card. */
+.topology-dialog > .policy-dialog-body {
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 24px);
 }
+
+/* One finding's own card, opened from a row in the resource panel. A second modal on top of the
+   first: the reader goes back to the picture they came from, so this stays at the card's own width
+   rather than the picture's, and scrolls inside itself when the card is long. */
+dialog.policy-dialog.finding-dialog { max-height: calc(100vh - 48px); overflow: auto; }
+.finding-dialog .finding { margin: 0 0 8px; }
 .topology-scroll { overflow: auto; flex: 1 1 auto; min-height: 0; }
 /* Focused by showModal() so a screen reader reaches the caveats before the filter controls. It is
    not an interactive target, so it takes no focus ring. */
@@ -1694,6 +1703,25 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
 
 .panel-finding { padding: 6px 0; border-top: 1px solid var(--border); }
 .panel-finding:first-child { border-top: none; }
+/* The row is a button that opens the finding's own card, so it has to LOOK like a row and BEHAVE
+   like a button: the browser's button chrome is stripped and the affordance is the hover ground and
+   the focus ring, which are the two the keyboard reader also gets. text-align is reset because a
+   button centres its content and every row here is read left to right. */
+.panel-finding-open {
+  display: block;
+  width: 100%;
+  margin: -4px -6px;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.panel-finding-open:hover { background: var(--panel-2); }
+.panel-finding-open:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 .panel-finding-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 .panel-finding-why { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
 .panel-finding-actions { display: inline-flex; gap: 4px; flex-wrap: wrap; }
