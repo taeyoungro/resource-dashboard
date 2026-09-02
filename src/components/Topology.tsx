@@ -395,11 +395,14 @@ function GraphEdgeShape({ edge, uid }: { edge: GraphEdge; uid: string }) {
 function GraphFigure({ scene, name, title, uid }:
                      { scene: RelationScene; name: string; title: string; uid: string }) {
   return (
+    // Fills the window's width (.graph-svg) and never shrinks below its own: the min-width is the
+    // scene's width, so a narrow window scrolls the figure rather than making the labels smaller.
     <svg
-      className="topology-svg"
+      className="topology-svg graph-svg"
       viewBox={`0 0 ${scene.width} ${scene.height}`}
       width={scene.width}
       height={scene.height}
+      style={{ minWidth: scene.width }}
       preserveAspectRatio="xMinYMin meet"
       fontFamily="inherit"
       role="img"

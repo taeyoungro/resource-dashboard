@@ -1446,10 +1446,19 @@ dialog.picker.block-path { width: min(44rem, 94vw); }
    rectangle rather than trusting e.target, which is the dialog itself for a click on its scrollbar
    and for a mouseup that started inside. */
 /* The window is the whole screen, near enough. It holds a relationship graph now - one node per
-   resource, one line per connection - and a graph in a 796px window is a graph nobody can read.
+   resource, one line per connection - and a graph in a 900px window is a graph nobody can read.
    The figure scrolls inside it rather than shrinking: legible-and-scrollable beats
-   fits-and-unreadable. */
-dialog.policy-dialog.topology-dialog { width: min(1720px, 97vw); }
+   fits-and-unreadable.
+
+   max-width is set HERE, by name, and not only width. .policy-dialog caps itself at 900px - right
+   for a policy document, wrong for this - and a width never beats a max-width, so the window
+   shipped at 900px while the rule said 1720. The screenshots did not catch it because the render
+   harness lifted the cap itself. */
+dialog.policy-dialog.topology-dialog {
+  width: calc(100vw - 24px);
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+}
 
 /* The dialog itself does not scroll; .topology-scroll does. The UA stylesheet gives dialog:modal
    `overflow: auto`, so setting nothing was not the same as setting none - the whole window scrolled
@@ -1460,7 +1469,7 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
 .topology-dialog .policy-dialog-body {
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 3em);
+  max-height: calc(100vh - 24px);
 }
 .topology-scroll { overflow: auto; flex: 1 1 auto; min-height: 0; }
 /* Focused by showModal() so a screen reader reaches the caveats before the filter controls. It is
@@ -1481,6 +1490,10 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
 /* A scrollable box no keyboard can reach is a box half the readers cannot read. */
 .topology-figure:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .topology-svg { display: block; max-width: none; }
+/* The relationship picture fills the window's width and scales up with it - the viewBox keeps the
+   proportions - and never below its own size: the component sets min-width to the scene width, so
+   a narrow window scrolls the figure instead of shrinking the labels. */
+.graph-svg { width: 100%; height: auto; }
 
 .topo-ground { fill: var(--bg); }
 /* Frames whose family colour this module has no business asserting: the availability zone, the
