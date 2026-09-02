@@ -2066,16 +2066,35 @@ test('the page keeps one vocabulary for the grades, the statuses and the categor
 });
 
 test('the findings reach the diagram from the analysis that produced them', () => {
-  assert.ok(PANEL.includes('onFindings(policy ?? "__plan__"'),
+  // WHAT they hold is server/analysisFindings.js and its own test file. What is pinned here is the
+  // wiring, because the defect was entirely in the wiring: the list was right and nothing carried
+  // it. 정책 기반 분석 fired 14 findings, the screen drew all 14, and the diagram above said
+  // 「아직 분석을 돌리지 않았다」 - because reporting them was a line inside settle(), and a
+  // rules-only run never settles anything.
+  assert.ok(PANEL.includes('findingsOfAnswer(answer)'),
             'the analysis does not report its findings for the diagram');
-  // Both halves travel, and a discarded model run does not: its verdicts cited an action granted
-  // nowhere and were thrown away.
-  assert.ok(PANEL.includes('next.analysis && !next.analysis.discarded'),
-            'a discarded model run would be drawn on the diagram as findings');
-  assert.ok(DETAIL.includes('onFindings={(scope, found)'), 'the page does not hold the findings');
+  // The report is an EFFECT on the answer, not a line in the branch that produced one. That is the
+  // fix: a branch can forget, and one did for as long as this was each branch's own job.
+  const reporting = PANEL.slice(PANEL.indexOf('onFindings(scope'));
+  assert.ok(/^[^;]*\);\s*\n(\s*\/\/[^\n]*\n)*\s*\},\s*\[scope, onFindings,/.test(reporting),
+            'the findings are reported from somewhere other than an effect on the answer');
+  assert.ok(!/\bsettle\s*=\s*\([^)]*\)\s*=>\s*\{[^}]*onFindings\(/s.test(PANEL),
+            'settle() reports the findings again - a rules-only run never reaches it');
+  assert.ok(DETAIL.includes('onFindings={takeFindings}') && DETAIL.includes('useCallback('),
+            'the page does not hold the findings, or rebuilds the handler the effect is keyed on');
   assert.ok(IMPACT.includes('findings={allFindings}'), 'the findings do not reach the policy block');
-  assert.ok(IMPACT.includes('findings={findings}') || IMPACT.includes('findings={allFindings}'),
-            'the diagram is not given the findings');
+  assert.ok(IMPACT.includes('everyFinding(findings)'), 'the diagram is not given the findings');
+});
+
+test('an analysis that found nothing is not drawn as an analysis nobody ran', () => {
+  // The same lie as above with a rarer cause. `findings.length > 0` cannot tell 33 rules firing
+  // none from 33 rules never being asked, and the panel prints opposite sentences over the two.
+  assert.ok(TOPOLOGY.includes('ran={analysed}'),
+            'the panel still infers "an analysis ran" from the number of findings');
+  assert.ok(IMPACT.includes('anyAnswered(findings)') && IMPACT.includes('analysed={analysed}'),
+            'nothing carries whether an analysis answered');
+  assert.ok(PANEL.includes('findings: Finding[] | null'),
+            'the report cannot say "not answered" apart from "found nothing"');
 });
 
 test('the public/private rule the legend states is the default route, and the panel shows the routes', () => {
