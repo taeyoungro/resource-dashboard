@@ -54,6 +54,8 @@ export interface ResourceFacts {
   levels: { level: string; label: string; count: number }[];
   findings: { named: FindingCard[]; typed: FindingCard[]; elsewhere: number };
   worstGrade: Grade | null;
+  /** A route table's routes: (destination, target, state). Empty for every other type. */
+  routes: { destination: string; target: string; state: string }[];
 }
 
 export function reachOf(

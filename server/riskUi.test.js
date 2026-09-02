@@ -2077,3 +2077,22 @@ test('the findings reach the diagram from the analysis that produced them', () =
   assert.ok(IMPACT.includes('findings={findings}') || IMPACT.includes('findings={allFindings}'),
             'the diagram is not given the findings');
 });
+
+test('the public/private rule the legend states is the default route, and the panel shows the routes', () => {
+  const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('topology-legend'));
+  assert.ok(legend.includes('기본 경로(0.0.0.0/0 · ::/0)'),
+            'the legend does not say the DEFAULT route is what decides public');
+  assert.ok(legend.includes('eigw-'), 'the legend does not exclude the egress-only gateway');
+  assert.ok(legend.includes('경로 미기록'),
+            'the legend does not say an older assessment is answered by the weaker rule');
+  assert.ok(legend.includes('서브넷 이름 옆의 라우팅 테이블'),
+            'the legend does not explain the table printed on the subnet band');
+  // The panel answers it for one table: the pair, and which row is the default route.
+  assert.ok(TOPOLOGY.includes('facts.resourceType === "ec2:route-table"'),
+            'the panel shows no routes for a route table');
+  assert.ok(TOPOLOGY.includes('panel-routes') && TOPOLOGY.includes('panel-route-default'));
+  assert.match(CSS, /\.panel-routes\b/, 'the route table in the panel is unstyled');
+  assert.match(CSS, /\.panel-route-default\b/, 'the default route is not marked');
+  assert.ok(TOPOLOGY.includes('조회기가 경로를 기록하기 전에 만들어진 평가다'),
+            'an assessment with no routes is not distinguished from a table with none');
+});

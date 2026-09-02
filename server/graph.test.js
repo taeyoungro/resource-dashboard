@@ -81,9 +81,13 @@ function ACCOUNT() {
       row('volume', 'vol-spare', { zone: 'us-east-1a' }),
     ]),
     g('ec2:route-table', [
-      row('route-table', 'rtb-main', { vpc_id: 'vpc-0a1', links: { main: ['vpc-0a1'], internet_gateway: ['igw-1'] } }),
-      row('route-table', 'rtb-priv', { vpc_id: 'vpc-0a1', links: { subnet: ['subnet-b1'], nat_gateway: ['nat-1'] } }),
-      row('route-table', 'rtb-c', { vpc_id: 'vpc-0b2', links: { main: ['vpc-0b2'] } }),
+      row('route-table', 'rtb-main', { vpc_id: 'vpc-0a1', links: { main: ['vpc-0a1'], internet_gateway: ['igw-1'] },
+                                       routes: [{ destination: '10.0.0.0/16', target: 'local', state: 'active' },
+                                                { destination: '0.0.0.0/0', target: 'igw-1', state: 'active' }] }),
+      row('route-table', 'rtb-priv', { vpc_id: 'vpc-0a1', links: { subnet: ['subnet-b1'], nat_gateway: ['nat-1'] },
+                                       routes: [{ destination: '0.0.0.0/0', target: 'nat-1', state: 'active' }] }),
+      row('route-table', 'rtb-c', { vpc_id: 'vpc-0b2', links: { main: ['vpc-0b2'] },
+                                    routes: [{ destination: '10.1.0.0/16', target: 'local', state: 'active' }] }),
     ]),
     g('ec2:network-acl', [
       row('network-acl', 'acl-default', { vpc_id: 'vpc-0a1',
@@ -597,4 +601,67 @@ test('a subnet is public or private by its route table, and says which', () => {
   // No table in the assessment, no colour - and the border is drawn all the same.
   const none = sceneOf([g('ec2:instance', [row('instance', 'i-1', { vpc_id: 'vpc-x', subnet_id: 'subnet-x' })])]);
   assert.equal(boxes(none).get('subnet:subnet-x').tint, null);
+});
+
+test('the DEFAULT route decides public, not merely having a route to a gateway', () => {
+  // THE DEFECT THIS EXISTS FOR. The old rule was "the table has some internet-gateway route", and
+  // a table whose only such route is a narrow prefix is a perfectly private table. Reading it as
+  // public paints a private subnet as reachable from the internet - the one direction an approver
+  // must never be misled in.
+  const withRoutes = (routes) => sceneOf([
+    g('ec2:subnet', [row('subnet', 'subnet-x', { vpc_id: 'vpc-x', subnet_id: 'subnet-x', zone: 'us-east-1a' })]),
+    g('ec2:route-table', [row('route-table', 'rtb-x',
+      { vpc_id: 'vpc-x', links: { main: ['vpc-x'], internet_gateway: ['igw-x'] }, routes })]),
+  ]);
+  const tintOf = (routes) => boxes(withRoutes(routes)).get('subnet:subnet-x').tint;
+  // A gateway route for one prefix and no default route: private, though the link says igw.
+  assert.equal(tintOf([{ destination: '203.0.113.0/24', target: 'igw-x', state: 'active' }]), 'private');
+  // The default route to the gateway: public.
+  assert.equal(tintOf([{ destination: '0.0.0.0/0', target: 'igw-x', state: 'active' }]), 'public');
+  // IPv6's default route counts the same way.
+  assert.equal(tintOf([{ destination: '::/0', target: 'igw-x', state: 'active' }]), 'public');
+  // A blackhole default route names a target that no longer exists - not a path to anywhere.
+  assert.equal(tintOf([{ destination: '0.0.0.0/0', target: 'igw-x', state: 'blackhole' }]), 'private');
+  // An egress-only gateway is the IPv6 NAT gateway: out, never in. Never public.
+  assert.equal(tintOf([{ destination: '::/0', target: 'eigw-x', state: 'active' }]), 'private');
+  // A NAT default route is the textbook private subnet.
+  assert.equal(tintOf([{ destination: '0.0.0.0/0', target: 'nat-x', state: 'active' }]), 'private');
+  // Two families, one of them open, is open.
+  assert.equal(tintOf([{ destination: '0.0.0.0/0', target: 'nat-x', state: 'active' },
+                       { destination: '::/0', target: 'igw-x', state: 'active' }]), 'public');
+  // No routes recorded at all: the older assessment, answered by the weaker rule and SAID to be.
+  const old = boxes(sceneOf([
+    g('ec2:subnet', [row('subnet', 'subnet-x', { vpc_id: 'vpc-x', subnet_id: 'subnet-x', zone: 'us-east-1a' })]),
+    g('ec2:route-table', [row('route-table', 'rtb-x',
+      { vpc_id: 'vpc-x', links: { main: ['vpc-x'], internet_gateway: ['igw-x'] } })]),
+  ])).get('subnet:subnet-x');
+  assert.equal(old.tint, 'public');
+  assert.equal(old.tintBasis, 'links');
+  assert.match(old.note, /경로 미기록/);
+});
+
+test('a subnet says which route table coloured it, and why', () => {
+  // The association is drawn as a line, and a line can be lost in a crowded picture. The table's
+  // id and the route that decided the colour are printed on the label band, where they cannot be.
+  const scene = sceneOf(ACCOUNT());
+  const by = boxes(scene);
+  const pub = by.get('subnet:subnet-a1');
+  assert.equal(pub.routeTable, 'rtb-main');
+  assert.equal(pub.tintBasis, 'routes');
+  assert.match(pub.note, /퍼블릭/);
+  assert.match(pub.note, /rtb-main: 0\.0\.0\.0\/0 → igw-1/);
+  const priv = by.get('subnet:subnet-b1');
+  assert.equal(priv.routeTable, 'rtb-priv');
+  assert.match(priv.note, /프라이빗/);
+  assert.match(priv.note, /rtb-priv: 0\.0\.0\.0\/0 → nat-1/);
+  // A table with no default route says so rather than printing nothing.
+  assert.match(by.get('subnet:subnet-c1').note, /rtb-c: 기본 경로 없음/);
+  // And the association line carries the same evidence in its hover text.
+  const edge = scene.edges.find((e) => e.from === 'rtb-main' && e.to === 'subnet:subnet-a1');
+  assert.ok(edge, 'the main table is not joined to the subnet it routes');
+  assert.match(edge.title, /0\.0\.0\.0\/0 → igw-1/);
+  // Narrowing to one subnet keeps the colour AND the reason: the tables are read off every row.
+  const one = boxes(sceneOf(ACCOUNT(), { subnets: ['subnet-a1'] })).get('subnet:subnet-a1');
+  assert.equal(one.tint, 'public');
+  assert.match(one.note, /rtb-main/);
 });

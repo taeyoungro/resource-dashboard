@@ -1619,6 +1619,16 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
    with the rest of the palette. */
 .graph-box-public .graph-box-rect { fill: var(--subnet-public); }
 .graph-box-private .graph-box-rect { fill: var(--subnet-private); }
+
+/* A route table's routes in the panel: the pair (destination, target) is the answer to "is the
+   subnet public", so the default route is the row the eye should land on. */
+.panel-routes { width: 100%; border-collapse: collapse; font-size: 11px; margin: 4px 0 8px; }
+.panel-routes th, .panel-routes td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border); }
+.panel-routes th { color: var(--muted); font-weight: 600; }
+.panel-routes td.muted { color: var(--muted); }
+.panel-routes td.sensitive { color: var(--danger); }
+.panel-route-default { background: var(--panel-2); }
+.panel-route-default code { font-weight: 600; }
 .graph-plate-sensitive { stroke: var(--danger); stroke-width: 2; }
 /* What the budget left out of one container: a plate that is visibly not a resource. */
 .graph-plate-overflow { fill: var(--panel); stroke: var(--muted); }

@@ -192,6 +192,16 @@ export function resourceFacts(policy, reference, findings, arn) {
     findings: { named, typed, elsewhere },
     /** The worst grade among the findings that reach this resource, for the plate's own mark. */
     worstGrade: cards.length > 0 ? worst : null,
+    /** A route table's routes, as the querier read them: where each one sends traffic and where
+     *  to. Empty for every other type, and empty on a route table read before the querier
+     *  recorded them - the panel tells the two apart by the resource type. */
+    routes: Array.isArray(row?.routes)
+      ? row.routes.map((r) => ({
+        destination: `${r?.destination ?? ''}`,
+        target: `${r?.target ?? ''}`,
+        state: `${r?.state ?? ''}`,
+      })).filter((r) => r.destination && r.target)
+      : [],
   };
 }
 
