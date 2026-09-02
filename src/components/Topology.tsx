@@ -591,6 +591,42 @@ function ResourcePanel({ facts, ran, onClose }:
         )}
       </p>
 
+      {/* A route table's routes, above the actions: for this one type the routes ARE what the
+          reader came to check - which subnet is public and why - and the answer is the pair
+          (destination, target), not the target alone. */}
+      {facts.resourceType === "ec2:route-table" && (
+        <>
+          <h6>경로 {facts.routes.length}개</h6>
+          {facts.routes.length === 0 ? (
+            <p className="muted small">
+              이 평가에는 이 표의 경로가 없다 — 조회기가 경로를 기록하기 전에 만들어진 평가다.
+              다시 조회하면 채워진다.
+            </p>
+          ) : (
+            <table className="panel-routes">
+              <thead><tr><th>목적지</th><th>대상</th><th>상태</th></tr></thead>
+              <tbody>
+                {facts.routes.map((r) => {
+                  const dflt = r.destination === "0.0.0.0/0" || r.destination === "::/0";
+                  return (
+                    <tr key={`${r.destination}|${r.target}`} className={dflt ? "panel-route-default" : undefined}>
+                      <td><code>{r.destination}</code>{dflt && <span className="muted"> 기본</span>}</td>
+                      <td><code>{r.target}</code></td>
+                      <td className={r.state === "blackhole" ? "sensitive" : "muted"}>{r.state || "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          <p className="muted small">
+            <strong>기본 경로(0.0.0.0/0 · ::/0)가 <code>igw-</code>로 가면</strong> 이 표에 연결된
+            서브넷이 퍼블릭이다. 좁은 대역만 게이트웨이로 가는 표는 퍼블릭이 아니고,{" "}
+            <code>eigw-</code>는 IPv6 송신 전용이라 퍼블릭이 아니다.
+          </p>
+        </>
+      )}
+
       <h6>이 정책이 이 자원에 허용하는 작업 {facts.actions.length}개</h6>
       {/* The two facts that change what the list MEANS, and both come from the group rather than
           from the resource: a policy that named no resource covers what is made next, and a group
@@ -1146,10 +1182,20 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   비어 있고 그렇다고 적는다. 볼륨은 상자 아래에 선으로 붙는다 — 부착이지 포함이 아니다.
                 </li>
                 <li>
-                  <strong>연한 하늘색 서브넷</strong> — 퍼블릭: 연결된 라우팅 테이블(명시적 연결이
-                  없으면 VPC의 기본 테이블)에 인터넷 게이트웨이로 가는 경로가 있다.{" "}
-                  <strong>연한 초록 서브넷</strong> — 프라이빗: 그 경로가 없다. 색이 없으면 이 평가에
-                  그 서브넷의 라우팅 테이블이 없다.
+                  <strong>연한 하늘색 서브넷</strong> — 퍼블릭: 연결된 라우팅 테이블의{" "}
+                  <strong>기본 경로(0.0.0.0/0 · ::/0)가 <code>igw-</code>로 간다.</strong>{" "}
+                  <strong>연한 초록 서브넷</strong> — 프라이빗: 기본 경로가 없거나 다른 곳으로 간다.
+                  좁은 대역만 게이트웨이로 보내는 표는 퍼블릭이 아니고, <code>eigw-</code>는 IPv6
+                  송신 전용이라 퍼블릭이 아니다. 색이 없으면 이 평가에 그 서브넷의 라우팅 테이블이
+                  없다는 뜻이다.
+                </li>
+                <li>
+                  <strong>서브넷 이름 옆의 라우팅 테이블</strong> — 그 서브넷이 연결된 표와, 색의
+                  근거가 된 기본 경로다. 명시적 연결이 없으면 VPC의 기본 테이블이고, 선은 촘촘한
+                  점선으로 그린다. 표를 누르면 경로 전부를 볼 수 있다.{" "}
+                  <code>(경로 미기록)</code>이라고 적혀 있으면 조회기가 경로를 기록하기 전의
+                  평가여서 「게이트웨이 경로가 하나라도 있는가」로 판단한 것이다 — 퍼블릭을 실제보다
+                  넓게 잡는다. 다시 조회하면 사라진다.
                 </li>
                 <li>
                   <strong>연결선</strong> — 전부 점선이고, 상자의 변에서 나와 직각으로만 꺾인다.

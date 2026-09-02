@@ -191,7 +191,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   // says so.
   const tableOf = new Map();            // subnet id -> route table id, the explicit association
   const mainTableOf = new Map();        // vpc id -> its main route table id
-  const toInternet = new Set();         // route table ids with a route to an internet gateway
+  const routesOf = new Map();           // route table id -> [{destination, target, state}]
+  const toInternet = new Set();         // tables with SOME internet-gateway route - the fallback
   for (const group of policy?.affected ?? []) {
     if (group?.resource_type !== 'ec2:route-table') continue;
     for (const r of group.resources ?? []) {
@@ -200,12 +201,53 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       for (const s of links.subnet ?? []) tableOf.set(s, id);
       for (const v of links.main ?? []) mainTableOf.set(v, id);
       if ((links.internet_gateway ?? []).length > 0) toInternet.add(id);
+      if (Array.isArray(r?.routes)) routesOf.set(id, r.routes);
     }
   }
+  /**
+   * The route that decides whether a subnet is public: the DEFAULT route, 0.0.0.0/0 for IPv4 and
+   * ::/0 for IPv6. A table can hold an internet-gateway route for one narrow prefix and be a
+   * perfectly private table; only where the default route goes decides it, which is why the
+   * querier records each route's destination beside its target.
+   *
+   * A blackhole route names a target that no longer exists. It is a route in the table and not a
+   * path to anywhere, so it never makes a subnet public - and it never makes it private either,
+   * because the table's default route is broken rather than absent. It is returned and said.
+   */
+  const defaultRoutesOf = (tableId) => (routesOf.get(tableId) ?? [])
+    .filter((route) => route?.destination === '0.0.0.0/0' || route?.destination === '::/0');
+  /**
+   * What a subnet is, and what says so. Four answers, and the difference between the last two is
+   * the whole reason the routes are read:
+   *
+   *   {tint: 'public'}    the default route goes to an internet gateway. MEASURED.
+   *   {tint: 'private'}   there is a default route and it goes somewhere else, or there is none.
+   *   {tint, basis:'links'}  an assessment made before the routes were recorded: the old
+   *                       approximation - "the table has SOME internet-gateway route" - which
+   *                       over-reports public, so the legend says the picture is guessing.
+   *   null                no route table for this subnet in this assessment. No colour at all.
+   */
   const tintOf = (subnetId, vpcId) => {
     const table = tableOf.get(subnetId) ?? mainTableOf.get(vpcId);
     if (!table) return null;
-    return toInternet.has(table) ? 'public' : 'private';
+    const routes = routesOf.get(table);
+    if (!routes) {
+      // Pre-routes assessment. Answer, and mark the answer as the weaker one it is.
+      return { tint: toInternet.has(table) ? 'public' : 'private', table, basis: 'links',
+               route: null };
+    }
+    // A table can carry a default route per address family - 0.0.0.0/0 to a NAT gateway and ::/0
+    // to an internet gateway - so every default route is considered, not the first.
+    //
+    // ONLY `igw-`. An egress-only internet gateway (`eigw-`) is the IPv6 analogue of a NAT
+    // gateway: traffic goes out and nothing comes back in. Counting it as public would print
+    // "퍼블릭" over a subnet nothing on the internet can reach, which is the one direction an
+    // approver must never be misled in.
+    const defaults = defaultRoutesOf(table);
+    const open = defaults.find((route) => route.state !== 'blackhole'
+      && `${route.target}`.startsWith('igw-')) ?? null;
+    return { tint: open ? 'public' : 'private', table, basis: 'routes',
+             route: open ?? defaults[0] ?? null };
   };
 
   // ---- 2. containers, measured off the rows ------------------------------------------------
@@ -476,7 +518,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     // public table sits nearest the gateway it routes to.
     const centreIds = members.filter((id) => CENTRE_TYPES.has(nodes.get(id).resourceType))
       .sort((p, q) => CENTRE_ORDER.indexOf(nodes.get(p).resourceType) - CENTRE_ORDER.indexOf(nodes.get(q).resourceType)
-        || (toInternet.has(q) ? 1 : 0) - (toInternet.has(p) ? 1 : 0) || p.localeCompare(q));
+        || (defaultRoutesOf(q).some((r) => `${r.target}`.startsWith('igw-')) || toInternet.has(q) ? 1 : 0)
+         - (defaultRoutesOf(p).some((r) => `${r.target}`.startsWith('igw-')) || toInternet.has(p) ? 1 : 0)
+        || p.localeCompare(q));
     const bandIds = members.filter((id) => !CENTRE_TYPES.has(nodes.get(id).resourceType));
     const zoneIds = [...new Set([...subnetInfo.entries()]
       .filter(([, i]) => i.vpc === vpcId).map(([, i]) => i.zone || '?'))].sort();
@@ -523,14 +567,28 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
         for (const subnetId of subnetsHere) {
           const info = subnetInfo.get(subnetId);
           const subnetRow = nodes.get(subnetId);
-          const tint = tintOf(subnetId, vpcId);
+          // Public or private, and WHAT SAYS SO, on the label band. The line the association is
+          // drawn as can be followed across a crowded picture; the table's id printed here cannot
+          // be lost, and the reader can check the claim against the route the note names.
+          const placeTint = tintOf(subnetId, vpcId);
+          const tint = placeTint?.tint ?? null;
+          const route = placeTint?.route ?? null;
+          const word = tint === 'public' ? '퍼블릭' : tint === 'private' ? '프라이빗' : '';
+          const why = !placeTint ? ''
+            : placeTint.basis === 'links'
+              ? ` · ${word} · ${placeTint.table} (경로 미기록)`
+              : route
+                ? ` · ${word} · ${placeTint.table}: ${route.destination} → ${route.target}`
+                  + (route.state === 'blackhole' ? ' (blackhole)' : '')
+                : ` · ${word} · ${placeTint.table}: 기본 경로 없음`;
           const sub = { id: `subnet:${subnetId}`, kind: 'subnet',
                         label: subnetRow?.name ? `서브넷 ${shortName(subnetRow.name)}` : '서브넷',
-                        note: (info.present ? subnetId : `${subnetId} · 평가에 없음`)
-                          + (tint === 'public' ? ' · 퍼블릭' : tint === 'private' ? ' · 프라이빗' : ''),
+                        note: (info.present ? subnetId : `${subnetId} · 평가에 없음`) + why,
                         x: az.x + PAD, y: sy, w: az.w - 2 * PAD, h: 0, stroke: null,
                         dashed: !info.present, badge: null, measured: true,
-                        title: subnetRow?.arn ?? null, tint };
+                        title: subnetRow?.arn ?? null, tint,
+                        routeTable: placeTint?.table ?? null,
+                        tintBasis: placeTint?.basis ?? null };
           containers.push(sub);
           const cards = budgeted((subnetMembers.get(subnetId) ?? []).map((id) => cardFor(id, sub.w - 2 * PAD)),
                                  sub.id, CARDS_PER_SUBNET);
@@ -1027,6 +1085,14 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     e.x2 = e.points[e.points.length - 1].x; e.y2 = e.points[e.points.length - 1].y;
     e.title = `${KIND_LABEL[e.kind]}${e.implicit ? ' (기본 라우팅 테이블에서 도출)' : ''}: `
       + `${endLabel(e.from)} — ${endLabel(e.to)}`;
+    // A route-table association carries the reason the subnet is coloured, so the line answers
+    // the question a reader hovers it to ask.
+    if (e.kind === 'association' && routesOf.has(e.from)) {
+      const defaults = defaultRoutesOf(e.from);
+      e.title += defaults.length === 0 ? '\n기본 경로 없음 — 프라이빗'
+        : `\n${defaults.map((r) => `${r.destination} → ${r.target}`
+          + (r.state === 'blackhole' ? ' (blackhole)' : '')).join(', ')}`;
+    }
   }
   const droppedEdges = {};
   let kept = edges;

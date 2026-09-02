@@ -954,6 +954,14 @@ export interface ImpactResource {
    * nothing recorded, which is not the same as "connected to nothing".
    */
   links?: Record<string, string[]>;
+  /** A ROUTE TABLE'S ROUTES, written only for `ec2:route-table` rows and only by an assessment
+   *  made after the querier read them. Absent - never null - everywhere else.
+   *
+   *  The destination is what makes this worth carrying: `links.internet_gateway` says the table
+   *  has SOME route to a gateway, and that does not make a subnet public. The DEFAULT route
+   *  (0.0.0.0/0, or ::/0) going to an `igw-` does, and only the pair says which. `state` is
+   *  'active' or 'blackhole'; a blackhole route names a target that no longer exists. */
+  routes?: { destination: string; target: string; state?: string }[];
 }
 
 export interface ImpactCoverage {

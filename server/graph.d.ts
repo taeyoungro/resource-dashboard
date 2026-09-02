@@ -44,6 +44,13 @@ export interface GraphContainer {
    *  else the VPC's main table - has a route to an internet gateway; private when it has none;
    *  null when the assessment holds no table for it. */
   tint?: "public" | "private" | null;
+  /** The route table this subnet is associated with - its explicit one, else the VPC's main
+   *  table - printed on the label band so the association survives a crowded picture. */
+  routeTable?: string | null;
+  /** How the tint was decided. 'routes' read the default route's destination and target and is
+   *  the measured answer; 'links' is the older approximation on an assessment made before the
+   *  routes were recorded, and over-reports public. */
+  tintBasis?: "routes" | "links" | null;
 }
 
 /** One resource. */
