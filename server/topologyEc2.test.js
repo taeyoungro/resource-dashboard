@@ -841,3 +841,21 @@ test('the extracted engine draws the EC2 scene it drew before', () => {
                  `the ${name} summary changed: a screen reader is told something different`);
   }
 });
+
+test('an EC2 row the lookup placed by its VPC id is placed, not unanswered', () => {
+  // The EC2 lookup writes vpc_id and subnet_id on the row and no `placement` word - that word is
+  // the Lambda and ECS lookups' - and the scene read the missing word as "the lookup did not
+  // answer", so 자원 N개는 조회가 답하지 않았다 stood over every EC2 assessment the lookup had in
+  // fact answered. A VPC id is the answer.
+  const policy = (groups) => ({ identifier: EC2_ARN, affected: groups });
+  const placed = ec2Scene(policy([group('ec2:instance', 1)]), ACCOUNT, null, true);
+  assert.equal(placed.placed, 1, 'a row with a VPC id was not counted as placed');
+  assert.deepEqual(placed.unmeasured, {}, 'a row with a VPC id was counted as unanswered');
+  // A row with neither the word nor a VPC is still unanswered: an assessment written before the
+  // lookup existed, or a row a denied Describe call never reached.
+  const bare = ec2Scene(policy([group('ec2:instance', 1, { resources: [{
+    arn: `arn:aws:ec2:ap-northeast-2:${ACCOUNT}:instance/i-0`, region: 'ap-northeast-2', tags: {}, sensitive: false,
+  }] })]), ACCOUNT, null, true);
+  assert.deepEqual(bare.unmeasured, { unanswered: 1 });
+  assert.equal(bare.placed, 0);
+});

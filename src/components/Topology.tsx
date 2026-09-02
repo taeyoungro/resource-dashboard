@@ -23,6 +23,16 @@
 // through to the service icon, so a type with no glyph of its own would draw the Amazon-EC2 tile.
 // In the panel's list that is decoration; here an EC2 tile inside the 보안 그룹 frame is a
 // placement claim about key pairs.
+//
+// THE EC2 WINDOW HAS TWO VIEWS. The type picture above is one; the other is the relationship
+// picture out of server/graph.js - one plate per resource, one line per connection the querier
+// read off the resource itself (an instance's interfaces, groups, volumes and image; a route
+// table's and a network ACL's subnets; a route's gateway), inside the VPC, zone and subnet the
+// resource said it was in. The type picture stays because it is the honest answer for an
+// assessment written before the querier recorded any of that, and because a reader who wants the
+// counts by type is not served by four hundred plates. The two views share the filter bar, the
+// notes and the table's grammar; what differs is the caveats and the legend, because what each
+// picture measured differs.
 
 import { useId, useMemo, useRef, useState } from "react";
 import type { ImpactCoverage, ImpactPolicy } from "../types";
@@ -32,6 +42,10 @@ import type {
 import {
   enumeratedFor, facets as facetsOf, scene as sceneOf, sceneSummary, specOf,
 } from "../../server/topology.js";
+import type {
+  EdgeKind, GraphContainer, GraphEdge, GraphNode, GraphOverflow, RelationScene,
+} from "../../server/graph.js";
+import { G_ICON, KIND_LABEL, graphSummary, relationScene } from "../../server/graph.js";
 
 /**
  * One frame: the box, its badge, and a label band of up to three parts.
@@ -240,6 +254,207 @@ function SceneTable({ scene, spec }: { scene: Scene; spec: TopologySpec }) {
   );
 }
 
+/* ---- the relationship picture ----------------------------------------------------------------
+ * The same division of labour as above: server/graph.js decides every coordinate, every label and
+ * every line, and what follows draws what it was handed. */
+
+/**
+ * One container's border: the cloud, the region, a VPC, a zone, a subnet.
+ *
+ * Dashed for exactly one reason, and the engine states it (GraphContainer.dashed). The AWS group
+ * colour arrives as an inline style for the reason FrameShape gives: a stroke attribute loses to
+ * the stylesheet. The label is a separate component because it is painted on a different layer -
+ * see GraphFigure.
+ */
+function GraphContainerShape({ box }: { box: GraphContainer }) {
+  const cls = `graph-box graph-box-${box.kind}${box.dashed ? " graph-box-dashed" : ""}`;
+  return (
+    <g className={cls}>
+      <rect
+        className="graph-box-rect"
+        x={box.x} y={box.y} width={box.w} height={box.h} rx={4}
+        style={box.stroke ? { stroke: box.stroke } : undefined}
+        strokeDasharray={box.dashed ? "6 4" : undefined}
+      >
+        {box.title && <title>{box.title}</title>}
+      </rect>
+    </g>
+  );
+}
+
+/**
+ * One container's label band, painted OVER the lines with a halo in the ground colour, so a line
+ * that crosses a label passes under the letters and the label stays readable.
+ */
+function GraphContainerLabel({ box }: { box: GraphContainer }) {
+  const cls = `graph-box graph-box-${box.kind}${box.dashed ? " graph-box-dashed" : ""}`;
+  return (
+    <g className={cls}>
+      {box.badge && (
+        <image href={`/aws-icons/${box.badge}`} x={box.x + 8} y={box.y + 5} width={18} height={18} />
+      )}
+      <text className="graph-box-text" x={box.x + (box.badge ? 30 : 10)} y={box.y + 18}>
+        <tspan className="graph-box-label">{box.label}</tspan>
+        {box.note && <tspan className="graph-box-note" dx="6">{box.note}</tspan>}
+      </text>
+    </g>
+  );
+}
+
+/**
+ * One resource: a plate, the glyph, the Name tag or the short id, and the other one under it.
+ *
+ * The plate is drawn before the icon for SlotShape's reason - a glyph that fails to load and a
+ * type that has none leave the same plate. A type with no glyph prints its Korean name where the
+ * glyph would be, so a plate is never a bare id.
+ */
+function GraphNodeShape({ node }: { node: GraphNode }) {
+  return (
+    <g className={`graph-node graph-node-${node.resourceType.replace(":", "-")}`}>
+      {node.erase && (
+        <rect className="topo-erase" x={node.x} y={node.y} width={node.w} height={node.h} />
+      )}
+      <rect
+        className={node.sensitive ? "graph-plate graph-plate-sensitive" : "graph-plate"}
+        x={node.x} y={node.y} width={node.w} height={node.h} rx={4}
+      >
+        <title>{node.title}</title>
+      </rect>
+      {node.icon ? (
+        <image href={`/aws-icons/${node.icon}`} x={node.x + (node.w - G_ICON) / 2} y={node.y + 6}
+               width={G_ICON} height={G_ICON} />
+      ) : (
+        <text className="graph-node-type" x={node.x + node.w / 2} y={node.y + 24} textAnchor="middle">
+          {node.typeLabel}
+        </text>
+      )}
+      <text className="graph-node-label" x={node.x + node.w / 2} y={node.y + 50} textAnchor="middle">
+        {node.label}
+      </text>
+      <text className="graph-node-sub" x={node.x + node.w / 2} y={node.y + 65} textAnchor="middle">
+        {node.sub}
+      </text>
+    </g>
+  );
+}
+
+/** What the budget left out of one container, as a plate that is visibly not a resource. */
+function GraphOverflowShape({ plate }: { plate: GraphOverflow }) {
+  return (
+    <g>
+      <rect
+        className="graph-plate graph-plate-overflow"
+        x={plate.x} y={plate.y} width={plate.w} height={plate.h} rx={4} strokeDasharray="4 3"
+      >
+        <title>{plate.label}</title>
+      </rect>
+      <text className="graph-node-label" x={plate.x + plate.w / 2} y={plate.y + plate.h / 2 + 4}
+            textAnchor="middle">
+        {plate.label}
+      </text>
+    </g>
+  );
+}
+
+/**
+ * One connection. The engine's polyline, coloured by kind, dashed when the engine derived it
+ * rather than read it, and with an arrowhead only on a route - the one kind that has a direction
+ * (a route points at its gateway). Membership and attachment have none, and an arrowhead on them
+ * would claim one.
+ *
+ * A ring on each end. Lines are painted under the plates, so a line can vanish under a plate it
+ * does not end at and reappear on the far side; the rings are what says where it really stops.
+ * The route's far end has the arrowhead instead.
+ */
+function GraphEdgeShape({ edge, uid }: { edge: GraphEdge; uid: string }) {
+  const kind = `graph-edge graph-edge-${edge.kind}`;
+  const cls = `${kind}${edge.implicit ? " graph-edge-implicit" : ""}`;
+  return (
+    <g>
+      <polyline
+        className={cls}
+        points={edge.points.map((p) => `${p.x},${p.y}`).join(" ")}
+        markerEnd={edge.kind === "route" ? `url(#${uid}-ga)` : undefined}
+      >
+        <title>{edge.title}</title>
+      </polyline>
+      <circle className={`${kind} graph-edge-end`} cx={edge.x1} cy={edge.y1} r={2.5} />
+      {edge.kind !== "route" && (
+        <circle className={`${kind} graph-edge-end`} cx={edge.x2} cy={edge.y2} r={2.5} />
+      )}
+    </g>
+  );
+}
+
+/**
+ * The relationship picture, in layers: the container borders, then the lines, then the container
+ * labels over the lines, then the overflow plates and the resource plates over everything, so a
+ * line never runs across a plate or a label; the foot last. The <desc> is graphSummary(), which
+ * has its own unit test.
+ */
+function GraphFigure({ scene, name, title, uid }:
+                     { scene: RelationScene; name: string; title: string; uid: string }) {
+  return (
+    <svg
+      className="topology-svg"
+      viewBox={`0 0 ${scene.width} ${scene.height}`}
+      width={scene.width}
+      height={scene.height}
+      preserveAspectRatio="xMinYMin meet"
+      fontFamily="inherit"
+      role="img"
+      aria-labelledby={`${uid}-gt ${uid}-gd`}
+    >
+      <title id={`${uid}-gt`}>{`${name}이 닿는 ${title} 자원 연결 관계도`}</title>
+      <desc id={`${uid}-gd`}>{graphSummary(scene)}</desc>
+      <defs>
+        <marker id={`${uid}-ga`} viewBox="0 0 8 8" refX="8" refY="4"
+                markerWidth="5" markerHeight="5" orient="auto">
+          <path className="graph-edge-marker" d="M 0 0 L 8 4 L 0 8 z" />
+        </marker>
+      </defs>
+      <rect className="topo-ground" x={0} y={0} width={scene.width} height={scene.height} />
+      {scene.containers.map((c) => <GraphContainerShape key={c.id} box={c} />)}
+      {scene.edges.map((e) => (
+        <GraphEdgeShape key={`${e.kind}|${e.from}|${e.to}`} edge={e} uid={uid} />
+      ))}
+      {scene.containers.map((c) => <GraphContainerLabel key={c.id} box={c} />)}
+      {scene.overflow.map((o) => <GraphOverflowShape key={o.container} plate={o} />)}
+      {scene.nodes.map((n) => <GraphNodeShape key={n.id} node={n} />)}
+      {scene.foot.map((line) => (
+        <text className="topo-foot" key={line.text} x={8} y={line.y}>{line.text}</text>
+      ))}
+    </svg>
+  );
+}
+
+/**
+ * The table under the relationship picture: one row per DRAWN resource, with the number of lines
+ * that touch it. What the budget left out is not here - the foot line says how many, and the
+ * filter bar is how to see them.
+ */
+function GraphTable({ scene }: { scene: RelationScene }) {
+  return (
+    <table className="topology-table">
+      <thead>
+        <tr><th>유형</th><th>이름</th><th>ID</th><th>자리</th><th>연결</th><th>민감</th></tr>
+      </thead>
+      <tbody>
+        {scene.rows.map((row) => (
+          <tr key={row.id}>
+            <td>{row.typeLabel} <code>{row.resourceType}</code></td>
+            <td className={row.name ? undefined : "none"}>{row.name || "—"}</td>
+            <td><code>{row.id}</code></td>
+            <td className={row.where ? undefined : "none"}>{row.where || "없음"}</td>
+            <td className={row.degree > 0 ? undefined : "none"}>{row.degree > 0 ? row.degree : "—"}</td>
+            <td className={row.sensitive ? "sensitive" : "none"}>{row.sensitive ? "민감" : "—"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 /**
  * One dimension of the filter: 전체 plus a checkbox per value, with the count beside it.
  *
@@ -436,7 +651,24 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
     () => sceneOf(policy, accountId, filter, enumerated),
     [policy, accountId, filter, enumerated],
   );
+  // The relationship picture, for the policies whose spec has one. Null for the others, and then
+  // the window has one view and no switch.
+  const wholeGraph = useMemo(
+    () => relationScene(policy, accountId, null, enumerated), [policy, accountId, enumerated],
+  );
+  const graph = useMemo(
+    () => relationScene(policy, accountId, filter, enumerated),
+    [policy, accountId, filter, enumerated],
+  );
+  // Which picture the window shows. Null is "not chosen", and the document then decides: an
+  // assessment that recorded a placement or a link opens on the relationship picture, an older
+  // one that recorded neither opens on the type picture, because a graph of unconnected plates in
+  // one region band says less than the type picture does. Unlike the filter this may outlive the
+  // window: it is visible state, the pressed button says which view is up.
+  const [chosenView, setChosenView] = useState<"graph" | "types" | null>(null);
   if (!scene || !whole || !facets || !spec) return null;
+  const view: "graph" | "types" = graph && wholeGraph
+    ? (chosenView ?? (wholeGraph.informative ? "graph" : "types")) : "types";
 
   // Read off the UNFILTERED scene. The line beside a closed button says what the policy reaches;
   // a filter set inside the window is a property of the window, and letting it change this line
@@ -462,6 +694,10 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
         {spec.words.title} 자원 {whole.kinds}종 · {whole.measured.toLocaleString()}개
         {whole.truncated && " 이상"} · {regionLabel}
         {whole.unslotted.length > 0 && ` · 자리 없는 유형 ${whole.unslotted.length}종`}
+        {/* Off the UNFILTERED graph, for the reason the line above reads the unfiltered scene. A
+            spent line budget makes the count a floor, the same way truncation does above. */}
+        {wholeGraph?.informative && ` · 연결 ${wholeGraph.counts.edges.toLocaleString()}개`}
+        {wholeGraph?.informative && wholeGraph.counts.droppedEdgeTotal > 0 && " 이상"}
       </span>
 
       {/* The click that closes this is decided by COORDINATES and not by identity. e.target is the
@@ -486,15 +722,53 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
       >
         <div className="policy-dialog-body">
           <h4 id={`${uid}-h`}>
-            이 정책이 닿는 {spec.words.title} 자원의 구성도{" "}
+            이 정책이 닿는 {spec.words.title} 자원의 {view === "graph" ? "연결 관계도" : "구성도"}{" "}
             <span className="muted">— <code>{name}</code></span>
           </h4>
+
+          {/* The switch, offered only when the spec has both pictures. Two pressed/unpressed
+              buttons rather than a tab strip: the pictures share the filter bar, the notes and the
+              닫기 row, so they are two views of one window and not two panels. */}
+          {graph && wholeGraph && (
+            <div className="topology-views" role="group" aria-label="그림 종류">
+              <button type="button" aria-pressed={view === "graph"}
+                      onClick={() => setChosenView("graph")}>
+                연결 관계
+              </button>
+              <button type="button" aria-pressed={view === "types"}
+                      onClick={() => setChosenView("types")}>
+                유형별 자리
+              </button>
+              <span className="muted small">
+                {view === "graph"
+                  ? "자원 하나가 판 하나이고, 조회기가 읽은 연결 하나가 선 하나다."
+                  : "유형 하나가 판 하나이고, 그 유형이 놓이는 자리에 있다. 실제 값은 개수뿐이다."}
+              </span>
+            </div>
+          )}
 
           {/* ABOVE the picture and OUTSIDE the scrolling region below, so these two cannot scroll
               away from what they qualify. A caveat that scrolls off is a caveat somebody
               screenshots without - and showModal() focuses this rather than the first checkbox in
               the filter bar, so a screen reader reaches the caveats before the controls. */}
           <div className="topology-caveats" id={`${uid}-c`} tabIndex={-1} autoFocus>
+            {/* The relationship picture's one caveat. Everything in it was read off a resource -
+                which is the claim - so what has to be said is what "read" covers and what a
+                missing line means. */}
+            {view === "graph" && graph && (
+              <p className="muted small">
+                이 그림은 자원 하나를 판 하나로 그리고,{" "}
+                <strong>조회기가 자원마다 읽은 연결</strong>을 선으로 잇는다 — 인스턴스에 붙은
+                네트워크 인터페이스·볼륨·보안 그룹·AMI, 서브넷에 붙은 라우팅 테이블과 네트워크 ACL과
+                엔드포인트, 라우팅 테이블의 경로가 가리키는 게이트웨이. 테두리는{" "}
+                <strong>자원이 자기 자리라고 답한 VPC·가용 영역·서브넷</strong>이다.{" "}
+                선이 없다고 연결이 없다는 뜻은 아니다 — 조회기는 위의 연결만 읽고, 상대가 이 평가에
+                없는 연결은 그림 밖으로 나간 것으로 센다. 무엇이 무엇과 통신하는지는 여전히 답하지
+                않는다 — 보안 그룹 선은 규칙이 아니라 소속이다.
+              </p>
+            )}
+            {view === "types" && (
+              <>
             <p className="muted small">
               이 그림은 자원을{" "}
               <strong>유형에 따라 {spec.words.title} 구성에서 놓이는 자리</strong>에 놓은 것이다.
@@ -513,8 +787,8 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
                 자원마다 실제 값인 것은 <strong>계정과 리전과 개수</strong>뿐이다. 가용 영역은
                 평가에 없어서 테두리만 그리고 개수를 적지 않는다. 개수는{" "}
                 <strong>리전을 합친 수</strong>다 — 리전별로 보려면 위의 자원 목록에 리전마다
-                관리콘솔 링크가 있다. 자원끼리의 연결선은 그리지 않는다. 무엇이 무엇과 통신하는지는
-                이 평가가 답하지 않는 질문이다.
+                관리콘솔 링크가 있다. 자원끼리의 연결선은 그리지 않는다 — 그것은 「연결 관계」
+                그림의 일이다. 무엇이 무엇과 통신하는지는 두 그림 모두 답하지 않는다.
               </p>
             )}
             {scene.kind === "lambda" && (
@@ -535,6 +809,8 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
                 조회하지 않는다 — 태스크의 서브넷은 모델이 이름을 정해 두지 않은 자리에 들어 있어서,
                 읽어 오면 못 읽은 것과 구별되지 않는다. 개수는 <strong>리전을 합친 수</strong>다.
               </p>
+            )}
+              </>
             )}
           </div>
 
@@ -568,6 +844,74 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
             </p>
           )}
 
+          {view === "graph" && graph && (
+            <>
+              <div className="topology-figure" tabIndex={0} role="group" aria-label="자원 연결 관계도">
+                <GraphFigure scene={graph} name={name} title={spec.words.title} uid={uid} />
+              </div>
+
+              <ul className="topology-legend">
+                <li>
+                  <strong>실선 테두리</strong> — 조회기가 기록한 소속이다. 계정·리전·VPC·가용
+                  영역·서브넷, 자원마다 <code>VpcId</code>·<code>SubnetId</code>·가용 영역으로 읽었다.
+                </li>
+                {graph.containers.some((c) => c.dashed) && (
+                  <li>
+                    <strong>점선인 테두리</strong> — 자원들이 자기 자리라고 답했지만 그 VPC나 서브넷
+                    자체는 이 평가에 없거나, 가용 영역을 읽지 못한 서브넷이다. 안의 자원은 실제
+                    값이고 테두리만 빌린 것이다.
+                  </li>
+                )}
+                <li>
+                  <strong>연결선</strong> — 종류마다 색이 다르다.{" "}
+                  {(Object.keys(KIND_LABEL) as EdgeKind[]).map((kind) => (
+                    <span key={kind} className="graph-legend-item">
+                      <svg className="graph-legend-swatch" width="28" height="8" aria-hidden="true">
+                        <line className={`graph-edge graph-edge-${kind}`} x1="0" y1="4" x2="28" y2="4" />
+                      </svg>
+                      {KIND_LABEL[kind]}
+                    </span>
+                  ))}
+                </li>
+                {graph.counts.implicitEdges > 0 && (
+                  <li>
+                    <strong>점선 연결</strong> — 기본 라우팅 테이블에서 도출한 것이다. 명시적 연결이
+                    없는 서브넷은 VPC의 기본 라우팅 테이블을 쓴다는 AWS의 규칙이고, 조회기가 그 연결을
+                    읽은 것은 아니다.
+                  </li>
+                )}
+                {graph.edges.some((e) => e.kind === "route") && (
+                  <li>
+                    <strong>화살표</strong> — 라우팅 테이블의 경로가 가리키는 게이트웨이다. 경로표의
+                    대상이지 트래픽을 확인한 것이 아니다.
+                  </li>
+                )}
+                <li>
+                  <strong>민감 자원</strong> — 자원 판의 <strong>빨간 테두리</strong>와 아래 표의{" "}
+                  <code>민감</code> 칸이 같은 것을 말한다. 보안 그룹 선의 색은 종류의 색이고 민감도와
+                  무관하다.
+                </li>
+                {(graph.overflow.length > 0 || graph.counts.droppedEdgeTotal > 0) && (
+                  <li>
+                    <strong>「외 N개」 판과 그리지 못한 연결</strong> — 한 그림과 한 서브넷에 놓는
+                    자원 수, 한 그림에 긋는 선 수에 한도가 있다. 넘친 수는 판과 그림 아래 줄에 적혀
+                    있고, 아래 표에는 그린 자원만 있다. 계정·리전·VPC·서브넷으로 좁히면 나머지가
+                    보인다.
+                  </li>
+                )}
+                <li>
+                  <strong>판 위의 이름</strong> — <code>Name</code> 태그가 있으면 그것이고 그 아래가
+                  ID다. 없으면 ID가 위에, 유형이 아래에 있다. 긴 ID는 가운데를 줄였고, 판 위에 마우스를
+                  올리면 전체가 보인다.
+                </li>
+              </ul>
+
+              <GraphTable scene={graph} />
+            </>
+          )}
+
+          {view === "types" && (
+            <>
           <div className="topology-figure" tabIndex={0} role="group" aria-label="자원 구성도">
             <Figure scene={scene} name={name} title={spec.words.title} uid={uid} />
           </div>
@@ -657,6 +1001,8 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
           )}
 
           <SceneTable scene={scene} spec={spec} />
+            </>
+          )}
 
           {scene.omitted.length > 0 && (
             <p className="muted small">

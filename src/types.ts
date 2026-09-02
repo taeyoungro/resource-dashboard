@@ -923,6 +923,37 @@ export interface ImpactResource {
    */
   vpc_id?: string;
   subnet_id?: string;
+  /**
+   * Every subnet a resource NAMES - a Lambda function or an ECS service attaches network
+   * interfaces in up to sixteen. The plural is a different fact from subnet_id above, which is the
+   * ONE subnet an EC2 instance is in; both are kept.
+   */
+  subnet_ids?: string[];
+  /** ECS only: the cluster ARN DescribeServices returned for this service, or the row's own ARN
+   *  for a cluster. A typed field, never parsed out of the service ARN. */
+  cluster?: string;
+  /**
+   * Whether the placement lookup answered for this row, and what it said - Lambda functions and
+   * ECS services only. 'vpc' | 'none' | 'subnet-unknown' | 'no-cluster' | 'over-budget' |
+   * 'failed'; ABSENT when the lookup did not run, did not answer for this row, or the assessment
+   * predates the field. 'none' is an ANSWER ("AWS says this is in no VPC") and the ordinary state
+   * for a function.
+   */
+  placement?: string;
+  /** The availability zone, for the EC2 types AWS places in one: an instance, a subnet, a volume,
+   *  a network interface. Absent on a region-scoped type is a fact; absent on a subnet means the
+   *  lookup did not answer. */
+  zone?: string;
+  /**
+   * WHAT THIS RESOURCE IS CONNECTED TO, as {relation: [ids]}, read off the Describe answers by the
+   * querier - never inferred. Ids, not ARNs, because that is what the answers carry; the
+   * relationship diagram joins each to the row whose ARN ends in it. Relations today:
+   * network_interface, security_group, volume, image, instance, subnet, route_table,
+   * internet_gateway, nat_gateway, and two flags whose target is the VPC - `main` (this route
+   * table is the VPC's main table) and `default` (this ACL is the VPC's default). Absent means
+   * nothing recorded, which is not the same as "connected to nothing".
+   */
+  links?: Record<string, string[]>;
 }
 
 export interface ImpactCoverage {
