@@ -112,10 +112,51 @@ const boxes = (scene) => new Map([
   ...scene.nodes.map((n) => [n.id, n]),
 ]);
 
-test('only the EC2 policy gets a relationship picture', () => {
-  assert.equal(relationScene({ identifier: 'arn:aws:iam::aws:policy/AWSLambda_FullAccess', affected: [] }, A), null);
-  assert.equal(relationScene({ identifier: 'AdministratorAccess', affected: [] }, A), null);
-  assert.ok(sceneOf([]));
+test('every policy gets a relationship picture, whatever its actions reach', () => {
+  // The gate this used to assert - EC2 only - was wrong for THIS picture. A spec authorises the
+  // 유형별 자리 picture because that one puts a type where AWS normally puts it; here every border
+  // is a placement the querier read and every line is a link it read, so there is nothing to
+  // authorise. A policy nobody wrote a spec for draws exactly what was measured about it.
+  const bucket = (name) => ({ arn: `arn:aws:s3:::${name}`, region: 'us-east-1', tags: {} });
+  const role = (name) => ({ arn: `arn:aws:iam::${A}:role/${name}`, region: 'global', tags: {} });
+  const admin = {
+    identifier: 'AdministratorAccess',
+    affected: [
+      { service: 's3', resource_type: 's3:bucket', actions: ['s3:DeleteBucket'], scope: '*',
+        total: 2, truncated: false, sensitive_hits: 0, resources: [bucket('logs'), bucket('data')] },
+      { service: 'iam', resource_type: 'iam:role', actions: ['iam:PassRole'], scope: '*',
+        total: 1, truncated: false, sensitive_hits: 0, resources: [role('deployer')] },
+    ],
+  };
+  const scene = relationScene(admin, A);
+  assert.ok(scene, 'a policy outside the three specs gets no picture');
+  assert.deepEqual(scene.rows.map((r) => r.id).sort(), ['data', 'deployer', 'logs']);
+  // Named by their own type, because no spec names them and inventing a Korean word for four
+  // hundred services would be a table nobody could check.
+  assert.deepEqual([...new Set(scene.nodes.map((n) => n.typeLabel))].sort(), ['iam:role', 's3:bucket']);
+  // And drawn with the service's own icon rather than a blank tile.
+  assert.ok(scene.nodes.every((n) => n.icon?.startsWith('/aws-icons/')), 'a plate has no icon');
+  // Nothing measured places a bucket, so both land in the region band and no VPC is drawn.
+  assert.equal(scene.containers.filter((c) => c.kind === 'vpc').length, 0);
+  assert.equal(scene.counts.placedRows, 0);
+  // An empty policy still has nothing to draw, and says so rather than returning null.
+  assert.equal(relationScene({ identifier: 'AdministratorAccess', affected: [] }, A).empty, true);
+});
+
+test('an EC2 type is named the same whichever policy the picture was opened for', () => {
+  // The labels used to be read through the OPEN POLICY's spec, so AdministratorAccess printed
+  // `ec2:instance` where AmazonEC2FullAccess printed 「인스턴스」 - one resource, two names, on two
+  // screens an approver compares. They are keyed by type now.
+  const rows = ACCOUNT();
+  const named = (identifier) => {
+    const scene = relationScene({ identifier, affected: rows }, A);
+    return scene.nodes.find((n) => n.resourceType === 'ec2:instance');
+  };
+  const managed = named('arn:aws:iam::aws:policy/AmazonEC2FullAccess');
+  const admin = named('AdministratorAccess');
+  assert.equal(managed.typeLabel, '인스턴스');
+  assert.equal(admin.typeLabel, managed.typeLabel);
+  assert.equal(admin.icon, managed.icon);
 });
 
 test('every node is drawn inside the container its row names, and nowhere else', () => {

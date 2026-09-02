@@ -224,6 +224,12 @@ export interface Facets {
   /** Dimensions this assessment cannot serve, each with the reason: the spec's own static entries
    *  plus any dimension whose lookup answered for too little of the picture. */
   unavailable: { id: string; label: string; why: string }[];
+  /** Which dimensions this picture offers at all. Carried here rather than read off the spec beside
+   *  it: the bar sits over the relationship picture too, and that picture has no spec. */
+  dimensions: string[];
+  /** Whether one resource can name several subnets, so the chips can sum to more than the row
+   *  count. True without a spec - for an arbitrary policy some type in it can. */
+  multiSubnet: boolean;
 }
 
 /** null or an empty list on a dimension means 전체. */
@@ -235,7 +241,8 @@ export interface SceneFilter {
   clusters?: string[] | null;
 }
 
-export function facets(policy: ImpactPolicy): Facets | null;
+/** Never null now: the filter bar is over the relationship picture too, and that is every policy. */
+export function facets(policy: ImpactPolicy): Facets;
 export function filterActive(filter: SceneFilter | null): boolean;
 export function keeps(filter: SceneFilter | null, resource: ImpactResource): boolean;
 export function topologyPolicy(identifier: string): TopologyKind | null;

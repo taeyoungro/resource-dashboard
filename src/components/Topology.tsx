@@ -362,7 +362,7 @@ function GraphNodeShape({ node, onToggle, onSelect, selected, mark }: {
         </rect>
         {mark && <circle className="graph-mark" cx={node.x + node.w - 8} cy={node.y + 8} r={4} />}
         {node.icon && (
-          <image href={`/aws-icons/${node.icon}`} x={node.x + 8} y={node.y + 5} width={18} height={18} />
+          <image href={node.icon} x={node.x + 8} y={node.y + 5} width={18} height={18} />
         )}
         <text className="graph-box-text" x={node.x + (node.icon ? 30 : 10)} y={node.y + 18}>
           <tspan className="graph-node-label">{node.label}</tspan>
@@ -395,7 +395,7 @@ function GraphNodeShape({ node, onToggle, onSelect, selected, mark }: {
       </rect>
       {mark && <circle className="graph-mark" cx={node.x + node.w - 8} cy={node.y + 8} r={4} />}
       {node.icon ? (
-        <image href={`/aws-icons/${node.icon}`} x={node.x + (node.w - G_ICON) / 2} y={node.y + 6}
+        <image href={node.icon} x={node.x + (node.w - G_ICON) / 2} y={node.y + 6}
                width={G_ICON} height={G_ICON} />
       ) : (
         <text className="graph-node-type" x={node.x + node.w / 2} y={node.y + 24} textAnchor="middle">
@@ -816,16 +816,15 @@ function FacetPicker({ label, values, chosen, onChange }: {
  * speak for them, and folding them silently into "not in this VPC" would let an approver read a
  * denied optional permission as an empty VPC.
  */
-function FilterBar({ facets, filter, spec, onChange }: {
+function FilterBar({ facets, filter, onChange }: {
   facets: Facets;
   filter: SceneFilter;
-  spec: TopologySpec;
   onChange: (next: SceneFilter) => void;
 }) {
   /** One dimension, rendered only when the picture offers it and the data filled it. */
   const dimension = (id: keyof SceneFilter, label: string) => {
     const values = facets[id as "accounts"] ?? [];
-    if (!spec.dimensions.includes(id) || values.length === 0) return null;
+    if (!facets.dimensions.includes(id) || values.length === 0) return null;
     return (
       <FacetPicker
         label={label}
@@ -846,7 +845,7 @@ function FilterBar({ facets, filter, spec, onChange }: {
       {dimension("subnets", "서브넷")}
       {/* A resource can name up to sixteen subnets, so the chips can sum to more than the row
           count. Said out loud rather than folded away: folding it would mean picking one. */}
-      {spec.multiSubnet && facets.subnets.length > 0 && (
+      {facets.multiSubnet && facets.subnets.length > 0 && (
         <p className="muted small">
           한 자원이 서브넷을 여러 개 쓸 수 있어서, 서브넷 칩의 합은 자원 수보다 클 수 있다.
         </p>
@@ -1026,9 +1025,55 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
   // one region band says less than the type picture does. Unlike the filter this may outlive the
   // window: it is visible state, the pressed button says which view is up.
   const [chosenView, setChosenView] = useState<"graph" | "types" | null>(null);
-  if (!scene || !whole || !facets || !spec) return null;
-  const view: "graph" | "types" = graph && wholeGraph
-    ? (chosenView ?? (wholeGraph.informative ? "graph" : "types")) : "types";
+  if (!facets || !graph || !wholeGraph) return null;
+  /**
+   * Whether this policy gets a window at all.
+   *
+   * It used to be "is this one of three named policies". It is now a question about the ASSESSMENT:
+   * a policy whose actions reach a resource has a picture, and so does one whose lookup failed -
+   * there the empty picture is a fact about the assessment rather than about the policy, which is
+   * the sentence inside. A policy that reaches nothing, on an assessment that enumerated fine, gets
+   * no button: the group list above already says it reaches nothing, and an empty box would say it
+   * a second time less clearly.
+   *
+   * The three policies with a spec keep their window either way - their type picture draws the
+   * canonical frames whether or not a row landed in them, and that was true before this.
+   */
+  if (wholeGraph.empty && enumerated && !spec) return null;
+  /**
+   * Which picture is up.
+   *
+   * The relationship picture is drawn for every policy; the 유형별 자리 picture only where a spec
+   * says where each type belongs. So the fallback inverted: it used to be "types unless the graph
+   * is informative", and a policy with no spec has no types picture to fall back TO.
+   */
+  const typed = !!(spec && scene && whole);
+  const view: "graph" | "types" = typed
+    ? (chosenView ?? (wholeGraph.informative ? "graph" : "types")) : "graph";
+  /**
+   * What the window calls what it draws.
+   *
+   * 「EC2 자원」 for a policy whose spec names a service, plain 「자원」 for one without. A heading
+   * that named a service over a picture spanning four of them would be the heading lying about the
+   * picture - and for AdministratorAccess there is no service to name.
+   */
+  const subject = spec ? `${spec.words.title} 자원` : "자원";
+  /** The edge kinds this picture actually draws, in KIND_LABEL's order. The legend shows these. */
+  const drawnKinds = (Object.keys(KIND_LABEL) as EdgeKind[])
+    .filter((kind) => graph.edges.some((e) => e.kind === kind));
+  /**
+   * The line beside the closed button, off the UNFILTERED scene.
+   *
+   * The type scene where there is one, because that is the picture the button opens on for those
+   * policies and the line counts what it draws. The relationship scene otherwise - its `omitted`
+   * is rows the assessment counted and does not carry, which is what makes the count a floor there
+   * exactly as `truncated` does above.
+   */
+  const summary = whole
+    ? { kinds: whole.kinds, measured: whole.measured, regions: whole.regions,
+        floor: whole.truncated, unslotted: whole.unslotted.length }
+    : { kinds: wholeGraph.kinds, measured: wholeGraph.measured, regions: wholeGraph.regions,
+        floor: wholeGraph.omitted.length > 0, unslotted: 0 };
 
   // Read off the UNFILTERED scene. The line beside a closed button says what the policy reaches;
   // a filter set inside the window is a property of the window, and letting it change this line
@@ -1036,10 +1081,10 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
   //
   // A truncated enumeration makes the region list a floor exactly as it makes the count one, and
   // this line carried 이상 on the count while stating the regions flat.
-  const floor = whole.truncated ? " 이상" : "";
-  const regionLabel = whole.regions.length === 0 ? "리전 없음"
-    : whole.regions.length === 1 ? `리전 ${whole.regions[0]}${floor}`
-      : `리전 ${whole.regions.length}곳${floor}`;
+  const floor = summary.floor ? " 이상" : "";
+  const regionLabel = summary.regions.length === 0 ? "리전 없음"
+    : summary.regions.length === 1 ? `리전 ${summary.regions[0]}${floor}`
+      : `리전 ${summary.regions.length}곳${floor}`;
 
   return (
     <div className="topology-launch">
@@ -1051,9 +1096,9 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
         구성도 보기
       </button>
       <span className="muted small">
-        {spec.words.title} 자원 {whole.kinds}종 · {whole.measured.toLocaleString()}개
-        {whole.truncated && " 이상"} · {regionLabel}
-        {whole.unslotted.length > 0 && ` · 자리 없는 유형 ${whole.unslotted.length}종`}
+        {subject} {summary.kinds}종 · {summary.measured.toLocaleString()}개
+        {summary.floor && " 이상"} · {regionLabel}
+        {summary.unslotted > 0 && ` · 자리 없는 유형 ${summary.unslotted}종`}
         {/* Off the UNFILTERED graph, for the reason the line above reads the unfiltered scene. A
             spent line budget makes the count a floor, the same way truncation does above. */}
         {wholeGraph?.informative && ` · 연결 ${wholeGraph.counts.edges.toLocaleString()}개`}
@@ -1082,14 +1127,14 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
       >
         <div className="policy-dialog-body">
           <h4 id={`${uid}-h`}>
-            이 정책이 닿는 {spec.words.title} 자원의 {view === "graph" ? "연결 관계도" : "구성도"}{" "}
+            이 정책이 닿는 {subject}의 {view === "graph" ? "연결 관계도" : "구성도"}{" "}
             <span className="muted">— <code>{name}</code></span>
           </h4>
 
           {/* The switch, offered only when the spec has both pictures. Two pressed/unpressed
               buttons rather than a tab strip: the pictures share the filter bar, the notes and the
               닫기 row, so they are two views of one window and not two panels. */}
-          {graph && wholeGraph && (
+          {typed && (
             <div className="topology-views" role="group" aria-label="그림 종류">
               <button type="button" aria-pressed={view === "graph"}
                       onClick={() => setChosenView("graph")}>
@@ -1127,7 +1172,7 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                 않는다 — 보안 그룹 선은 규칙이 아니라 소속이다.
               </p>
             )}
-            {view === "types" && (
+            {view === "types" && scene && spec && (
               <>
             <p className="muted small">
               이 그림은 자원을{" "}
@@ -1177,30 +1222,30 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
           <div className="topology-scroll">
           {/* The lookup failed, so the empty picture below is a fact about this assessment and
               not about the policy. The panel says this in a banner - which this window covers. */}
-          {!scene.enumerated && (
+          {!enumerated && (
             <p className="error">
-              이 평가는 <strong>{spec.words.title} 자원 조회에 실패했다.</strong> 아래 그림이 비어 있는 것은 이
+              이 평가는 <strong>{subject} 조회에 실패했다.</strong> 아래 그림이 비어 있는 것은 이
               정책이 닿는 자원이 없다는 뜻이 아니라 세어 보지 못했다는 뜻이다.
             </p>
           )}
 
-          <FilterBar facets={facets} filter={filter} spec={spec} onChange={setFilter} />
+          <FilterBar facets={facets} filter={filter} onChange={setFilter} />
 
           {/* What the placement lookup did NOT answer, one sentence per reason, and only the
               reasons that actually occurred. Summing them would make a denied permission and a
               spent budget the same news; leaving them out would make either of them look like
               "AWS says these are in no VPC", which is the one thing they are not. */}
-          <UnmeasuredNote unmeasured={scene.unmeasured} />
+          {scene && <UnmeasuredNote unmeasured={scene.unmeasured} />}
 
           {/* What the filter took away, in the picture's own units. An approver who narrows and
               then reads a small number has to be able to tell "this policy reaches little" from
               "I am looking at part of it", and the picture alone cannot say which. */}
-          {scene.narrowed && (
+          {graph.narrowed && (
             <p className="warn-inline">
-              고른 조건만 그렸다 — {spec.words.title} 자원 {scene.kinds}종{" "}
-              {scene.measured.toLocaleString()}개.
-              조건 없이는 {whole.kinds}종 {whole.measured.toLocaleString()}개다.
-              {scene.empty && " 고른 조건에 맞는 자원이 없어서 계정과 리전 테두리만 남았다."}
+              고른 조건만 그렸다 — {subject} {(scene ?? graph).kinds}종{" "}
+              {(scene ?? graph).measured.toLocaleString()}개.
+              조건 없이는 {summary.kinds}종 {summary.measured.toLocaleString()}개다.
+              {(scene ?? graph).empty && " 고른 조건에 맞는 자원이 없어서 계정과 리전 테두리만 남았다."}
             </p>
           )}
 
@@ -1211,7 +1256,7 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   tall scene. The panel is the picture's equal here, as the table is below. */}
               <div className="graph-with-panel">
                 <div className="topology-figure" tabIndex={0} role="group" aria-label="자원 연결 관계도">
-                  <GraphFigure scene={graph} name={name} title={spec.words.title} uid={uid}
+                  <GraphFigure scene={graph} name={name} title={spec?.words.title ?? ""} uid={uid}
                                onToggle={toggle} onSelect={setChosen} selected={chosen}
                                marks={marks} />
                 </div>
@@ -1247,6 +1292,7 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   ACL·엔드포인트는 가운데 열에, 가용 영역은 그 좌우에 같은 수로 놓는다. 보안 그룹과
                   나머지는 그 위에 좌우로 번갈아 놓는다. 자리는 그리는 규칙이고, 소속은 테두리다.
                 </li>
+                {graph.nodes.some((n) => n.box) && (
                 <li>
                   <strong>인스턴스 상자</strong> — 누르면 붙은 네트워크 인터페이스가 안에 펼쳐지고, 다시
                   누르면 접힌다. 접혀 있어도 아래 표에는 인터페이스가 「인스턴스 안」으로 있다.{" "}
@@ -1254,6 +1300,14 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   인터페이스의 그룹이고, 펼치든 접든 선은 같다. 인터페이스가 이 평가에 없으면 상자는
                   비어 있고 그렇다고 적는다. 볼륨은 상자 아래에 선으로 붙는다 — 부착이지 포함이 아니다.
                 </li>
+                )}
+                {/* Both subnet lines together: they explain the same two marks - the colour and the
+                    table printed beside the name - and neither mark exists in a picture with no
+                    subnet in it. This file's own banner is the rule: a legend that explains marks
+                    the reader cannot see teaches them to skim it, and every policy draws this
+                    picture now, so most of them have no subnet. */}
+                {graph.containers.some((c) => c.kind === "subnet") && (
+                <>
                 <li>
                   <strong>연한 하늘색 서브넷</strong> — 퍼블릭: 연결된 라우팅 테이블의{" "}
                   <strong>기본 경로(0.0.0.0/0 · ::/0)가 <code>igw-</code>로 간다.</strong>{" "}
@@ -1270,10 +1324,16 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   평가여서 「게이트웨이 경로가 하나라도 있는가」로 판단한 것이다 — 퍼블릭을 실제보다
                   넓게 잡는다. 다시 조회하면 사라진다.
                 </li>
+                </>
+                )}
+                {/* The swatches are the kinds ACTUALLY DRAWN. Six colours over a picture holding
+                    two of them is five sentences about nothing, and the reader has no way to tell
+                    which of the six they are looking at. */}
+                {drawnKinds.length > 0 && (
                 <li>
                   <strong>연결선</strong> — 전부 점선이고, 상자의 변에서 나와 직각으로만 꺾인다.
                   종류마다 색이 다르다.{" "}
-                  {(Object.keys(KIND_LABEL) as EdgeKind[]).map((kind) => (
+                  {drawnKinds.map((kind) => (
                     <span key={kind} className="graph-legend-item">
                       <svg className="graph-legend-swatch" width="28" height="8" aria-hidden="true">
                         <line className={`graph-edge graph-edge-${kind}`} x1="0" y1="4" x2="28" y2="4" />
@@ -1282,6 +1342,7 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                     </span>
                   ))}
                 </li>
+                )}
                 {graph.counts.implicitEdges > 0 && (
                   <li>
                     <strong>촘촘한 점선</strong> — 기본 라우팅 테이블에서 도출한 연결이다. 명시적
@@ -1319,7 +1380,7 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
             </>
           )}
 
-          {view === "types" && (
+          {view === "types" && scene && spec && (
             <>
           <div className="topology-figure" tabIndex={0} role="group" aria-label="자원 구성도">
             <Figure scene={scene} name={name} title={spec.words.title} uid={uid} />
@@ -1413,11 +1474,23 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
             </>
           )}
 
-          {scene.omitted.length > 0 && (
+          {/* What the picture above has no plate for, per service. The two pictures leave out
+              different things and say so differently: the type picture leaves out the services its
+              spec does not place, and the relationship picture leaves out nothing by service - what
+              it cannot show is rows the ASSESSMENT counted and does not carry, because the
+              enumeration was cut. Naming either as the other would be a false reassurance. */}
+          {view === "types" && scene && spec && scene.omitted.length > 0 && (
             <p className="muted small">
               그림 밖 서비스:{" "}
               {scene.omitted.map((o) => `${o.service} ${o.total.toLocaleString()}개`).join(" · ")}
               {" "}— {spec.words.omitted} 위의 표는 이 그림의 자원만 담는다.
+            </p>
+          )}
+          {view === "graph" && graph.omitted.length > 0 && (
+            <p className="muted small">
+              평가가 행을 담지 않은 자원:{" "}
+              {graph.omitted.map((o) => `${o.service} ${o.total.toLocaleString()}개`).join(" · ")}
+              {" "}— 이 정책이 닿지만 목록이 잘려 이 그림에 판이 없다. 위의 개수는 하한이다.
             </p>
           )}
           </div>

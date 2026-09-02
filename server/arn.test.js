@@ -7,7 +7,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { parseArn } from './arn.js';
+import { parseArn, resourceId } from './arn.js';
+import { idOf } from './graph.js';
 
 test('the shapes the assessment actually carries', () => {
   for (const [arn, expected] of [
@@ -81,4 +82,21 @@ test('what does not parse comes back null, so the page shows the raw string inst
 test('a parse never produces an empty name', () => {
   // The one shape that could: REST that is ONLY a type token and a separator.
   assert.equal(parseArn('arn:aws:ec2:us-east-1:1:instance/'), null);
+});
+
+test('one resource has one short id, whichever screen prints it', () => {
+  // Two functions used to answer this and agreed only on `type/name` ARNs, which was every ARN the
+  // relationship picture drew while it drew EC2 alone. Drawing any policy put a colon-form ARN on a
+  // plate: the plate said `db:opt-main` and the panel that opens from clicking it said `opt-main`.
+  assert.equal(resourceId('arn:aws:rds:us-east-1:1:db:opt-main'), 'opt-main');
+  assert.equal(resourceId('arn:aws:lambda:us-east-1:1:function:opt-planner'), 'opt-planner');
+  // And every shape that already worked still answers what it answered.
+  assert.equal(resourceId('arn:aws:ec2:us-east-1:1:instance/i-0aaa111'), 'i-0aaa111');
+  assert.equal(resourceId('arn:aws:iam::1:role/opt-ApplierRole'), 'opt-ApplierRole');
+  assert.equal(resourceId('arn:aws:s3:::opt-logs'), 'opt-logs');
+  assert.equal(resourceId('arn:aws:sqs:us-east-1:1:opt-events'), 'opt-events');
+  assert.equal(resourceId('arn:aws:logs:us-east-1:1:log-group:/aws/lambda/foo'), 'foo');
+  assert.equal(resourceId(null), '');
+  // The picture's export IS this function rather than a copy that agrees with it today.
+  assert.equal(idOf, resourceId);
 });

@@ -123,18 +123,52 @@ export const COVERAGE_FLOOR = 0.5;
 export const TOPOLOGIES = { ec2: EC2_SPEC, lambda: LAMBDA_SPEC, ecs: ECS_SPEC };
 
 /**
- * The policies this module draws, and which picture each gets.
+ * The policies whose TYPE PICTURE this module draws, and which one each gets.
  *
- * Three entries, on the operator's direction: EC2 first, then Lambda and ECS. Widening it further
- * is one entry here plus one spec - and a spec is a CANONICAL TOPOLOGY, which is the part that is
- * not free. A load balancer has a place in an ECS picture only by accident, and a diagram that
- * invents a home for a resource is the exact failure this feature exists to avoid.
+ * Three entries, and this list is about the 유형별 자리 picture ALONE. That picture puts a type in
+ * the place AWS normally puts it - inside a VPC, inside a zone, on the regional rail - and that is
+ * a CANONICAL TOPOLOGY, which is the part that is not free. A load balancer has a place in an ECS
+ * picture only by accident, and a diagram that invents a home for a resource is the exact failure
+ * this feature exists to avoid. So widening it is still one entry here plus one spec.
+ *
+ * THE RELATIONSHIP PICTURE IS NOT GATED ON THIS, and has not been since it stopped asking. Every
+ * border in it is a placement the querier read off the resource and every line is a link it read,
+ * so it invents nothing and there is nothing for a spec to authorise - see relationScene in
+ * server/graph.js, which draws whatever the policy's actions reach.
  */
 export const DIAGRAMMED_POLICIES = new Map([
   ['AmazonEC2FullAccess', 'ec2'],
   ['AWSLambda_FullAccess', 'lambda'],
   ['AmazonECS_FullAccess', 'ecs'],
 ]);
+
+/**
+ * What one resource TYPE is called, and the glyph for it, harvested from every spec.
+ *
+ * KEYED BY TYPE AND NOT BY POLICY, which is the whole point of it existing. The specs are here
+ * because three services have an arrangement worth drawing; the labels and icons inside them are
+ * not about arrangement at all, and reading them through the open policy's spec meant an
+ * AdministratorAccess picture printed `ec2:instance` where the AmazonEC2FullAccess picture printed
+ * 「인스턴스」 - one resource, two names, on two screens a reader compares.
+ *
+ * A type in no spec gets no entry, and the caller prints the type itself. That IS the label:
+ * `s3:bucket` is what the assessment calls it, what the resource panel prints, and what an approver
+ * matches against the policy document. Inventing a Korean name for four hundred services would be
+ * a table nobody could check.
+ *
+ * First spec wins on a collision, and there is none today - the three specs name disjoint services.
+ */
+export const TYPE_LABEL = new Map();
+export const TYPE_ICON = new Map();
+for (const spec of Object.values(TOPOLOGIES)) {
+  for (const [type, slot] of Object.entries(spec.slots ?? {})) {
+    const label = slot?.kind === 'frame'
+      ? spec.frameLabel?.[slot.frame]
+      : (Array.isArray(slot?.label) ? slot.label.join(' ') : null);
+    if (label && !TYPE_LABEL.has(type)) TYPE_LABEL.set(type, label);
+    if (slot?.icon && !TYPE_ICON.has(type)) TYPE_ICON.set(type, slot.icon);
+  }
+}
 
 /**
  * Which topology a policy identifier gets, or null.
@@ -256,9 +290,43 @@ function placementOf(resource) {
  * why it is not there. Two ways in: a spec names it statically (ECS's 시작 유형 and 보안 그룹), or
  * the lookup answered for too little of the picture - see COVERAGE_FLOOR.
  */
+/**
+ * The dimensions a policy with no spec can be narrowed by, and how a row's placeability is decided
+ * without one.
+ *
+ * A spec names the types AWS scopes to a VPC, which is what keeps an unplaced volume from being
+ * counted as a lookup failure. No table on this page holds that answer for four hundred services,
+ * so for a policy with no spec it is MEASURED instead: a type is placeable when some row of it in
+ * THIS assessment carries a placement, or when the querier answered that it has none. A bucket
+ * therefore never lands in `unplaced` and never drags the VPC dimension under the coverage floor,
+ * and an instance whose placement failed still does - which is exactly what the two numbers mean.
+ */
+export const GENERIC_DIMENSIONS = ['accounts', 'regions', 'vpcs', 'subnets', 'clusters'];
+
+function placedTypes(policy) {
+  const out = new Set();
+  for (const group of policy?.affected ?? []) {
+    const type = group?.resource_type;
+    if (!type || out.has(type)) continue;
+    for (const resource of group.resources ?? []) {
+      if (vpcOf(resource) || clusterOf(resource) || subnetsOf(resource).length > 0
+          || placementOf(resource) === 'none') {
+        out.add(type);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export function facets(policy) {
   const spec = specOf(policy);
-  if (!spec) return null;
+  // Null services means every service, which is what a policy with no spec reaches. The three
+  // specs each narrow to their own, so their filter bars are unchanged.
+  const services = spec?.services ?? null;
+  const measured = spec ? null : placedTypes(policy);
+  const isPlaceable = (type) => (spec ? spec.placeable.has(type) : measured.has(type));
+  const dimensions = spec?.dimensions ?? GENERIC_DIMENSIONS;
   const counts = { accounts: new Map(), regions: new Map(), vpcs: new Map(), subnets: new Map(),
                    clusters: new Map() };
   // Rows the placement lookup says nothing about. Counted rather than dropped: a VPC filter cannot
@@ -275,8 +343,8 @@ export function facets(policy) {
   const bump = (map, key) => map.set(key, (map.get(key) ?? 0) + 1);
 
   for (const group of policy?.affected ?? []) {
-    if (!spec.services.has(group?.service)) continue;
-    const scoped = spec.placeable.has(group.resource_type);
+    if (services && !services.has(group?.service)) continue;
+    const scoped = isPlaceable(group.resource_type);
     for (const resource of group.resources ?? []) {
       const account = accountOf(resource);
       const region = regionOf(resource);
@@ -317,10 +385,10 @@ export function facets(policy) {
 
   const out = { accounts: [], regions: [], vpcs: [], subnets: [], clusters: [] };
   const coverage = {};
-  const unavailable = [...(spec.unavailable ?? [])];
+  const unavailable = [...(spec?.unavailable ?? [])];
   for (const dimension of ['accounts', 'regions', 'vpcs', 'subnets', 'clusters']) {
     coverage[dimension] = { known: known[dimension], applicable: applicable[dimension] };
-    if (!spec.dimensions.includes(dimension)) continue;
+    if (!dimensions.includes(dimension)) continue;
     if (applicable[dimension] > 0
         && known[dimension] / applicable[dimension] < COVERAGE_FLOOR) {
       unavailable.push({
@@ -333,7 +401,15 @@ export function facets(policy) {
     }
     out[dimension] = listed(counts[dimension]);
   }
-  return { ...out, unplaced, placeable, coverage, unavailable };
+  // dimensions and multiSubnet travel WITH the facets rather than being read off the spec beside
+  // them. The filter bar is over the relationship picture too, and that picture has no spec - so a
+  // bar that reached for one drew nothing for every policy outside the three.
+  //
+  // multiSubnet is true without a spec, and that is the safe direction: it only decides whether the
+  // bar says the subnet chips can sum to more than the row count, and for an arbitrary policy some
+  // type in it can (a Lambda function names up to sixteen).
+  return { ...out, unplaced, placeable, coverage, unavailable,
+           dimensions, multiSubnet: spec?.multiSubnet ?? true };
 }
 
 /** The Korean name of each filter dimension. Used for the unavailable notice; the bar's own labels

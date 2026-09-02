@@ -13,3 +13,6 @@ export interface ParsedArn {
 }
 
 export declare function parseArn(arn: string): ParsedArn | null;
+
+/** The short id a picture and a panel both call one resource by. See the comment in arn.js. */
+export declare function resourceId(arn: string): string;

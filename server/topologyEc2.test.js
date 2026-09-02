@@ -501,7 +501,37 @@ test('the facets are read off the rows', () => {
     { id: 'us-east-1', total: 2 },
   ]);
   assert.deepEqual(found.accounts, [{ id: ACCOUNT, total: 4 }]);
-  assert.equal(facets(policyOf(TWO_REGIONS, 'AdministratorAccess')), null);
+  // A policy with no spec is answered too - the filter bar sits over the relationship picture as
+  // well, and that picture is drawn for every policy. The rows are the same rows, so the answer is
+  // the same answer; what the spec decided and this now measures is which types have a placement.
+  const generic = facets(policyOf(TWO_REGIONS, 'AdministratorAccess'));
+  assert.deepEqual(generic.regions, found.regions);
+  assert.deepEqual(generic.accounts, found.accounts);
+  assert.deepEqual(generic.dimensions, ['accounts', 'regions', 'vpcs', 'subnets', 'clusters']);
+  assert.deepEqual(found.dimensions, ['accounts', 'regions', 'vpcs', 'subnets']);
+});
+
+test('a type nothing placed is not counted against the placement lookup', () => {
+  // Without a spec there is no table saying which types AWS scopes to a VPC, so it is measured:
+  // a bucket is in no VPC and never lands in `unplaced`, while an instance whose placement the
+  // querier could not read still does. Folding the two together would put the VPC dimension under
+  // the coverage floor on a perfectly measured account, and print 「배치를 읽지 못했다」 about
+  // resources AWS has no VPC answer for.
+  const bucket = { arn: 'arn:aws:s3:::logs', region: 'us-east-1', tags: {} };
+  const placed = { arn: `arn:aws:ec2:us-east-1:${ACCOUNT}:instance/i-1`, region: 'us-east-1',
+                   vpc_id: 'vpc-1', tags: {} };
+  const unplaced = { arn: `arn:aws:ec2:us-east-1:${ACCOUNT}:instance/i-2`, region: 'us-east-1',
+                     tags: {} };
+  const mixed = facets({
+    identifier: 'AdministratorAccess',
+    affected: [
+      { service: 's3', resource_type: 's3:bucket', total: 1, resources: [bucket] },
+      { service: 'ec2', resource_type: 'ec2:instance', total: 2, resources: [placed, unplaced] },
+    ],
+  });
+  assert.equal(mixed.placeable, 2, 'the bucket was counted as a row a VPC filter answers for');
+  assert.equal(mixed.unplaced, 1, 'the instance with no VPC was not counted, or the bucket was');
+  assert.deepEqual(mixed.vpcs, [{ id: 'vpc-1', total: 1 }]);
 });
 
 test('a region filter narrows the picture to that region', () => {
