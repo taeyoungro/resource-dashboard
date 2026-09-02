@@ -6,7 +6,7 @@ import type {
   Impact as ImpactAssessment, ImpactResource, Restriction, RiskAnalysisAnswer,
   RiskAnalysisCitation,
 } from "../types";
-import { GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
+import { CATEGORY_LABEL, GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
 import { BlockPath } from "./BlockPath";
 import { alreadyRestricted, containmentState } from "../../server/blockPath.js";
 import { actionDocUrl } from "../../server/actionDocs.js";
@@ -75,6 +75,15 @@ interface Props {
   ready: boolean;
   /** Raised whenever an answer arrives, so a decision can cite the analysis it was taken against. */
   onAnalysis: (citation: RiskAnalysisCitation | null) => void;
+  /**
+   * Raised with the findings themselves, keyed by the scope that produced them, so the resource
+   * diagram can say what was found ABOUT ONE RESOURCE when a reader clicks it.
+   *
+   * Keyed rather than merged here because a scope re-run replaces its own findings and must not
+   * leave the previous run's beside them; the same finding arriving from the plan scope and from
+   * its policy's scope is one finding, and the reader deduplicates by id.
+   */
+  onFindings: (scope: string, findings: Finding[]) => void;
   /**
    * The assessment and the SHARED restriction set, for cutting a path from its card. The card's
    * 차단 dialog writes into the same array the per-policy editor composes - one decision list, one
@@ -155,19 +164,19 @@ const AREA_LABEL: Record<FindingAxis, string> = {
 };
 
 const SECTIONS: { category: FindingCategory; label: string; why: string }[] = [
-  { category: "ESCALATION", label: "권한 상승",
+  { category: "ESCALATION", label: CATEGORY_LABEL.ESCALATION,
     why: "다른 권한을 얻는 경로. 자원이 무엇이든 동작 조합만으로 성립한다" },
-  { category: "EXPOSURE", label: "노출",
+  { category: "EXPOSURE", label: CATEGORY_LABEL.EXPOSURE,
     why: "내용이 밖으로 나가거나 외부에서 닿을 수 있게 되는 경로" },
-  { category: "EVASION", label: "통제 무력화",
+  { category: "EVASION", label: CATEGORY_LABEL.EVASION,
     why: "거부를 담당하던 설정이나 무슨 일이 있었는지 남기는 기록을 끄는 경로. 그 자체로는 아무것도 "
       + "얻지 않고, 다른 경로가 성립하거나 드러나지 않게 만든다" },
-  { category: "RECON", label: "정찰",
+  { category: "RECON", label: CATEGORY_LABEL.RECON,
     why: "무엇이 있는지 읽을 수 있는 경로. 그 자체로 접근을 주지는 않으며, 일부는 선언 경로에 "
       + "있어 정책 축소로 막을 수 없다 — 어느 쪽인지는 카드의 차단 불가 표시가 말한다" },
-  { category: "DESTRUCTIVE", label: "파괴",
+  { category: "DESTRUCTIVE", label: CATEGORY_LABEL.DESTRUCTIVE,
     why: "있는 것을 지우거나 멈출 수 있는 경로" },
-  { category: "COST", label: "비용",
+  { category: "COST", label: CATEGORY_LABEL.COST,
     why: "청구액을 늘릴 수 있는 경로. 침해가 아니므로 마지막에 두고, 등급도 침해와 같은 자리에 "
       + "놓지 않는다 — 상한은 이 정책이 아니라 서비스 할당량이 정한다" },
 ];
@@ -762,7 +771,8 @@ const POLL_MS = 3000;
  * one for the plan as a whole.
  */
 function RiskScope({
-  planId, policy, onAnalysis, assessment, restrictions, onRestrictions, restrictDisabled,
+  planId, policy, onAnalysis, onFindings, assessment, restrictions, onRestrictions,
+  restrictDisabled,
 }: ScopeProps) {
   const [answer, setAnswer] = useState<RiskAnalysisAnswer | null>(null);
   // Independent toggles, one per button, and never unset by the other - "both pressed" is a state
@@ -811,6 +821,13 @@ function RiskScope({
    */
   const settle = (next: RiskAnalysisAnswer) => {
     setAnswer(next);
+    // Both halves, in one list. The model's are already marked source: "model", which is what lets
+    // the diagram's panel draw them under their own heading; a discarded run cited an action
+    // granted nowhere, so its verdicts are not findings and none of them travels.
+    onFindings(policy ?? "__plan__", [
+      ...(next.rule_findings ?? []),
+      ...(next.analysis && !next.analysis.discarded ? next.analysis.findings ?? [] : []),
+    ]);
     onAnalysis(
       next.analysis && !next.analysis.discarded
         && next.analysis.findings_sha256 && next.analysis.impact_sha256

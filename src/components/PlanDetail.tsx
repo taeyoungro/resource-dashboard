@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
-  AssessmentState, Impact as Assessment, PassroleWithdrawal, PassroleWriter,
+  AssessmentState, Finding, Impact as Assessment, PassroleWithdrawal, PassroleWriter,
   PlanDetail as Detail, PlanRefusal, Restriction, RestrictionTemplate, RiskAnalysisCitation,
 } from "../types";
 import { mergeTemplate, seedFromTemplate } from "../../server/templates.js";
@@ -676,6 +676,16 @@ export function PlanDetail({
   // see. The form is shown read-only and the button refuses; see the notice below.
   const inForceUnknown = detail.restrictions_in_force === null;
   const [analysis, setAnalysis] = useState<RiskAnalysisCitation | null>(null);
+  /**
+   * The findings themselves, by the scope that produced them, so the resource diagram in the
+   * assessment panel can answer "what was found about THIS resource" without running anything of
+   * its own. Held here because the two panels are siblings: the analysis runs below, the diagram
+   * is drawn above, and this is the nearest place both can see.
+   *
+   * Cleared with the plan, exactly as the citation is: findings about the plan an approver just
+   * left, drawn on the plan they are looking at now, would be a lie with no way to see it.
+   */
+  const [findings, setFindings] = useState<Record<string, Finding[]>>({});
   // Whose PassRole request this approver has ticked. Nobody, until somebody is.
   const [grantTo, setGrantTo] = useState<string[]>([]);
   // And whose this approver has taken back. Separate state, because it is not the complement of the
@@ -686,7 +696,7 @@ export function PlanDetail({
   // the analysis panel. The citation names an assessment digest; carrying one from the previous plan
   // into this decision would be citing an analysis of something else, which the server would refuse
   // - correctly, but after the reviewer had already pressed the button.
-  useEffect(() => { setAnalysis(null); }, [detail.plan_id, detail.request_id]);
+  useEffect(() => { setAnalysis(null); setFindings({}); }, [detail.plan_id, detail.request_id]);
   // Dropped with the plan, for a harder reason than the citation above: a name carried over from a
   // previous inspection would confirm a request that inspection recorded and this one may not. The
   // server and the applier both refuse that, but only after the button was pressed.
@@ -856,6 +866,7 @@ export function PlanDetail({
             restrictions={restrictions}
             onChange={setRestrictions}
             disabled={busy || decided || inForceUnknown}
+            findings={findings}
           />
         </>
       ) : assessmentState === "in_progress" ? (
@@ -878,6 +889,7 @@ export function PlanDetail({
         planId={detail.plan_id}
         ready={!!detail.assessment}
         onAnalysis={setAnalysis}
+        onFindings={(scope, found) => setFindings((prev) => ({ ...prev, [scope]: found }))}
         assessment={detail.assessment ?? null}
         restrictions={restrictions}
         onRestrictions={setRestrictions}

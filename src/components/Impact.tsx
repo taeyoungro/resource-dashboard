@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
-  Impact as Assessment, ImpactActionReference, ImpactCoverage, ImpactGroup, ImpactPassRoleGrant,
-  ImpactPolicy, Restriction,
+  Finding, Impact as Assessment, ImpactActionReference, ImpactCoverage, ImpactGroup,
+  ImpactPassRoleGrant, ImpactPolicy, Restriction,
 } from "../types";
 import { consoleListUrl } from "../../server/consoleLinks.js";
 import { parseArn } from "../../server/arn.js";
@@ -67,6 +67,14 @@ interface Props {
   restrictions: Restriction[];
   onChange: (restrictions: Restriction[]) => void;
   disabled: boolean;
+  /**
+   * What the two analyses found, by the scope that produced them - the plan as a whole under
+   * "__plan__", an attached policy under its identifier. Only the resource diagram reads them:
+   * clicking a resource asks what was found ABOUT THAT RESOURCE, and the answer is a filter over
+   * these. Empty until somebody runs an analysis, and the diagram says so rather than saying
+   * nothing was found.
+   */
+  findings?: Record<string, Finding[]>;
 }
 
 /**
@@ -581,8 +589,17 @@ type ConditionFields = {
 };
 
 export function Impact({
-  assessment, source, restrictions, onChange, disabled,
+  assessment, source, restrictions, onChange, disabled, findings,
 }: Props) {
+  // One list, deduplicated by id: the plan scope and a policy scope both report the same finding,
+  // and the diagram's panel would otherwise draw it twice.
+  const allFindings = useMemo(() => {
+    const byId = new Map<string, Finding>();
+    for (const list of Object.values(findings ?? {})) {
+      for (const f of list) if (f?.id && !byId.has(f.id)) byId.set(f.id, f);
+    }
+    return [...byId.values()];
+  }, [findings]);
   const restrictable = assessment.policies.filter((p) => p.restrictable && !p.unreadable);
   const baseline = assessment.policies.filter((p) => p.is_baseline);
   const unreadable = assessment.policies.filter((p) => p.unreadable);
@@ -687,6 +704,7 @@ export function Impact({
             .find((g) => g.identifier === policy.identifier) ?? null}
           fenceGrants={fenceGrants}
           tagWriters={tagWriters}
+          findings={allFindings}
         />
       ))}
 
@@ -741,6 +759,7 @@ function PolicyBlock({
   passroleGrant,
   fenceGrants,
   tagWriters,
+  findings,
 }: {
   policy: ImpactPolicy;
   /** The governed account, for the console list links. The host of those URLs carries it. */
@@ -764,6 +783,8 @@ function PolicyBlock({
   fenceGrants: Assessment["passrole_grants"];
   /** Every tag-writing action on the WHOLE permission set - see the memo that builds it. */
   tagWriters: string[];
+  /** Every finding both analyses produced, deduplicated. The diagram filters them per resource. */
+  findings: Finding[];
 }) {
   // Every restriction on this policy - one per action, because generator/restriction.py writes one
   // statement per action and each of those statements now carries its own resources. A single
@@ -892,6 +913,8 @@ function PolicyBlock({
         name={policyName(policy.identifier)}
         accountId={accountId}
         coverage={coverage}
+        reference={reference}
+        findings={findings}
       />
 
       {/* No checkbox in front of this. There used to be one - "이 정책에 제한을 건다" - and it was a

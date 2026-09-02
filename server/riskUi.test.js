@@ -140,8 +140,11 @@ test('the citation travels with a decision, and only for the assessment it answe
     /analysis\.impact_sha256\s*===\s*detail\.assessment_sha256[\s\S]{0,80}risk_analysis: analysis/,
     'PlanPage no longer gates the citation on it naming the assessment this decision carries',
   );
-  assert.match(DETAIL, /useEffect\(\(\) => \{ setAnalysis\(null\); \}, \[detail\.plan_id/,
-               'the citation is no longer dropped when the plan changes');
+  // The findings are dropped with it, and for the same reason: the resource diagram draws them
+  // per resource, and findings about the plan an approver just left would be a lie with no way to
+  // see it.
+  assert.match(DETAIL, /useEffect\(\(\) => \{ setAnalysis\(null\); setFindings\(\{\}\); \}, \[detail\.plan_id/,
+               'the citation and the findings are no longer dropped when the plan changes');
 });
 
 test('a discarded run is never cited on a decision', () => {
@@ -1992,7 +1995,10 @@ test('every connection is dashed and orthogonal, and a derived one is dashed dif
 
 test('an instance opens on click to show its interfaces, and the subnets are coloured by their tables', () => {
   assert.ok(TOPOLOGY.includes('{ expanded }'), 'the picture is not told which boxes are open');
-  assert.ok(TOPOLOGY.includes('aria-expanded={node.open}'), 'the box does not say whether it is open');
+  // A box with no interfaces to show has no expanded state at all - aria-expanded on it would
+  // promise a fold that is not there.
+  assert.ok(TOPOLOGY.includes('aria-expanded={openable ? node.open : undefined}'),
+            'the box does not say whether it is open');
   assert.ok(TOPOLOGY.includes('onToggle(node.id)'), 'clicking a box toggles nothing');
   assert.ok(TOPOLOGY.includes('e.key === "Enter" || e.key === " "'), 'a box cannot be opened from the keyboard');
   assert.match(CSS, /\.graph-node-toggle\s*\{[^}]*cursor:\s*pointer/, 'an openable box does not look clickable');
@@ -2007,4 +2013,67 @@ test('an instance opens on click to show its interfaces, and the subnets are col
             'the legend does not say a box opens on click');
   assert.ok(legend.includes('퍼블릭') && legend.includes('프라이빗'), 'the legend does not explain the subnet colours');
   assert.ok(legend.includes('가운데 열에'), 'the legend does not say where the tables sit');
+});
+
+// ---- the resource panel: the diagram joined to the two analyses --------------------------------
+// server/resourceFacts.test.js pins the JOIN - which finding reaches which resource, and which
+// only reaches its type. What is pinned here is the screen half: that the panel says where each
+// half of its answer came from, that an empty analysis is not drawn as "nothing was found", and
+// that the findings reach the diagram at all.
+
+test('clicking a resource opens what the policy allows on it and what the analyses found', () => {
+  assert.ok(TOPOLOGY.includes('resourceFacts('), 'the diagram computes no per-resource facts');
+  assert.ok(TOPOLOGY.includes('<ResourcePanel'), 'nothing renders the panel');
+  assert.ok(TOPOLOGY.includes('onSelect={setChosen}') && TOPOLOGY.includes('aria-pressed={selected}'),
+            'a plate cannot be chosen, or does not say it is');
+  assert.ok(TOPOLOGY.includes('onKeyDown={keyed}'), 'a plate cannot be chosen from the keyboard');
+  // The panel sits BESIDE the picture: below it, clicking a plate scrolls the plate out of view.
+  assert.ok(TOPOLOGY.includes('graph-with-panel'), 'the panel is not beside the picture');
+  assert.match(CSS, /\.graph-with-panel\s*\{[^}]*display:\s*flex/, 'the panel does not sit beside the figure');
+  for (const cls of ['.graph-panel', '.panel-actions', '.panel-findings', '.panel-level',
+                     '.panel-source', '.graph-mark', '.graph-node-selected']) {
+    assert.ok(CSS.includes(cls), `${cls} is rendered and has no rule`);
+  }
+});
+
+test('the panel says which of its two answers is missing rather than saying nothing was found', () => {
+  // Defect it prevents: an approver reading an empty 분석 section as "this resource is clean" when
+  // nobody has run an analysis yet. The two states are opposite news and look identical.
+  assert.ok(TOPOLOGY.includes('아직 분석을 돌리지 않았다'), 'an unrun analysis is drawn as an empty result');
+  assert.ok(TOPOLOGY.includes('지금 비어 있는 것은 발견이 없다는\n                뜻이 아니다')
+            || TOPOLOGY.includes('비어 있는 것은 발견이 없다는'),
+            'nothing says an empty panel is not a clean bill');
+  assert.ok(TOPOLOGY.includes('이 자원인지는 알 수 없는'),
+            'a finding whose sample was cut is drawn as if it named this resource');
+  assert.ok(TOPOLOGY.includes('자원을 지정하지 않았다'),
+            'the panel does not say a policy that named no resource covers what is made next');
+  assert.ok(TOPOLOGY.includes('이 유형을 생성한다'),
+            'an action that brings the type into being is not marked');
+});
+
+test('the page keeps one vocabulary for the grades, the statuses and the categories', () => {
+  // src/grades.ts says it in its own comment: two screens that call the same grade by two words
+  // are two screens an approver cannot compare. The diagram's panel and the analysis page read
+  // from the same table, and the engine module returns the raw vocabulary rather than a copy.
+  assert.match(read('grades.ts'), /export const CATEGORY_LABEL/, 'the category names are not in one place');
+  assert.ok(PANEL.includes('CATEGORY_LABEL.ESCALATION'),
+            'the analysis page kept its own copy of the category names');
+  assert.ok(TOPOLOGY.includes('CATEGORY_LABEL[card.category]') && TOPOLOGY.includes('GRADE_CLASS[card.grade]'),
+            'the panel does not use the page vocabulary');
+  const facts = readFileSync(new URL('./resourceFacts.js', import.meta.url), 'utf8');
+  assert.ok(!/CATEGORY_LABEL\s*=/.test(facts) && !/STATUS_LABEL\s*=/.test(facts),
+            'the engine grew a second copy of the page vocabulary');
+});
+
+test('the findings reach the diagram from the analysis that produced them', () => {
+  assert.ok(PANEL.includes('onFindings(policy ?? "__plan__"'),
+            'the analysis does not report its findings for the diagram');
+  // Both halves travel, and a discarded model run does not: its verdicts cited an action granted
+  // nowhere and were thrown away.
+  assert.ok(PANEL.includes('next.analysis && !next.analysis.discarded'),
+            'a discarded model run would be drawn on the diagram as findings');
+  assert.ok(DETAIL.includes('onFindings={(scope, found)'), 'the page does not hold the findings');
+  assert.ok(IMPACT.includes('findings={allFindings}'), 'the findings do not reach the policy block');
+  assert.ok(IMPACT.includes('findings={findings}') || IMPACT.includes('findings={allFindings}'),
+            'the diagram is not given the findings');
 });

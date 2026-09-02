@@ -1645,3 +1645,61 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
 .graph-edge-end { fill: var(--bg); stroke-dasharray: none; }
 .graph-legend-item { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; white-space: nowrap; }
 .graph-legend-swatch { display: inline-block; vertical-align: middle; }
+
+/* ---- the resource panel: what one plate is, when a reader clicks it -------------------------- */
+/* Beside the picture rather than under it. A panel below scrolls the plate you just clicked out of
+   view on a tall scene, which is the one thing a click-to-inspect must not do. */
+.graph-with-panel { display: flex; align-items: flex-start; gap: 10px; }
+.graph-with-panel > .topology-figure { flex: 1 1 auto; min-width: 0; }
+.graph-panel {
+  flex: 0 0 22rem;
+  max-height: 78vh;
+  overflow: auto;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 12px;
+}
+.graph-panel-head { display: flex; align-items: baseline; gap: 8px; }
+.graph-panel-head h5 { margin: 0; font-size: 13px; flex: 1 1 auto; }
+.graph-panel-head button { padding: 0.1rem 0.5rem; font-size: 0.75rem; }
+.graph-panel h6 { margin: 12px 0 4px; font-size: 12px; }
+.graph-panel p { margin: 4px 0; line-height: 1.6; }
+.graph-panel .sensitive { color: var(--danger); font-weight: 600; }
+
+.panel-actions, .panel-findings { margin: 4px 0; padding: 0; list-style: none; }
+.panel-action { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; line-height: 1.5; }
+/* The access level, in the same grammar as the picker: the level is the sort key and the colour,
+   because "권한 관리" and "목록" are not two shades of the same news. */
+.panel-level {
+  flex: 0 0 3.6rem;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+.panel-level-Permissions-management, .panel-level-Write { color: var(--danger); font-weight: 600; }
+.panel-level-Tagging { color: var(--warn); }
+
+.panel-finding { padding: 6px 0; border-top: 1px solid var(--border); }
+.panel-finding:first-child { border-top: none; }
+.panel-finding-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.panel-finding-why { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.panel-finding-actions { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+/* The AI half, marked where it is drawn rather than in a section of its own: the two halves are
+   sorted together by grade, and an approver reading down the list has to see which is which. */
+.panel-source {
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* The plate a finding names, and the plate a reader chose. */
+.graph-mark { fill: var(--muted); }
+.graph-node-critical .graph-mark, .graph-node-high .graph-mark { fill: var(--danger); }
+.graph-node-medium .graph-mark { fill: var(--warn); }
+.graph-node-selected .graph-plate { stroke: var(--accent); stroke-width: 2; }
