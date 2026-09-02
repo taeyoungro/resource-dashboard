@@ -962,6 +962,15 @@ export interface ImpactResource {
    *  (0.0.0.0/0, or ::/0) going to an `igw-` does, and only the pair says which. `state` is
    *  'active' or 'blackhole'; a blackhole route names a target that no longer exists. */
   routes?: { destination: string; target: string; state?: string }[];
+  /** A SUBNET'S ROUTE TABLE - its explicit association, else the VPC's main table - and that
+   *  table's DEFAULT routes. Written only on `ec2:subnet` rows.
+   *
+   *  On the subnet rather than left to the route table's own row, because whether a subnet is
+   *  public is a fact about the subnet: reading it off the table made it depend on whether the
+   *  policy being assessed happened to reach route tables, and an assessment that reached
+   *  subnets but no route table coloured nothing. */
+  route_table?: string;
+  default_routes?: { destination: string; target: string; state?: string }[];
 }
 
 export interface ImpactCoverage {

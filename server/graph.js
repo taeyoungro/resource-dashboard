@@ -189,6 +189,17 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   // gateway. Read off EVERY route-table row, filtered or not: narrowing the picture to one subnet
   // must not turn its colour off. No table in the assessment means no colour, and the legend
   // says so.
+  // Every subnet ROW, by id, read off the whole assessment rather than the filtered rows: a
+  // subnet narrowed out of the picture still governs nothing, but a subnet narrowed INTO it must
+  // keep its colour, and its own row is where the colour comes from.
+  const subnetRows = new Map();
+  for (const group of policy?.affected ?? []) {
+    if (group?.resource_type !== 'ec2:subnet') continue;
+    for (const r of group.resources ?? []) {
+      const id = idOf(r?.arn ?? '');
+      if (id) subnetRows.set(id, r);
+    }
+  }
   const tableOf = new Map();            // subnet id -> route table id, the explicit association
   const mainTableOf = new Map();        // vpc id -> its main route table id
   const routesOf = new Map();           // route table id -> [{destination, target, state}]
@@ -228,6 +239,20 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
    *   null                no route table for this subnet in this assessment. No colour at all.
    */
   const tintOf = (subnetId, vpcId) => {
+    // The SUBNET'S OWN answer first. A subnet's route table is a fact about the subnet, and the
+    // querier now records it on the subnet's row - so the colour no longer depends on the policy
+    // also reaching route tables. The deployed account showed exactly that gap: instances,
+    // interfaces, groups, volumes, ACLs and a gateway all enumerated, not one route table, and
+    // every subnet uncoloured.
+    const own = subnetRows.get(subnetId);
+    if (own?.route_table) {
+      const defaults = (Array.isArray(own.default_routes) ? own.default_routes : [])
+        .filter((r) => r?.destination === '0.0.0.0/0' || r?.destination === '::/0');
+      const open = defaults.find((r) => r.state !== 'blackhole'
+        && `${r.target}`.startsWith('igw-')) ?? null;
+      return { tint: open ? 'public' : 'private', table: own.route_table, basis: 'subnet',
+               route: open ?? defaults[0] ?? null };
+    }
     const table = tableOf.get(subnetId) ?? mainTableOf.get(vpcId);
     if (!table) return null;
     const routes = routesOf.get(table);
