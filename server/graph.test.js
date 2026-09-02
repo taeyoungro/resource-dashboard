@@ -30,8 +30,10 @@ const policyOf = (affected) => ({
   source: 'aws_managed', identifier: ARN, default_version_id: 'v1', is_baseline: false,
   restrictable: true, unreadable: null, actions_granted: ['ec2:*'], affected,
 });
-const sceneOf = (affected, filter = null, enumerated = true) =>
-  relationScene(policyOf(affected), A, filter, enumerated);
+const sceneOf = (affected, filter = null, enumerated = true, options = {}) =>
+  relationScene(policyOf(affected), A, filter, enumerated, options);
+/** Every instance box open, for the tests about what is inside one. */
+const OPEN = { expanded: ['i-0aaa111', 'i-0bbb222'] };
 
 /** The operator's account in miniature: two VPCs, two zones, two instances with everything. */
 function ACCOUNT() {
@@ -274,24 +276,42 @@ test('the same fact seen from both ends is one line, or one border', () => {
 });
 
 test('an interface attached to an instance is drawn inside it, and the group line goes to the instance', () => {
-  const scene = sceneOf(ACCOUNT());
+  const scene = sceneOf(ACCOUNT(), null, true, OPEN);
   const by = boxes(scene);
   const web = by.get('i-0aaa111');
   assert.equal(web.box, true, 'the instance is not a box');
   assert.equal(web.holds, 2);
+  assert.equal(web.open, true);
   for (const eni of ['eni-1', 'eni-2']) assert.ok(inside(by.get(eni), web), `${eni} is not inside its instance`);
   assert.ok(inside(web, by.get('subnet:subnet-a1')), 'the box is not inside its subnet');
+  // Closed by default: the interfaces are folded into the box, the table lists them as inside
+  // it, and the group lines are the same as with the box open - a reader clicks to see the
+  // interfaces, not to get the lines.
+  const closed = sceneOf(ACCOUNT());
+  const shut = boxes(closed).get('i-0aaa111');
+  assert.equal(shut.open, false);
+  assert.equal(shut.holds, 2);
+  assert.match(shut.note, /2개/);
+  assert.ok(!closed.nodes.some((n) => n.id === 'eni-1'), 'a folded interface was drawn');
+  assert.deepEqual(closed.rows.filter((r) => r.folded).map((r) => [r.id, r.where]).sort(),
+                   [['eni-1', 'i-0aaa111 안'], ['eni-2', 'i-0aaa111 안'], ['eni-3', 'i-0bbb222 안']]);
+  assert.equal(closed.counts.foldedRows, 3);
+  const groupLines = (s) => s.edges.filter((e) => e.kind === 'security')
+    .map((e) => [e.from, e.to].sort().join('>')).sort();
+  assert.deepEqual(groupLines(closed), groupLines(scene), 'folding the interfaces changed the group lines');
   // The unattached interfaces keep their own plates and their own group lines.
   assert.equal(by.get('eni-6').box, false);
   assert.ok(scene.edges.some((e) => e.kind === 'security' && [e.from, e.to].includes('eni-6')));
   // The NAT gateway's interface is an attachment drawn as a line, not a box.
   assert.ok(scene.edges.some((e) => e.kind === 'interface' && [e.from, e.to].sort().join() === 'eni-nat,nat-1'));
   // An instance whose interfaces are not in the assessment is an empty box that says so.
-  const bare = sceneOf([g('ec2:instance', [row('instance', 'i-1', { vpc_id: 'vpc-x', subnet_id: 'subnet-x' })])]);
+  const bare = sceneOf([g('ec2:instance', [row('instance', 'i-1', { vpc_id: 'vpc-x', subnet_id: 'subnet-x' })])],
+                       null, true, { expanded: ['i-1'] });
   const box = bare.nodes.find((n) => n.id === 'i-1');
   assert.equal(box.box, true);
   assert.equal(box.holds, 0);
-  assert.match(box.note, /평가에 없다/);
+  assert.equal(box.open, false, 'a box with nothing to show opened');
+  assert.match(box.note, /평가에 없음/);
   // A box wraps its interfaces to the width its subnet offers: three zones, six interfaces.
   const wide = sceneOf([
     g('ec2:subnet', ['a', 'b', 'c'].map((z) => row('subnet', `subnet-${z}`,
@@ -300,7 +320,7 @@ test('an interface attached to an instance is drawn inside it, and the group lin
       links: { network_interface: Array.from({ length: 6 }, (_, i) => `eni-w${i}`) } })]),
     g('ec2:network-interface', Array.from({ length: 6 }, (_, i) => row('network-interface', `eni-w${i}`,
       { vpc_id: 'vpc-w', subnet_id: 'subnet-a', zone: 'us-east-1a', links: { instance: ['i-w'] } }))),
-  ]);
+  ], null, true, { expanded: ['i-w'] });
   const wb = boxes(wide);
   assert.ok(inside(wb.get('i-w'), wb.get('subnet:subnet-a')), 'the box overflows its subnet');
   for (let i = 0; i < 6; i += 1) assert.ok(inside(wb.get(`eni-w${i}`), wb.get('i-w')), `eni-w${i} is outside the box`);
@@ -371,19 +391,23 @@ test('past the node budget the picture stops and says how much it left out', () 
   assert.ok(scene.overflow.length >= 1, 'nothing says what was left out');
   const left = scene.counts.omittedNodes;
   assert.ok(left > 0);
-  // Every row is a plate, an omitted plate, or a border (the VPC and subnet rows). Nothing else.
-  assert.equal(scene.nodes.length + left + scene.counts.containerRows, scene.counts.totalRows,
-               'drawn plus omitted plus containers is not every row - a resource vanished');
+  // Every row is a plate, an omitted plate, a border (the VPC and subnet rows), or an interface
+  // folded into a closed box. Nothing else.
+  assert.equal(scene.nodes.length + left + scene.counts.containerRows + scene.counts.foldedRows,
+               scene.counts.totalRows,
+               'drawn plus omitted plus containers plus folded is not every row - a resource vanished');
   assert.equal(scene.counts.containerRows, 2);
   assert.ok(scene.foot.some((l) => l.text.includes(`그리지 못한 자원 ${left.toLocaleString()}개`)));
   assert.ok(scene.foot.some((l) => l.text.includes('좁히면')), 'the foot line does not say how to see the rest');
   // Whole cards, never half an instance: an instance drawn without its interface would say it
-  // has none.
+  // has none. Folded into the box counts as with it.
   const drawn = new Set(scene.nodes.map((n) => n.id));
+  const folded = new Set(scene.rows.filter((r) => r.folded).map((r) => r.id));
   for (const n of scene.nodes) {
     if (!n.id.startsWith('i-')) continue;
     const i = Number(n.id.slice(2));
-    assert.ok(drawn.has(`eni-${i}`) && drawn.has(`vol-${i}`), `${n.id} was drawn without its card`);
+    assert.ok((drawn.has(`eni-${i}`) || folded.has(`eni-${i}`)) && drawn.has(`vol-${i}`),
+              `${n.id} was drawn without its card`);
   }
 });
 
@@ -466,7 +490,8 @@ test('the caption is inside the viewBox and the table has a row per drawn node',
   const scene = sceneOf(ACCOUNT());
   assert.ok(scene.foot.some((l) => l.text === GRAPH_CAPTION));
   assert.ok(scene.foot.every((l) => l.y < scene.height));
-  assert.equal(scene.rows.length, scene.nodes.length);
+  assert.equal(scene.rows.filter((r) => !r.folded).length, scene.nodes.length);
+  assert.equal(scene.rows.length, scene.nodes.length + scene.counts.foldedRows);
   const web = scene.rows.find((r) => r.id === 'i-0aaa111');
   assert.equal(web.where, 'subnet-a1');
   assert.ok(web.degree >= 3, 'the row does not count the instance\'s edges');
@@ -477,7 +502,7 @@ test('a line leaves by the side facing its other end and never runs under the pl
   // Defect it prevents: the centre-to-centre line from eni-3 to sg-db ran under i-0bbb222 and came
   // out the far side, so it read as a group line from the instance; the route from rtb-main to the
   // internet gateway surfaced from under acl-default two plates along.
-  const scene = sceneOf(ACCOUNT());
+  const scene = sceneOf(ACCOUNT(), null, true, OPEN);
   const by = boxes(scene);
   const through = (p, q, r) => {       // the engine's own rule restated: through the box shrunk by a pixel
     const x0 = r.x + 1; const y0 = r.y + 1; const x1 = r.x + r.w - 1; const y1 = r.y + r.h - 1;
@@ -500,13 +525,25 @@ test('a line leaves by the side facing its other end and never runs under the pl
     ?? assert.fail(`${from} -> ${to} is not drawn`);
   // The group line leaves the instance box outward and never runs under the interface it holds.
   assert.ok(!runsUnder(edge('i-0bbb222', 'sg-db'), 'eni-3'), 'the group line runs under the interface inside the box');
+  // The table sits right under the gateway now, so its route is one vertical piece up to it - and
+  // it runs under nothing on the way.
   const igw = edge('rtb-main', 'igw-1');
-  assert.equal(igw.points.length, 4, 'the route to the gateway on the border is not routed over the band');
+  assert.equal(igw.points.length, 2, 'the route to the gateway bends');
   for (const id of ['rtb-priv', 'acl-default']) assert.ok(!runsUnder(igw, id), `the route runs under ${id}`);
   // Adjacent plates are joined straight, and every line's ends are its first and last points.
   assert.equal(edge('nat-1', 'eni-nat').points.length, 2);
   for (const e of scene.edges) {
-    assert.ok(e.points.length === 2 || e.points.length === 4, `${e.from} -> ${e.to} has ${e.points.length} points`);
+    assert.ok(e.points.length >= 2, `${e.from} -> ${e.to} has ${e.points.length} points`);
+    // Orthogonal: every piece is horizontal or vertical, none is empty, none doubles back.
+    for (let i = 1; i < e.points.length; i += 1) {
+      const u = e.points[i - 1]; const v = e.points[i];
+      assert.ok((u.x === v.x) !== (u.y === v.y), `${e.from} -> ${e.to} has a piece that is not horizontal or vertical`);
+    }
+    for (let i = 2; i < e.points.length; i += 1) {
+      const u = e.points[i - 2]; const v = e.points[i - 1]; const w = e.points[i];
+      assert.ok(!((u.x === v.x && v.x === w.x) || (u.y === v.y && v.y === w.y)),
+                `${e.from} -> ${e.to} has two pieces in a line - a bend that is not a bend`);
+    }
     assert.deepEqual([e.x1, e.y1], [e.points[0].x, e.points[0].y]);
     const last = e.points[e.points.length - 1];
     assert.deepEqual([e.x2, e.y2], [last.x, last.y]);
@@ -515,4 +552,49 @@ test('a line leaves by the side facing its other end and never runs under the pl
   }
   // The table row carries the type's Korean name beside the type.
   assert.ok(scene.rows.every((r) => typeof r.typeLabel === 'string' && r.typeLabel.length > 0));
+});
+
+test('the picture is symmetric about the middle: the gateway on top, the tables in a column, the zones either side', () => {
+  const scene = sceneOf(ACCOUNT());
+  const by = boxes(scene);
+  const vpc = by.get('vpc:vpc-0a1');
+  const mid = vpc.x + vpc.w / 2;
+  const igw = by.get('igw-1');
+  assert.ok(Math.abs(igw.x + igw.w / 2 - mid) < 1, 'the gateway is not centred on its VPC');
+  for (const id of ['rtb-main', 'rtb-priv', 'acl-default']) {
+    const n = by.get(id);
+    assert.ok(Math.abs(n.x + n.w / 2 - mid) < 1, `${id} is not in the middle column`);
+  }
+  // The public table sits nearest the gateway, and its line up to it is one vertical piece.
+  assert.ok(by.get('rtb-main').y < by.get('rtb-priv').y, 'the table with the internet route is not on top');
+  const up = scene.edges.find((e) => e.kind === 'route' && e.to === 'igw-1');
+  assert.equal(up.points.length, 2, 'the line to the gateway bends');
+  assert.equal(up.points[0].x, up.points[1].x);
+  assert.ok(Math.abs(up.points[0].x - mid) < 1, 'the line to the gateway is off the middle');
+  // The zones mirror each other about the middle.
+  const left = by.get('az:vpc-0a1:us-east-1a');
+  const right = by.get('az:vpc-0a1:us-east-1b');
+  assert.ok(left.x + left.w < mid && right.x > mid, 'the zones are not either side of the middle');
+  assert.ok(Math.abs((mid - (left.x + left.w)) - (right.x - mid)) < 1, 'the zones are not mirrored');
+  assert.ok(Math.abs(left.w - right.w) < 1);
+  // The band is dealt left and right in turn, never all on one side.
+  const band = ['sg-db', 'sg-default', 'sg-ssh', 'sg-web', 'dopt-1'].map((id) => by.get(id)).filter(Boolean);
+  assert.ok(band.some((n) => n.x + n.w < mid) && band.some((n) => n.x > mid), 'the band is all on one side');
+});
+
+test('a subnet is public or private by its route table, and says which', () => {
+  const scene = sceneOf(ACCOUNT());
+  const by = boxes(scene);
+  assert.equal(by.get('subnet:subnet-a1').tint, 'public', 'the main table routes to igw-1');
+  assert.equal(by.get('subnet:subnet-a2').tint, 'public');
+  assert.equal(by.get('subnet:subnet-b1').tint, 'private', 'rtb-priv has no internet route');
+  assert.equal(by.get('subnet:subnet-c1').tint, 'private', 'rtb-c is main and has no route');
+  assert.match(by.get('subnet:subnet-a1').note, /퍼블릭/);
+  assert.match(by.get('subnet:subnet-b1').note, /프라이빗/);
+  // Narrowing to one subnet keeps its colour: the tables are read off every row, not the kept ones.
+  const one = sceneOf(ACCOUNT(), { subnets: ['subnet-b1'] });
+  assert.equal(boxes(one).get('subnet:subnet-b1').tint, 'private');
+  // No table in the assessment, no colour - and the border is drawn all the same.
+  const none = sceneOf([g('ec2:instance', [row('instance', 'i-1', { vpc_id: 'vpc-x', subnet_id: 'subnet-x' })])]);
+  assert.equal(boxes(none).get('subnet:subnet-x').tint, null);
 });

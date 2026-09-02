@@ -1974,3 +1974,37 @@ test('an instance is a box holding its interfaces, and the legend says so', () =
   assert.ok(figure.indexOf('filter((n) => n.box)') < figure.indexOf('filter((n) => !n.box)'),
             'plates are painted before the boxes that hold them');
 });
+
+test('every connection is dashed and orthogonal, and a derived one is dashed differently', () => {
+  // A dashed line is a relation and a solid line is a border, and the eye keeps the two apart;
+  // the derived line (the main route table's) still has to read apart from the recorded ones.
+  const base = CSS.match(/\.graph-edge\s*\{([^}]*)\}/)?.[1] ?? '';
+  assert.match(base, /stroke-dasharray:\s*[\d.]+ [\d.]+/, 'connections are solid');
+  const implicit = CSS.match(/\.graph-edge-implicit\s*\{([^}]*)\}/)?.[1] ?? '';
+  assert.match(implicit, /stroke-dasharray:\s*[\d.]+ [\d.]+/, 'a derived line has no dash of its own');
+  assert.notEqual(base.match(/stroke-dasharray:\s*([\d. ]+)/)[1], implicit.match(/stroke-dasharray:\s*([\d. ]+)/)[1],
+                  'a derived line is dashed like a recorded one');
+  const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('topology-legend'));
+  assert.ok(legend.includes('전부 점선이고') && legend.includes('직각으로만 꺾인다'),
+            'the legend does not say what a dashed, bent line is');
+  assert.ok(legend.includes('촘촘한 점선'), 'the legend does not name the derived dash');
+});
+
+test('an instance opens on click to show its interfaces, and the subnets are coloured by their tables', () => {
+  assert.ok(TOPOLOGY.includes('{ expanded }'), 'the picture is not told which boxes are open');
+  assert.ok(TOPOLOGY.includes('aria-expanded={node.open}'), 'the box does not say whether it is open');
+  assert.ok(TOPOLOGY.includes('onToggle(node.id)'), 'clicking a box toggles nothing');
+  assert.ok(TOPOLOGY.includes('e.key === "Enter" || e.key === " "'), 'a box cannot be opened from the keyboard');
+  assert.match(CSS, /\.graph-node-toggle\s*\{[^}]*cursor:\s*pointer/, 'an openable box does not look clickable');
+  for (const cls of ['.graph-box-public', '.graph-box-private']) assert.ok(CSS.includes(cls), `${cls} is unstyled`);
+  // The two fills are palette tokens, defined with the rest of the palette and not in the
+  // picture's own section, which sets no literal colour.
+  const root = CSS.slice(0, CSS.indexOf('이 정책이 닿는 자원의 구성도'));
+  assert.ok(/--subnet-public:\s*#[0-9a-f]{6}/.test(root) && /--subnet-private:\s*#[0-9a-f]{6}/.test(root),
+            'the subnet colours are not tokens');
+  const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('topology-legend'));
+  assert.ok(legend.includes('누르면 붙은 네트워크 인터페이스가 안에 펼쳐지고'),
+            'the legend does not say a box opens on click');
+  assert.ok(legend.includes('퍼블릭') && legend.includes('프라이빗'), 'the legend does not explain the subnet colours');
+  assert.ok(legend.includes('가운데 열에'), 'the legend does not say where the tables sit');
+});

@@ -40,6 +40,10 @@ export interface GraphContainer {
   badge: string | null;
   measured: boolean;
   title?: string | null;
+  /** A subnet's colour: public when the route table it is associated with - its explicit one,
+   *  else the VPC's main table - has a route to an internet gateway; private when it has none;
+   *  null when the assessment holds no table for it. */
+  tint?: "public" | "private" | null;
 }
 
 /** One resource. */
@@ -61,9 +65,12 @@ export interface GraphNode {
   /** A box rather than a plate: an instance, drawn as a frame with its interfaces inside it. Its
    *  w and h are the frame's; the interfaces are nodes of their own, placed inside. */
   box: boolean;
-  /** How many interfaces the box holds. */
+  /** How many interfaces the box holds, drawn inside it or folded into it. */
   holds: number;
-  /** One sentence inside an empty box - the interfaces are not in this assessment. */
+  /** Whether the box is open, with its interfaces drawn inside. Closed boxes fold them. */
+  open: boolean;
+  /** One sentence inside a closed or empty box: how many interfaces it folds and that a click
+   *  opens it, or that the interfaces are not in this assessment. */
   note: string | null;
 }
 
@@ -98,10 +105,12 @@ export interface GraphRow {
   resourceType: string;
   typeLabel: string;
   name: string;
-  /** The subnet, else the VPC, else the zone, else ''. */
+  /** The subnet, else the VPC, else the zone, else '' - or `<instance> 안` for a folded interface. */
   where: string;
   degree: number;
   sensitive: boolean;
+  /** An interface inside a closed instance box: counted and listed, not drawn. */
+  folded: boolean;
 }
 
 export interface RelationScene {
@@ -130,6 +139,8 @@ export interface RelationScene {
     totalRows: number;
     /** Rows drawn as a border rather than a plate - the VPC and subnet rows. */
     containerRows: number;
+    /** Interfaces folded into a closed instance box. */
+    foldedRows: number;
   };
   kinds: number;
   measured: number;
@@ -149,5 +160,6 @@ export function relationScene(
   accountId: string,
   filter?: SceneFilter | null,
   enumerated?: boolean,
+  options?: { expanded?: Iterable<string> },
 ): RelationScene | null;
 export function graphSummary(scene: RelationScene | null): string;

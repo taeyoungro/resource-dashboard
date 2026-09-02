@@ -267,7 +267,8 @@ function SceneTable({ scene, spec }: { scene: Scene; spec: TopologySpec }) {
  * see GraphFigure.
  */
 function GraphContainerShape({ box }: { box: GraphContainer }) {
-  const cls = `graph-box graph-box-${box.kind}${box.dashed ? " graph-box-dashed" : ""}`;
+  const cls = `graph-box graph-box-${box.kind}${box.dashed ? " graph-box-dashed" : ""}`
+    + (box.tint ? ` graph-box-${box.tint}` : "");
   return (
     <g className={cls}>
       <rect
@@ -308,13 +309,26 @@ function GraphContainerLabel({ box }: { box: GraphContainer }) {
  * type that has none leave the same plate. A type with no glyph prints its Korean name where the
  * glyph would be, so a plate is never a bare id.
  */
-function GraphNodeShape({ node }: { node: GraphNode }) {
+function GraphNodeShape({ node, onToggle }: { node: GraphNode; onToggle: (id: string) => void }) {
   // An instance: a frame holding its interfaces, which are nodes of their own painted after it.
   // The head band carries what a plate would - the glyph, the Name or the id, the other one -
-  // and an empty frame says in one line why it is empty.
+  // and a closed or empty frame says in one line what it folds, or why it is empty. A frame with
+  // interfaces to show is a button: a click, Enter or Space opens and closes it.
   if (node.box) {
+    const openable = node.holds > 0;
+    const type = node.resourceType.replace(":", "-");
     return (
-      <g className={`graph-node graph-node-box graph-node-${node.resourceType.replace(":", "-")}`}>
+      <g
+        className={`graph-node graph-node-box graph-node-${type}${openable ? " graph-node-toggle" : ""}`}
+        role={openable ? "button" : undefined}
+        tabIndex={openable ? 0 : undefined}
+        aria-expanded={node.open}
+        aria-label={openable ? `${node.title.split("\n")[0]} — 네트워크 인터페이스 ${node.holds}개 ${node.open ? "접기" : "펼치기"}` : undefined}
+        onClick={openable ? () => onToggle(node.id) : undefined}
+        onKeyDown={openable ? (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(node.id); }
+        } : undefined}
+      >
         <rect
           className={node.sensitive ? "graph-plate graph-plate-box graph-plate-sensitive"
             : "graph-plate graph-plate-box"}
@@ -418,11 +432,14 @@ function GraphEdgeShape({ edge, uid }: { edge: GraphEdge; uid: string }) {
  * line never runs across a plate or a label; the foot last. The <desc> is graphSummary(), which
  * has its own unit test.
  */
-function GraphFigure({ scene, name, title, uid }:
-                     { scene: RelationScene; name: string; title: string; uid: string }) {
+function GraphFigure({ scene, name, title, uid, onToggle }:
+                     { scene: RelationScene; name: string; title: string; uid: string;
+                       onToggle: (id: string) => void }) {
   return (
     // Fills the window's width (.graph-svg) and never shrinks below its own: the min-width is the
     // scene's width, so a narrow window scrolls the figure rather than making the labels smaller.
+    // A group and not an image: the instance boxes inside are buttons, and role="img" would fold
+    // them away from a screen reader.
     <svg
       className="topology-svg graph-svg"
       viewBox={`0 0 ${scene.width} ${scene.height}`}
@@ -431,7 +448,7 @@ function GraphFigure({ scene, name, title, uid }:
       style={{ minWidth: scene.width }}
       preserveAspectRatio="xMinYMin meet"
       fontFamily="inherit"
-      role="img"
+      role="group"
       aria-labelledby={`${uid}-gt ${uid}-gd`}
     >
       <title id={`${uid}-gt`}>{`${name}이 닿는 ${title} 자원 연결 관계도`}</title>
@@ -450,8 +467,8 @@ function GraphFigure({ scene, name, title, uid }:
       {scene.containers.map((c) => <GraphContainerLabel key={c.id} box={c} />)}
       {scene.overflow.map((o) => <GraphOverflowShape key={o.container} plate={o} />)}
       {/* Boxes before plates, so an interface is painted over the instance frame that holds it. */}
-      {scene.nodes.filter((n) => n.box).map((n) => <GraphNodeShape key={n.id} node={n} />)}
-      {scene.nodes.filter((n) => !n.box).map((n) => <GraphNodeShape key={n.id} node={n} />)}
+      {scene.nodes.filter((n) => n.box).map((n) => <GraphNodeShape key={n.id} node={n} onToggle={onToggle} />)}
+      {scene.nodes.filter((n) => !n.box).map((n) => <GraphNodeShape key={n.id} node={n} onToggle={onToggle} />)}
       {scene.foot.map((line) => (
         <text className="topo-foot" key={line.text} x={8} y={line.y}>{line.text}</text>
       ))}
@@ -687,9 +704,15 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
   const wholeGraph = useMemo(
     () => relationScene(policy, accountId, null, enumerated), [policy, accountId, enumerated],
   );
+  // Which instance boxes are open. Closed by default: the picture shows the instance, its group
+  // lines and its volumes, and a click on the box opens it to show the interfaces inside.
+  const [expanded, setExpanded] = useState<string[]>([]);
   const graph = useMemo(
-    () => relationScene(policy, accountId, filter, enumerated),
-    [policy, accountId, filter, enumerated],
+    () => relationScene(policy, accountId, filter, enumerated, { expanded }),
+    [policy, accountId, filter, enumerated, expanded],
+  );
+  const toggle = (id: string) => setExpanded(
+    (prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]),
   );
   // Which picture the window shows. Null is "not chosen", and the document then decides: an
   // assessment that recorded a placement or a link opens on the relationship picture, an older
@@ -878,7 +901,7 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
           {view === "graph" && graph && (
             <>
               <div className="topology-figure" tabIndex={0} role="group" aria-label="자원 연결 관계도">
-                <GraphFigure scene={graph} name={name} title={spec.words.title} uid={uid} />
+                <GraphFigure scene={graph} name={name} title={spec.words.title} uid={uid} onToggle={toggle} />
               </div>
 
               <ul className="topology-legend">
@@ -894,13 +917,26 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
                   </li>
                 )}
                 <li>
-                  <strong>인스턴스 상자</strong> — 안의 네트워크 인터페이스는 조회기가 읽은 부착이다.
-                  보안 그룹 선은 인터페이스가 아니라 인스턴스 상자로 향한다 — 인스턴스의 그룹은 그
-                  인터페이스의 그룹이다. 인터페이스가 이 평가에 없으면 상자는 비어 있고 그렇다고 적는다.
-                  볼륨은 상자 아래에 선으로 붙는다 — 부착이지 포함이 아니다.
+                  <strong>자리</strong> — 인터넷 게이트웨이는 VPC 위쪽 가운데에, 라우팅 테이블·네트워크
+                  ACL·엔드포인트는 가운데 열에, 가용 영역은 그 좌우에 같은 수로 놓는다. 보안 그룹과
+                  나머지는 그 위에 좌우로 번갈아 놓는다. 자리는 그리는 규칙이고, 소속은 테두리다.
                 </li>
                 <li>
-                  <strong>연결선</strong> — 종류마다 색이 다르다.{" "}
+                  <strong>인스턴스 상자</strong> — 누르면 붙은 네트워크 인터페이스가 안에 펼쳐지고, 다시
+                  누르면 접힌다. 접혀 있어도 아래 표에는 인터페이스가 「인스턴스 안」으로 있다.{" "}
+                  보안 그룹 선은 인터페이스가 아니라 인스턴스 상자로 향한다 — 인스턴스의 그룹은 그
+                  인터페이스의 그룹이고, 펼치든 접든 선은 같다. 인터페이스가 이 평가에 없으면 상자는
+                  비어 있고 그렇다고 적는다. 볼륨은 상자 아래에 선으로 붙는다 — 부착이지 포함이 아니다.
+                </li>
+                <li>
+                  <strong>연한 하늘색 서브넷</strong> — 퍼블릭: 연결된 라우팅 테이블(명시적 연결이
+                  없으면 VPC의 기본 테이블)에 인터넷 게이트웨이로 가는 경로가 있다.{" "}
+                  <strong>연한 초록 서브넷</strong> — 프라이빗: 그 경로가 없다. 색이 없으면 이 평가에
+                  그 서브넷의 라우팅 테이블이 없다.
+                </li>
+                <li>
+                  <strong>연결선</strong> — 전부 점선이고, 상자의 변에서 나와 직각으로만 꺾인다.
+                  종류마다 색이 다르다.{" "}
                   {(Object.keys(KIND_LABEL) as EdgeKind[]).map((kind) => (
                     <span key={kind} className="graph-legend-item">
                       <svg className="graph-legend-swatch" width="28" height="8" aria-hidden="true">
@@ -912,9 +948,9 @@ export function PolicyTopology({ policy, name, accountId, coverage }: {
                 </li>
                 {graph.counts.implicitEdges > 0 && (
                   <li>
-                    <strong>점선 연결</strong> — 기본 라우팅 테이블에서 도출한 것이다. 명시적 연결이
-                    없는 서브넷은 VPC의 기본 라우팅 테이블을 쓴다는 AWS의 규칙이고, 조회기가 그 연결을
-                    읽은 것은 아니다.
+                    <strong>촘촘한 점선</strong> — 기본 라우팅 테이블에서 도출한 연결이다. 명시적
+                    연결이 없는 서브넷은 VPC의 기본 라우팅 테이블을 쓴다는 AWS의 규칙이고, 조회기가
+                    그 연결을 읽은 것은 아니다. 나머지 점선은 조회기가 읽은 것이다.
                   </li>
                 )}
                 {graph.edges.some((e) => e.kind === "route") && (

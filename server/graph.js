@@ -125,10 +125,14 @@ export function shortName(name) {
  *
  * Deterministic: two calls on the same input deepEqual. Every list is sorted by id before layout.
  */
-export function relationScene(policy, accountId, filter = null, enumerated = true) {
+export function relationScene(policy, accountId, filter = null, enumerated = true, options = {}) {
   const spec = specOf(policy);
   if (!spec || spec.kind !== 'ec2') return null;
   const narrowed = filterActive(filter);
+  /** The instances whose box is open, showing the interfaces inside it. Closed by default: a
+   *  reader clicks an instance to see its interfaces; the group lines and the volumes are the
+   *  same either way. */
+  const expanded = new Set(options?.expanded ?? []);
 
   // ---- 1. rows -> nodes --------------------------------------------------------------------
   const nodes = new Map();          // id -> node
@@ -179,6 +183,30 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   }
   for (const list of byType.values()) list.sort();
   const ids = [...nodes.keys()].sort();
+
+  // Public or private, decided the way AWS decides it: a subnet is public when the route table it
+  // is associated with - its explicit one, else the VPC's main table - has a route to an internet
+  // gateway. Read off EVERY route-table row, filtered or not: narrowing the picture to one subnet
+  // must not turn its colour off. No table in the assessment means no colour, and the legend
+  // says so.
+  const tableOf = new Map();            // subnet id -> route table id, the explicit association
+  const mainTableOf = new Map();        // vpc id -> its main route table id
+  const toInternet = new Set();         // route table ids with a route to an internet gateway
+  for (const group of policy?.affected ?? []) {
+    if (group?.resource_type !== 'ec2:route-table') continue;
+    for (const r of group.resources ?? []) {
+      const id = idOf(r?.arn ?? '');
+      const links = r?.links && typeof r.links === 'object' ? r.links : {};
+      for (const s of links.subnet ?? []) tableOf.set(s, id);
+      for (const v of links.main ?? []) mainTableOf.set(v, id);
+      if ((links.internet_gateway ?? []).length > 0) toInternet.add(id);
+    }
+  }
+  const tintOf = (subnetId, vpcId) => {
+    const table = tableOf.get(subnetId) ?? mainTableOf.get(vpcId);
+    if (!table) return null;
+    return toInternet.has(table) ? 'public' : 'private';
+  };
 
   // ---- 2. containers, measured off the rows ------------------------------------------------
   // A VPC container per vpc id any row names; a zone per (vpc, zone); a subnet per subnet id.
@@ -315,9 +343,11 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       title: `${n.typeLabel} ${id}${n.name ? ` (${n.name})` : ''}` + (n.zone ? ` · ${n.zone}` : '')
         + `\n${n.arn}`,
       erase: !!extra.erase,
-      // A box rather than a plate: an instance, drawn as a frame with its interfaces inside.
+      // A box rather than a plate: an instance, drawn as a frame with its interfaces inside when
+      // open and folded into it when closed.
       box: !!extra.box,
       holds: extra.holds ?? 0,
+      open: !!extra.open,
       note: extra.note ?? null,
     });
     drawnNodes += 1;
@@ -340,23 +370,33 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
    * the assessment predates the links - is a box of plate height holding one sentence, so it
    * cannot be read as an instance with no interface.
    */
+  const foldedNodes = [];            // { id, in }: interfaces inside a closed box, not drawn
   const instanceCard = (id, innerW, extra = {}) => {
     const enis = [...(eniOf.get(id) ?? [])].sort();
     const vols = ids.filter((v) => attachedTo.get(v) === id);
+    const open = enis.length > 0 && expanded.has(id);
     const cols = Math.max(1, Math.min(enis.length,
       Math.floor((innerW - 2 * PAD + NODE_GAP) / (NODE_W + NODE_GAP))));
     const rows = Math.ceil(enis.length / cols);
-    const boxW = cols * NODE_W + (cols - 1) * NODE_GAP + 2 * PAD;
-    const boxH = enis.length > 0 ? HEAD + PAD + rows * NODE_H + (rows - 1) * NODE_GAP + PAD : NODE_H;
+    const boxW = open ? cols * NODE_W + (cols - 1) * NODE_GAP + 2 * PAD : NODE_W + 2 * PAD;
+    const boxH = open ? HEAD + PAD + rows * NODE_H + (rows - 1) * NODE_GAP + PAD : NODE_H;
+    // Short enough for a closed box's one line; the box's aria-label says it in full.
+    const note = enis.length === 0 ? '인터페이스 · 평가에 없음'
+      : open ? null : `인터페이스 ${enis.length}개 · 펼치기`;
     return {
       ids: [id, ...enis, ...vols],
       w: boxW,
       h: boxH + vols.length * (NODE_H + NODE_GAP),
       place: (x, yy) => {
-        emit(id, x, yy, { ...extra, box: true, w: boxW, h: boxH, holds: enis.length,
-                          note: enis.length > 0 ? null : '네트워크 인터페이스가 이 평가에 없다' });
-        enis.forEach((e, i) => emit(e, x + PAD + (i % cols) * (NODE_W + NODE_GAP),
-                                    yy + HEAD + PAD + Math.floor(i / cols) * (NODE_H + NODE_GAP)));
+        emit(id, x, yy, { ...extra, box: true, w: boxW, h: boxH, holds: enis.length, open, note });
+        if (open) {
+          enis.forEach((e, i) => emit(e, x + PAD + (i % cols) * (NODE_W + NODE_GAP),
+                                      yy + HEAD + PAD + Math.floor(i / cols) * (NODE_H + NODE_GAP)));
+        } else {
+          // Folded into the box: placed, in the sense that the budget and the table count it,
+          // and not drawn.
+          for (const e of enis) { foldedNodes.push({ id: e, in: id }); drawnNodes += 1; }
+        }
         vols.forEach((v, i) => emit(v, x, yy + boxH + NODE_GAP + i * (NODE_H + NODE_GAP)));
       },
     };
@@ -410,11 +450,19 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   };
   const tally = (cards) => cards.reduce((n, c) => n + c.ids.length, 0);
 
-  // VPCs, in id order, stacked down the region.
+  // VPCs, in id order, stacked down the region. Inside each, the shape of the reference picture:
+  // the internet gateway on the top border in the middle; the route tables, network ACLs and
+  // endpoints in a column down the middle, where their lines go left and right to the subnets;
+  // the zones on either side of that column, as many on the left as on the right; and the
+  // security groups and the rest in two half-bands above the zones, dealt left and right in
+  // turn, so the middle stays open for the line from a table up to the gateway.
+  const CENTRE_TYPES = new Set(['ec2:route-table', 'ec2:network-acl', 'ec2:vpc-endpoint']);
+  const CENTRE_ORDER = ['ec2:route-table', 'ec2:network-acl', 'ec2:vpc-endpoint'];
   const vpcList = [...vpcIds].sort();
   for (const vpcId of vpcList) {
     const vpcRow = nodes.get(vpcId);
-    const vpcTop = y + (edgeNodes.has(vpcId) ? NODE_H / 2 : 0);
+    const hasGateway = edgeNodes.has(vpcId);
+    const vpcTop = y + (hasGateway ? NODE_H / 2 : 0);
     const vpc = { id: `vpc:${vpcId}`, kind: 'vpc',
                   label: vpcRow?.name ? `VPC ${shortName(vpcRow.name)}` : 'VPC',
                   note: vpcRow ? vpcId : `${vpcId} · 평가에 없음`,
@@ -422,60 +470,90 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
                   stroke: '#8C4FFF', dashed: !vpcRow, badge: 'Group-Virtual-private-cloud-VPC.svg',
                   measured: true, title: vpcRow?.arn ?? null };
     containers.push(vpc);
-    let cy = vpc.y + HEAD + (edgeNodes.has(vpcId) ? NODE_H / 2 : 0);
-
-    // The VPC band: groups, tables, ACLs, endpoints.
-    const band = budgeted((bandMembers.get(vpcId) ?? []).map((id) => cardFor(id, vpc.w - 2 * PAD)), vpc.id);
-    const bandH = flow(band, vpc.x + PAD, cy, vpc.w - 2 * PAD);
-    if (bandH > 0) cy += bandH + ROW_GAP;
-
-    // Zones side by side, each a stack of subnets.
+    const top = vpc.y + HEAD + (hasGateway ? NODE_H / 2 : 0);
+    const members = bandMembers.get(vpcId) ?? [];
+    // The middle column: tables first, the one with a route to the internet first of those, so the
+    // public table sits nearest the gateway it routes to.
+    const centreIds = members.filter((id) => CENTRE_TYPES.has(nodes.get(id).resourceType))
+      .sort((p, q) => CENTRE_ORDER.indexOf(nodes.get(p).resourceType) - CENTRE_ORDER.indexOf(nodes.get(q).resourceType)
+        || (toInternet.has(q) ? 1 : 0) - (toInternet.has(p) ? 1 : 0) || p.localeCompare(q));
+    const bandIds = members.filter((id) => !CENTRE_TYPES.has(nodes.get(id).resourceType));
     const zoneIds = [...new Set([...subnetInfo.entries()]
       .filter(([, i]) => i.vpc === vpcId).map(([, i]) => i.zone || '?'))].sort();
-    const zoneW = zoneIds.length > 0
-      ? (vpc.w - 2 * PAD - NODE_GAP * (zoneIds.length - 1)) / zoneIds.length : 0;
-    let zonesH = 0;
-    zoneIds.forEach((zone, zi) => {
-      const zx = vpc.x + PAD + zi * (zoneW + NODE_GAP);
-      const az = { id: `az:${vpcId}:${zone}`, kind: 'az', label: '가용 영역',
-                   note: zone === '?' ? '영역을 읽지 못했다' : zone,
-                   x: zx, y: cy, w: zoneW, h: 0, stroke: null, dashed: zone === '?',
-                   badge: null, measured: zone !== '?' };
-      containers.push(az);
-      let sy = az.y + HEAD;
-      const subnetsHere = [...subnetInfo.entries()]
-        .filter(([, i]) => i.vpc === vpcId && (i.zone || '?') === zone).map(([id]) => id).sort();
-      for (const subnetId of subnetsHere) {
-        const info = subnetInfo.get(subnetId);
-        const subnetRow = nodes.get(subnetId);
-        const sub = { id: `subnet:${subnetId}`, kind: 'subnet',
-                      label: subnetRow?.name ? `서브넷 ${shortName(subnetRow.name)}` : '서브넷',
-                      note: info.present ? subnetId : `${subnetId} · 평가에 없음`,
-                      x: az.x + PAD, y: sy, w: az.w - 2 * PAD, h: 0, stroke: null,
-                      dashed: !info.present, badge: null, measured: true,
-                      title: subnetRow?.arn ?? null };
-        containers.push(sub);
-        const cards = budgeted((subnetMembers.get(subnetId) ?? []).map((id) => cardFor(id, sub.w - 2 * PAD)),
-                               sub.id, CARDS_PER_SUBNET);
-        const contentH = flow(cards, sub.x + PAD, sub.y + HEAD, sub.w - 2 * PAD);
-        sub.h = HEAD + contentH + PAD;
-        sy += sub.h + ROW_GAP;
-      }
-      az.h = (sy - ROW_GAP) - az.y + PAD;
-      zonesH = Math.max(zonesH, az.h);
+    const centreW = centreIds.length > 0 ? NODE_W + 2 * PAD : 0;
+    const centreX = vpc.x + vpc.w / 2 - centreW / 2;
+    // The two halves either side of the middle column; one whole when there is no column.
+    const halves = centreW > 0
+      ? [[vpc.x + PAD, centreX - NODE_GAP], [centreX + centreW + NODE_GAP, vpc.x + vpc.w - PAD]]
+      : [[vpc.x + PAD, vpc.x + vpc.w - PAD]];
+    let bottom = top;
+    if (centreW > 0) {
+      const column = budgeted(centreIds.map((id) => cardFor(id, NODE_W)), vpc.id);
+      let cy = top;
+      for (const card of column) { card.place(centreX + PAD, cy); cy += card.h + NODE_GAP; }
+      bottom = Math.max(bottom, cy - NODE_GAP);
+    }
+    // The band, dealt into the halves in turn.
+    const bandCards = budgeted(bandIds.map((id) => cardFor(id, halves[0][1] - halves[0][0])), vpc.id);
+    let bandBottom = top;
+    halves.forEach(([x0, x1], half) => {
+      const mine = bandCards.filter((_, i) => i % halves.length === half);
+      const h = flow(mine, x0, top, x1 - x0);
+      if (h > 0) bandBottom = Math.max(bandBottom, top + h);
     });
-    if (zoneIds.length > 0) cy += zonesH + ROW_GAP;
-    vpc.h = (cy - ROW_GAP) - vpc.y + PAD;
-    if (bandH === 0 && zoneIds.length === 0) vpc.h = HEAD + PAD;
+    const zonesTop = bandBottom > top ? bandBottom + ROW_GAP : top;
+    // The zones, dealt into the halves: the first half takes the first half of them, rounded up.
+    const split = halves.length === 2 ? Math.ceil(zoneIds.length / 2) : zoneIds.length;
+    const zoneGroups = halves.length === 2 ? [zoneIds.slice(0, split), zoneIds.slice(split)] : [zoneIds];
+    let zonesBottom = zonesTop;
+    zoneGroups.forEach((group, half) => {
+      if (group.length === 0) return;
+      const [x0, x1] = halves[half];
+      const zoneW = (x1 - x0 - NODE_GAP * (group.length - 1)) / group.length;
+      group.forEach((zone, zi) => {
+        const zx = x0 + zi * (zoneW + NODE_GAP);
+        const az = { id: `az:${vpcId}:${zone}`, kind: 'az', label: '가용 영역',
+                     note: zone === '?' ? '영역을 읽지 못했다' : zone,
+                     x: zx, y: zonesTop, w: zoneW, h: 0, stroke: null, dashed: zone === '?',
+                     badge: null, measured: zone !== '?' };
+        containers.push(az);
+        let sy = az.y + HEAD;
+        const subnetsHere = [...subnetInfo.entries()]
+          .filter(([, i]) => i.vpc === vpcId && (i.zone || '?') === zone).map(([id]) => id).sort();
+        for (const subnetId of subnetsHere) {
+          const info = subnetInfo.get(subnetId);
+          const subnetRow = nodes.get(subnetId);
+          const tint = tintOf(subnetId, vpcId);
+          const sub = { id: `subnet:${subnetId}`, kind: 'subnet',
+                        label: subnetRow?.name ? `서브넷 ${shortName(subnetRow.name)}` : '서브넷',
+                        note: (info.present ? subnetId : `${subnetId} · 평가에 없음`)
+                          + (tint === 'public' ? ' · 퍼블릭' : tint === 'private' ? ' · 프라이빗' : ''),
+                        x: az.x + PAD, y: sy, w: az.w - 2 * PAD, h: 0, stroke: null,
+                        dashed: !info.present, badge: null, measured: true,
+                        title: subnetRow?.arn ?? null, tint };
+          containers.push(sub);
+          const cards = budgeted((subnetMembers.get(subnetId) ?? []).map((id) => cardFor(id, sub.w - 2 * PAD)),
+                                 sub.id, CARDS_PER_SUBNET);
+          const contentH = flow(cards, sub.x + PAD, sub.y + HEAD, sub.w - 2 * PAD);
+          sub.h = HEAD + contentH + PAD;
+          sy += sub.h + ROW_GAP;
+        }
+        az.h = (sy - ROW_GAP) - az.y + PAD;
+        zonesBottom = Math.max(zonesBottom, az.y + az.h);
+      });
+    });
+    bottom = Math.max(bottom, zonesBottom);
+    vpc.h = bottom === top ? HEAD + PAD : bottom - vpc.y + PAD;
     y = vpc.y + vpc.h + ROW_GAP;
   }
 
-  // The internet gateways: one per VPC, straddling its top border at the right. Before the region
-  // band, so one whose VPC was not drawn can still fall into it.
+  // The internet gateways: one per VPC, straddling its top border in the middle, above the
+  // column of tables. Before the region band, so one whose VPC was not drawn can still fall into
+  // it.
   for (const [vpcId, igwId] of edgeNodes) {
     const vpc = containers.find((c) => c.id === `vpc:${vpcId}`);
     if (!vpc) { regionMembers.push(igwId); continue; }
-    emit(igwId, vpc.x + vpc.w - PAD - NODE_W, vpc.y - NODE_H / 2, { erase: true });
+    emit(igwId, vpc.x + vpc.w / 2 - NODE_W / 2, vpc.y - NODE_H / 2, { erase: true });
   }
 
   // The region band: what is in no VPC.
@@ -510,72 +588,360 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     return t0 < t1;
   };
   /** The places a line may leave a box: on each side, the point nearest the other end and the
-   *  side's middle. The middle is there so a shallow line to a far plate one row up can leave from
-   *  the top centre and clear the neighbour's top edge, instead of skimming along it. */
+   *  side's middle, each tagged with its side. Two per side because a line to a far box reads
+   *  better leaving from the middle than out of a corner. */
   const sideAnchors = (box, toward) => {
     const ax = clamp(toward.x, box.x + ANCHOR_INSET, box.x + box.w - ANCHOR_INSET);
     const ay = clamp(toward.y, box.y + ANCHOR_INSET, box.y + box.h - ANCHOR_INSET);
     const mx = box.x + box.w / 2;
     const my = box.y + box.h / 2;
-    return [{ x: ax, y: box.y }, { x: ax, y: box.y + box.h }, { x: box.x, y: ay }, { x: box.x + box.w, y: ay },
-            { x: mx, y: box.y }, { x: mx, y: box.y + box.h }, { x: box.x, y: my }, { x: box.x + box.w, y: my }];
+    return [
+      { side: 'top', x: ax, y: box.y }, { side: 'top', x: mx, y: box.y },
+      { side: 'bottom', x: ax, y: box.y + box.h }, { side: 'bottom', x: mx, y: box.y + box.h },
+      { side: 'left', x: box.x, y: ay }, { side: 'left', x: box.x, y: my },
+      { side: 'right', x: box.x + box.w, y: ay }, { side: 'right', x: box.x + box.w, y: my },
+    ];
   };
   /** A box grown by a margin, for counting the lines that graze a plate without crossing it. */
   const grown = (r, m) => ({ x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m });
-  /**
-   * Where a line runs. A line is a claim about its two ends and nothing else, and the centre-to-
-   * centre segment this started with made claims it did not mean: it ran under the plate beside
-   * its end and came out the far side, so a group line from one interface read as a group line
-   * from the instance next to it, and the route from the main table to the internet gateway
-   * surfaced from under the ACL two plates along. So:
-   *   - a line leaves a plate by a side, at the point on that side nearest the other end, and
-   *     never back through its own plate;
-   *   - of the candidate pairs, the one crossing the fewest OTHER plates wins, then the one
-   *     grazing the fewest, then the shortest, so a line skirts what it can skirt;
-   *   - two plates at the same level with something between them are joined over the top, through
-   *     the gap above the row, in three straight pieces - every straight line between them runs
-   *     under whatever sits between; two in the same column with something between, around the
-   *     left, likewise;
-   *   - what cannot be avoided is drawn anyway, and the rings the renderer puts on both ends are
-   *     what says where a line really stops.
-   */
   const plates = [...placedNodes, ...overflow];
-  const route = (a, b, aIsPlate, bIsPlate) => {
-    const ca = centre(a); const cb = centre(b);
-    const gapY = Math.max(a.y, b.y) - Math.min(a.y + a.h, b.y + b.h);   // negative: same row
-    const gapX = Math.max(a.x, b.x) - Math.min(a.x + a.w, b.x + b.w);   // negative: overlapping
-    if (aIsPlate && bIsPlate && gapY <= HEAD && gapX > NODE_GAP + 2) {
-      let ya; let yb; let corridorY;
-      if (gapY < 0) {                     // the same row: over both tops
-        ya = a.y; yb = b.y; corridorY = Math.min(a.y, b.y) - NODE_GAP / 2;
-      } else if (a.y > b.y) {             // b just above a (the internet gateway on the border)
-        ya = a.y; yb = b.y + b.h; corridorY = (yb + ya) / 2;
-      } else {                            // a just above b
-        ya = a.y + a.h; yb = b.y; corridorY = (ya + yb) / 2;
+  const vertical = (side) => side === 'top' || side === 'bottom';
+  /**
+   * The free band nearest the middle of [lo, hi] on one axis - clear of plates, of container
+   * borders and of the label band under a container's top border - among those whose extent on
+   * the other axis meets `span`. Where nothing is free, the middle: what cannot be avoided is
+   * drawn anyway, and the rings on both ends say where a line really stops.
+   */
+  const corridor = (axis, lo, hi, span, a, b) => {
+    if (hi - lo < 2) return (lo + hi) / 2;
+    const blocks = [];
+    for (const r of plates) {
+      if (r === a || r === b) continue;
+      const [rs, re] = axis === 'y' ? [r.x, r.x + r.w] : [r.y, r.y + r.h];
+      if (rs >= span[1] || re <= span[0]) continue;
+      blocks.push(axis === 'y' ? [r.y - GRAZE, r.y + r.h + GRAZE] : [r.x - GRAZE, r.x + r.w + GRAZE]);
+    }
+    for (const c of containers) {
+      const [cs, ce] = axis === 'y' ? [c.x, c.x + c.w] : [c.y, c.y + c.h];
+      if (cs >= span[1] || ce <= span[0]) continue;
+      if (axis === 'y') {
+        blocks.push([c.y - 3, c.y + HEAD], [c.y + c.h - 3, c.y + c.h + 3]);
+      } else {
+        blocks.push([c.x - 3, c.x + 3], [c.x + c.w - 3, c.x + c.w + 3]);
       }
-      return [{ x: ca.x, y: ya }, { x: ca.x, y: corridorY }, { x: cb.x, y: corridorY }, { x: cb.x, y: yb }];
     }
-    if (aIsPlate && bIsPlate && gapX < 0 && gapY > NODE_GAP + 2) {
-      // The same column with something between - an instance and its second volume, stacked
-      // under the first. Around the left, through the gap beside the column, for the same reason.
-      const corridorX = Math.min(a.x, b.x) - NODE_GAP / 2;
-      return [{ x: a.x, y: ca.y }, { x: corridorX, y: ca.y }, { x: corridorX, y: cb.y }, { x: b.x, y: cb.y }];
+    blocks.sort((u, v) => u[0] - v[0]);
+    const free = [];
+    let cursor = lo;
+    for (const [s, e] of blocks) {
+      if (e <= lo || s >= hi) continue;
+      if (s > cursor) free.push([cursor, Math.min(s, hi)]);
+      cursor = Math.max(cursor, e);
     }
+    if (cursor < hi) free.push([cursor, hi]);
+    const mid = (lo + hi) / 2;
+    let pick = null;
+    for (const [s, e] of free) {
+      if (e - s < 4) continue;
+      const at = mid >= s && mid <= e ? mid : (s + e) / 2;
+      const d = Math.abs(at - mid);
+      if (!pick || d < pick.d) pick = { at, d };
+    }
+    return pick ? pick.at : mid;
+  };
+  /**
+   * One orthogonal shape per pair of sides. Two vertical sides make a ㄷ through a corridor
+   * between them - or above both tops, or below both bottoms, when they face the same way. Two
+   * horizontal sides make the same shape lying down. A vertical and a horizontal side make a ㄱ.
+   * Null when the pair cannot be joined that way without going back through a box.
+   */
+  const pathFor = (p, q, a, b) => {
+    if (vertical(p.side) && vertical(q.side)) {
+      let lo; let hi;
+      if (p.side === 'top' && q.side === 'bottom') { lo = q.y; hi = p.y; }
+      else if (p.side === 'bottom' && q.side === 'top') { lo = p.y; hi = q.y; }
+      else if (p.side === 'top') { hi = Math.min(p.y, q.y); lo = hi - NODE_GAP; }
+      else { lo = Math.max(p.y, q.y); hi = lo + NODE_GAP; }
+      if (hi <= lo) return null;
+      const cy = corridor('y', lo, hi, [Math.min(p.x, q.x), Math.max(p.x, q.x)], a, b);
+      return [p, { x: p.x, y: cy }, { x: q.x, y: cy }, q];
+    }
+    if (!vertical(p.side) && !vertical(q.side)) {
+      let lo; let hi;
+      if (p.side === 'left' && q.side === 'right') { lo = q.x; hi = p.x; }
+      else if (p.side === 'right' && q.side === 'left') { lo = p.x; hi = q.x; }
+      else if (p.side === 'left') { hi = Math.min(p.x, q.x); lo = hi - NODE_GAP; }
+      else { lo = Math.max(p.x, q.x); hi = lo + NODE_GAP; }
+      if (hi <= lo) return null;
+      const cx = corridor('x', lo, hi, [Math.min(p.y, q.y), Math.max(p.y, q.y)], a, b);
+      return [p, { x: cx, y: p.y }, { x: cx, y: q.y }, q];
+    }
+    if (vertical(p.side)) {
+      const outward = p.side === 'top' ? q.y < p.y : q.y > p.y;
+      const inward = q.side === 'left' ? p.x < q.x : p.x > q.x;
+      return outward && inward ? [p, { x: p.x, y: q.y }, q] : null;
+    }
+    const outward = p.side === 'left' ? q.x < p.x : q.x > p.x;
+    const inward = q.side === 'top' ? p.y < q.y : p.y > q.y;
+    return outward && inward ? [p, { x: q.x, y: p.y }, q] : null;
+  };
+  /** Drop repeated points and the middle of three in a line, so a ㄷ whose ends align is a line. */
+  const tidy = (pts) => {
+    const out = [];
+    for (const pt of pts) {
+      const last = out[out.length - 1];
+      if (!(last && last.x === pt.x && last.y === pt.y)) out.push(pt);
+    }
+    for (let i = 1; i < out.length - 1;) {
+      const u = out[i - 1]; const v = out[i]; const w = out[i + 1];
+      if ((u.x === v.x && v.x === w.x) || (u.y === v.y && v.y === w.y)) out.splice(i, 1);
+      else i += 1;
+    }
+    return out;
+  };
+  /**
+   * Where a line runs. Every line is orthogonal: it leaves a box straight out of one side, turns
+   * only at right angles, and enters the other box straight into a side. A line is a claim about
+   * its two ends and nothing else, and the centre-to-centre segment this started with made claims
+   * it did not mean - it ran under the plate beside its end and came out the far side, so a group
+   * line from one interface read as a group line from the instance next to it. So, of every shape
+   * every pair of sides allows, the one crossing the fewest OTHER plates wins, then the one
+   * grazing the fewest, then the fewest bends, then the shortest; a shape that goes back through
+   * either end is no shape at all.
+   */
+  const route = (a, b) => {
+    const ca = centre(a); const cb = centre(b);
     const lo = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y) };
     const hi = { x: Math.max(a.x + a.w, b.x + b.w), y: Math.max(a.y + a.h, b.y + b.h) };
+    const reach = 2 * NODE_GAP;
     const others = plates.filter((r) => r !== a && r !== b
-      && r.x < hi.x + GRAZE && r.x + r.w > lo.x - GRAZE && r.y < hi.y + GRAZE && r.y + r.h > lo.y - GRAZE);
+      && r.x < hi.x + reach && r.x + r.w > lo.x - reach && r.y < hi.y + reach && r.y + r.h > lo.y - reach);
     let best = null;
     for (const p of sideAnchors(a, cb)) {
       for (const q of sideAnchors(b, ca)) {
-        if (crosses(p, q, a) || crosses(p, q, b)) continue;     // back through its own plate
-        const hits = others.reduce((n, r) => n + (crosses(p, q, r) ? 1 : 0), 0);
-        const grazes = others.reduce((n, r) => n + (crosses(p, q, grown(r, GRAZE)) ? 1 : 0), 0);
-        const score = hits * 100000 + grazes * 1000 + Math.hypot(q.x - p.x, q.y - p.y);
-        if (!best || score < best.score) best = { p, q, score };
+        const raw = pathFor(p, q, a, b);
+        if (!raw) continue;
+        const path = tidy(raw);
+        let hits = 0; let grazes = 0; let len = 0; let back = false;
+        for (let i = 1; i < path.length; i += 1) {
+          const u = path[i - 1]; const v = path[i];
+          if (crosses(u, v, a) || crosses(u, v, b)) { back = true; break; }
+          for (const r of others) {
+            if (crosses(u, v, r)) hits += 1;
+            else if (crosses(u, v, grown(r, GRAZE))) grazes += 1;
+          }
+          len += Math.abs(v.x - u.x) + Math.abs(v.y - u.y);
+        }
+        if (back) continue;
+        const score = hits * 100000 + grazes * 1000 + (path.length - 2) * 40 + len;
+        if (!best || score < best.score) best = { path, score };
       }
     }
-    return best ? [best.p, best.q] : [ca, cb];
+    return best ? best.path : [ca, cb];
+  };
+
+  // ---- the grid router ---------------------------------------------------------------------
+  // The shape router above joins two boxes in at most four points, and in a crowded place every
+  // one of its shapes runs through a neighbour - a line from the ACL to a subnet two rows down
+  // went straight through the route table beside it, which reads as the table's line. So a line
+  // is found on a grid of RES-pixel cells with A* instead: plates are walls; a container's border
+  // and the label band under its top edge cost extra, so a line crosses them where it must and
+  // not along them; a cell another line already runs along costs extra, so parallel lines take
+  // parallel lanes; and every turn costs extra, so a line turns as little as it can. The shape
+  // router is the fallback for the rare pair the grid cannot join.
+  // Costs are in half-steps: a step is 2, so the extras can be smaller than a step. A line passes
+  // a plate at one cell's distance for 1 extra a cell - enough to prefer open ground, not enough
+  // to send it round the VPC rather than through a ten-pixel gap. A turn is 20: a line changes
+  // lane only to escape a long shared stretch, not to dodge a short one.
+  const RES = 5;
+  const WINDOW = 160;
+  /** The estimate is weighted above one: the search then heads for the goal rather than sweeping
+   *  the window, at the price of a line a little longer than the cheapest - a picture's price to
+   *  pay, and what keeps a scene of hundreds under a second. */
+  const GREED = 1.6;
+  const STEP = 2;
+  const TURN = 20;
+  const NEAR = 1;
+  const BORDER = 4;
+  const LABEL = 6;
+  const LANE = 8;
+  const gridW = Math.ceil(GRAPH_W / RES) + 2;
+  const gridH = Math.ceil((cloud.y + cloud.h) / RES) + 2;
+  const hard = new Uint8Array(gridW * gridH);
+  const soft = new Uint8Array(gridW * gridH);
+  const traffic = new Uint8Array(gridW * gridH);
+  /** Every cell whose point lies inside the rectangle. */
+  const paint = (x0, y0, x1, y1, fn) => {
+    const c0 = Math.max(0, Math.ceil(x0 / RES)); const c1 = Math.min(gridW - 1, Math.floor(x1 / RES));
+    const r0 = Math.max(0, Math.ceil(y0 / RES)); const r1 = Math.min(gridH - 1, Math.floor(y1 / RES));
+    for (let r = r0; r <= r1; r += 1) for (let c = c0; c <= c1; c += 1) fn(r * gridW + c);
+  };
+  for (const r of plates) paint(r.x - 2, r.y - 2, r.x + r.w + 2, r.y + r.h + 2, (i) => { hard[i] = 1; });
+  for (const r of plates) {
+    paint(r.x - 2 - RES, r.y - 2 - RES, r.x + r.w + 2 + RES, r.y + r.h + 2 + RES, (i) => { soft[i] += NEAR; });
+  }
+  for (const c of containers) {
+    paint(c.x, c.y, c.x + c.w, c.y + HEAD, (i) => { soft[i] += LABEL; });
+    paint(c.x, c.y + c.h - 2, c.x + c.w, c.y + c.h + 2, (i) => { soft[i] += BORDER; });
+    paint(c.x - 2, c.y, c.x + 2, c.y + c.h, (i) => { soft[i] += BORDER; });
+    paint(c.x + c.w - 2, c.y, c.x + c.w + 2, c.y + c.h, (i) => { soft[i] += BORDER; });
+  }
+  const cellOf = (x, y) => Math.round(y / RES) * gridW + Math.round(x / RES);
+  /** The cells a line may leave a box from: just outside each side, at every grid column or row
+   *  along it inside the corner inset, each with its end point on the border. Every position
+   *  rather than one, so two lines to one plate land at two places on it and the router picks
+   *  the pair of ports that costs least - which is what spreads lines into lanes. */
+  const ports = (box) => {
+    const out = [];
+    const above = Math.floor((box.y - 3) / RES) * RES;
+    const below = Math.ceil((box.y + box.h + 3) / RES) * RES;
+    const before = Math.floor((box.x - 3) / RES) * RES;
+    const after = Math.ceil((box.x + box.w + 3) / RES) * RES;
+    const x0 = Math.ceil((box.x + ANCHOR_INSET) / RES) * RES;
+    const x1 = Math.floor((box.x + box.w - ANCHOR_INSET) / RES) * RES;
+    const y0 = Math.ceil((box.y + ANCHOR_INSET) / RES) * RES;
+    const y1 = Math.floor((box.y + box.h - ANCHOR_INSET) / RES) * RES;
+    // A whisper of cost grows with the distance from the side's middle, so of two equal ways the
+    // one through the middle wins and a symmetric picture gets symmetric lines.
+    const mx = box.x + box.w / 2; const my = box.y + box.h / 2;
+    // Every cell along a plate's side; every fourth along a container's, which is wide.
+    const step = box.w > 2 * NODE_W ? 4 * RES : RES;
+    for (let x = x0; x <= x1; x += step) {
+      const bias = 0.01 * Math.abs(x - mx) / RES;
+      out.push({ end: { x, y: box.y }, cell: cellOf(x, above), dir: 0, bias });
+      out.push({ end: { x, y: box.y + box.h }, cell: cellOf(x, below), dir: 2, bias });
+    }
+    for (let y = y0; y <= y1; y += step) {
+      const bias = 0.01 * Math.abs(y - my) / RES;
+      out.push({ end: { x: box.x, y }, cell: cellOf(before, y), dir: 3, bias });
+      out.push({ end: { x: box.x + box.w, y }, cell: cellOf(after, y), dir: 1, bias });
+    }
+    return out.filter((p) => p.cell >= 0 && p.cell < gridW * gridH && !hard[p.cell]);
+  };
+  const DX = [0, 1, 0, -1];
+  const DY = [-1, 0, 1, 0];
+  const states = gridW * gridH * 4;
+  const gScore = new Float32Array(states);
+  const stamp = new Uint32Array(states);        // 2 * gen: open, 2 * gen + 1: closed
+  const from = new Int32Array(states);
+  let gen = 0;
+  // A binary heap on two typed arrays - keys and states side by side - rather than on an array of
+  // pairs: the pairs were half the router's time in allocation and collection.
+  let heapKey = new Float64Array(1 << 12);
+  let heapVal = new Int32Array(1 << 12);
+  let heapN = 0;
+  const hpush = (f, s) => {
+    if (heapN === heapKey.length) {
+      const k2 = new Float64Array(heapN * 2); k2.set(heapKey); heapKey = k2;
+      const v2 = new Int32Array(heapN * 2); v2.set(heapVal); heapVal = v2;
+    }
+    let i = heapN; heapN += 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (heapKey[p] <= f) break;
+      heapKey[i] = heapKey[p]; heapVal[i] = heapVal[p];
+      i = p;
+    }
+    heapKey[i] = f; heapVal[i] = s;
+  };
+  const hpop = () => {
+    const top = heapVal[0];
+    heapN -= 1;
+    if (heapN > 0) {
+      const f = heapKey[heapN]; const s = heapVal[heapN];
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1; if (l >= heapN) break;
+        const r = l + 1;
+        const m = (r < heapN && heapKey[r] < heapKey[l]) ? r : l;
+        if (heapKey[m] >= f) break;
+        heapKey[i] = heapKey[m]; heapVal[i] = heapVal[m];
+        i = m;
+      }
+      heapKey[i] = f; heapVal[i] = s;
+    }
+    return top;
+  };
+  const gridRoute = (a, b, wide = false) => {
+    const starts = ports(a);
+    const goals = ports(b);
+    if (starts.length === 0 || goals.length === 0) return null;
+    // The search stays in a window around the two boxes: nearly every line is local, and a search
+    // over the whole grid for each of seven hundred lines is seconds, not milliseconds. The pair
+    // the window cannot join is searched again over the whole grid.
+    const reach = wide ? Infinity : Math.ceil(WINDOW / RES);
+    const wx0 = Math.max(0, Math.floor(Math.min(a.x, b.x) / RES) - reach);
+    const wx1 = Math.min(gridW - 1, Math.ceil(Math.max(a.x + a.w, b.x + b.w) / RES) + reach);
+    const wy0 = Math.max(0, Math.floor(Math.min(a.y, b.y) / RES) - reach);
+    const wy1 = Math.min(gridH - 1, Math.ceil(Math.max(a.y + a.h, b.y + b.h) / RES) + reach);
+    const goalAt = new Map(goals.map((p) => [p.cell, p]));
+    // The heuristic: steps to the rectangle the goal cells lie on. Never more than the true cost,
+    // so the first goal reached is the cheapest.
+    let gx0 = Infinity; let gx1 = -Infinity; let gy0 = Infinity; let gy1 = -Infinity;
+    for (const p of goals) {
+      const cx = p.cell % gridW; const cy = (p.cell - cx) / gridW;
+      gx0 = Math.min(gx0, cx); gx1 = Math.max(gx1, cx); gy0 = Math.min(gy0, cy); gy1 = Math.max(gy1, cy);
+    }
+    // The heuristic counts the turns a line still has to make as well as the steps: none if the
+    // goal lies straight ahead, one if it lies off to a side, two if it lies behind. Every one of
+    // those is unavoidable, so the estimate never exceeds the cost - and it is tight enough that
+    // the search stops wandering the window.
+    const h = (cell, dir) => {
+      const cx = cell % gridW; const cy = (cell - cx) / gridW;
+      const dx = Math.max(0, gx0 - cx, cx - gx1);
+      const dy = Math.max(0, gy0 - cy, cy - gy1);
+      let turns = 0;
+      if (dir === 0 || dir === 2) {
+        const ahead = dir === 0 ? cy > gy1 : cy < gy0;
+        if (dy > 0 && !ahead) turns = 2;
+        else if (dx > 0) turns = 1;
+      } else {
+        const ahead = dir === 3 ? cx > gx1 : cx < gx0;
+        if (dx > 0 && !ahead) turns = 2;
+        else if (dy > 0) turns = 1;
+      }
+      return STEP * (dx + dy) + TURN * turns;
+    };
+    gen += 1;
+    const open = 2 * gen; const closed = 2 * gen + 1;
+    heapN = 0;
+    starts.forEach((s, i) => {
+      const st = s.cell * 4 + s.dir;
+      stamp[st] = open; gScore[st] = s.bias; from[st] = -1 - i;
+      hpush(s.bias + GREED * h(s.cell, s.dir), st);
+    });
+    while (heapN > 0) {
+      const st = hpop();
+      if (stamp[st] === closed) continue;
+      stamp[st] = closed;
+      const cell = st >> 2; const dir = st & 3;
+      if (goalAt.has(cell)) {
+        // Walk back to the start port, then lay the two end points on their borders.
+        const cells = [];
+        let cur = st;
+        while (cur >= 0) { cells.push(cur >> 2); cur = from[cur]; }
+        const start = starts[-1 - cur];
+        cells.reverse();
+        for (const c of cells) if (traffic[c] < 255) traffic[c] += 1;
+        const pts = [start.end, ...cells.map((c) => ({ x: (c % gridW) * RES, y: Math.floor(c / gridW) * RES })), goalAt.get(cell).end];
+        return tidy(pts);
+      }
+      const cx = cell % gridW; const cy = (cell - cx) / gridW;
+      for (let d = 0; d < 4; d += 1) {
+        if (d === (dir + 2) % 4) continue;
+        const nx = cx + DX[d]; const ny = cy + DY[d];
+        if (nx < wx0 || ny < wy0 || nx > wx1 || ny > wy1) continue;
+        const ncell = ny * gridW + nx;
+        if (hard[ncell] && !goalAt.has(ncell)) continue;
+        const ns = ncell * 4 + d;
+        const cost = gScore[st] + STEP + soft[ncell] + traffic[ncell] * LANE + (d !== dir ? TURN : 0)
+          + (goalAt.get(ncell)?.bias ?? 0);
+        if (stamp[ns] >= open && gScore[ns] <= cost) continue;
+        stamp[ns] = open; gScore[ns] = cost; from[ns] = st;
+        hpush(cost + GREED * h(ncell, d), ns);
+      }
+    }
+    return wide ? null : gridRoute(a, b, true);
   };
   const addEdge = (kind, a, b, relation, implicit = false) => {
     const key = `${kind}|${[a, b].sort().join('|')}`;
@@ -592,14 +958,17 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   // that holds it: that is where a reader looks for "what groups does this instance have", and the
   // instance's own SecurityGroups field is its primary interface's groups anyway, so both records
   // fold into one line per (instance, group).
-  const boxedIn = new Map();                            // interface id -> instance id it is drawn in
+  const boxedIn = new Map();                            // interface id -> instance id it is in
+  const foldedIn = new Map(foldedNodes.map((f) => [f.id, f.in]));
   for (const n of placedNodes) {
     if (!n.box) continue;
-    for (const e of eniOf.get(n.id) ?? []) if (drawn.has(e)) boxedIn.set(e, n.id);
+    for (const e of eniOf.get(n.id) ?? []) if (drawn.has(e) || foldedIn.has(e)) boxedIn.set(e, n.id);
   }
   const explicitRtb = new Map();                        // subnet id -> Set(rtb id)
   const mainRtb = new Map();                            // vpc id -> rtb id
-  for (const n of placedNodes) {
+  // The folded interfaces take part too: their groups are the box's groups whether the box is
+  // open or closed, so the lines are the same either way.
+  for (const n of [...placedNodes, ...foldedNodes]) {
     const src = nodes.get(n.id);
     for (const [relation, targets] of Object.entries(src.links)) {
       const rel = RELATIONS[relation];
@@ -645,11 +1014,15 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
    *  own title (type, id, name, zone; not the ARN), a container by its label and its id. */
   const endLabel = (id) => (drawn.has(id) ? drawn.get(id).title.split('\n')[0]
     : `${containerOf.get(id).label} ${containerOf.get(id).note ?? ''}`.trim());
+  // Short lines first, so the long ones route around them: a volume's line under its instance is
+  // laid before the group line that has to pass that column.
+  const ROUTE_ORDER = ['volume', 'interface', 'association', 'route', 'security', 'image'];
+  edges.sort((p, q) => ROUTE_ORDER.indexOf(p.kind) - ROUTE_ORDER.indexOf(q.kind)
+    || p.from.localeCompare(q.from) || p.to.localeCompare(q.to));
   for (const e of edges) {
     const a = boxOf(e.from);
     const b = boxOf(e.to);
-    e.points = route(a, b, drawn.has(e.from), drawn.has(e.to))
-      .map((pt) => ({ x: Math.round(pt.x), y: Math.round(pt.y) }));
+    e.points = (gridRoute(a, b) ?? route(a, b)).map((pt) => ({ x: Math.round(pt.x), y: Math.round(pt.y) }));
     e.x1 = e.points[0].x; e.y1 = e.points[0].y;
     e.x2 = e.points[e.points.length - 1].x; e.y2 = e.points[e.points.length - 1].y;
     e.title = `${KIND_LABEL[e.kind]}${e.implicit ? ' (기본 라우팅 테이블에서 도출)' : ''}: `
@@ -690,16 +1063,31 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   const footTop = cloud.y + cloud.h + G_FOOT_PAD;
   const footLines = foot.map((text, i) => ({ text, y: footTop + 12 + i * G_FOOT_LINE }));
 
-  // The table beside the picture: one row per drawn node.
-  const rows = placedNodes.map((n) => ({
-    id: n.id,
-    resourceType: n.resourceType,
-    typeLabel: n.typeLabel,
-    name: nodes.get(n.id).name,
-    where: nodes.get(n.id).subnet || nodes.get(n.id).vpc || nodes.get(n.id).zone || '',
-    degree: kept.filter((e) => e.from === n.id || e.to === n.id).length,
-    sensitive: n.sensitive,
-  })).sort((a, b) => a.resourceType.localeCompare(b.resourceType) || a.id.localeCompare(b.id));
+  // The table beside the picture: one row per drawn node, and one per interface folded into a
+  // closed box - said to be inside it, so the table stays the whole answer while the picture is
+  // folded.
+  const rows = [
+    ...placedNodes.map((n) => ({
+      id: n.id,
+      resourceType: n.resourceType,
+      typeLabel: n.typeLabel,
+      name: nodes.get(n.id).name,
+      where: nodes.get(n.id).subnet || nodes.get(n.id).vpc || nodes.get(n.id).zone || '',
+      degree: kept.filter((e) => e.from === n.id || e.to === n.id).length,
+      sensitive: n.sensitive,
+      folded: false,
+    })),
+    ...foldedNodes.map((f) => ({
+      id: f.id,
+      resourceType: nodes.get(f.id).resourceType,
+      typeLabel: nodes.get(f.id).typeLabel,
+      name: nodes.get(f.id).name,
+      where: `${f.in} 안`,
+      degree: 0,
+      sensitive: nodes.get(f.id).sensitive,
+      folded: true,
+    })),
+  ].sort((a, b) => a.resourceType.localeCompare(b.resourceType) || a.id.localeCompare(b.id));
 
   return {
     width: GRAPH_W,
@@ -726,8 +1114,11 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       placedRows,
       totalRows: ids.length,
       /** Rows that became a BORDER rather than a plate - the ec2:vpc and ec2:subnet rows. The
-       *  accounting is nodes + omittedNodes + containerRows === totalRows, and a test says so. */
+       *  accounting is nodes + omittedNodes + containerRows + foldedRows === totalRows, and a test
+       *  says so. */
       containerRows: ids.filter((id) => placeOf(nodes.get(id)) === null).length,
+      /** Interfaces inside a closed instance box: placed and counted, not drawn. */
+      foldedRows: foldedNodes.length,
     },
     kinds,
     measured,
@@ -754,7 +1145,7 @@ export const KIND_LABEL = {
 
 /** Drawn INSIDE the viewBox, so a cropped screenshot keeps it. */
 export const GRAPH_CAPTION =
-  '이 그림은 조회기가 읽은 연결을 그린 것이다. 실선 테두리는 측정한 포함 관계이고, 점선 연결은 기본 라우팅 테이블에서 도출한 것이다.';
+  '이 그림은 조회기가 읽은 연결을 점선으로 그린 것이다. 실선 테두리는 기록된 소속이고, 촘촘한 점선은 기본 라우팅 테이블에서 도출한 연결이다.';
 
 /** The <desc>: what a screen reader is told. Pure, so it is tested rather than hoped for. */
 export function graphSummary(scene) {
