@@ -1892,10 +1892,20 @@ test('the relationship picture is a second view of the same window, not a second
 });
 
 test('the window is as wide as the screen allows', () => {
-  // A graph of one plate per resource in a 796px window is a graph nobody can read; the figure
+  // A graph of one plate per resource in a 900px window is a graph nobody can read; the figure
   // scrolls inside the window rather than the window shrinking the figure.
-  assert.match(CSS, /dialog\.policy-dialog\.topology-dialog\s*\{\s*width:\s*min\(1720px,\s*97vw\)/,
-               'the window shrank back to a width a graph cannot be read in');
+  //
+  // Defect it prevents: .policy-dialog caps itself at 900px and a width never beats a max-width, so
+  // the window shipped at 900px while its width rule said 1720 - and the render harness, which
+  // lifted the cap itself, showed a wide window the users never got. The cap has to be lifted in
+  // the stylesheet, by name, and the picture has to fill what the window then offers.
+  const rule = CSS.match(/dialog\.policy-dialog\.topology-dialog\s*\{([^}]*)\}/)?.[1] ?? '';
+  assert.match(rule, /width:\s*calc\(100vw - \d+px\)/, 'the window is not the screen\'s width');
+  assert.match(rule, /max-width:\s*calc\(100vw - \d+px\)/,
+               "the window's width is capped by .policy-dialog's 900px again");
+  assert.match(CSS, /\.graph-svg\s*\{[^}]*width:\s*100%/, 'the picture does not fill the window');
+  assert.ok(TOPOLOGY.includes('style={{ minWidth: scene.width }}'),
+            'a narrow window shrinks the picture instead of scrolling it');
 });
 
 test('the relationship picture says what a line is and what a missing line is not', () => {
