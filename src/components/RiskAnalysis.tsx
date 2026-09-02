@@ -9,6 +9,7 @@ import type {
 import { CATEGORY_LABEL, GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
 import { BlockPath } from "./BlockPath";
 import { alreadyRestricted, containmentState } from "../../server/blockPath.js";
+import { findingsOfAnswer } from "../../server/analysisFindings.js";
 import { actionDocUrl } from "../../server/actionDocs.js";
 import { LabeledResource, TagButton } from "./ResourceLine";
 
@@ -82,8 +83,12 @@ interface Props {
    * Keyed rather than merged here because a scope re-run replaces its own findings and must not
    * leave the previous run's beside them; the same finding arriving from the plan scope and from
    * its policy's scope is one finding, and the reader deduplicates by id.
+   *
+   * NULL IS NOT []. Null says this scope has not answered - nobody pressed either button, or the
+   * plan changed under it; [] says it answered and fired nothing. The diagram prints opposite
+   * sentences over the two, so the distinction is carried rather than left to a count.
    */
-  onFindings: (scope: string, findings: Finding[]) => void;
+  onFindings: (scope: string, findings: Finding[] | null) => void;
   /**
    * The assessment and the SHARED restriction set, for cutting a path from its card. The card's
    * 차단 dialog writes into the same array the per-policy editor composes - one decision list, one
@@ -808,6 +813,38 @@ function RiskScope({
     return stopPolling;
   }, [planId, policy]);
 
+  /** What this scope is called in the page's findings record. One name, computed once. */
+  const scope = policy ?? "__plan__";
+
+  /**
+   * The findings this scope holds, handed to the page so the resource diagram can answer 「이 자원에
+   * 무엇이 걸렸나」 when a reader clicks a plate.
+   *
+   * AN EFFECT ON THE ANSWER, not a line inside each branch that produces one, and that placement is
+   * the point. 정책 기반 분석 settles nothing - it never touches the poll and never produces a
+   * citation, so it never went through settle() below - and for as long as this lived inside
+   * settle() the findings of a rules-only run never left this component. An approver who had just
+   * run the rules and clicked a resource was told 「아직 분석을 돌리지 않았다」, which is the one
+   * sentence in that panel that must never be wrong: it is what tells 「나온 것이 없다」 apart from
+   * 「묻지 않았다」, and it was saying the second while the screen beside it showed 14 findings.
+   * Written here, every path that changes the answer reports it - including one added later.
+   *
+   * Keyed on the two ARRAYS rather than on `answer`: the poll rebuilds the answer object every
+   * three seconds to move the progress line, and carries the same findings in each of them.
+   */
+  // Keyed on the ANSWER'S PARTS rather than on the answer, and computed from the answer inside:
+  // the poll rebuilds the answer object every three seconds to move the progress line and carries
+  // the same findings in each of them, so keying on the object would re-report the same list to
+  // every policy's diagram twice a minute for as long as the model runs.
+  const answered = answer !== null;
+  const ruleFindings = answer?.rule_findings;
+  const modelFindings = answer?.analysis && !answer.analysis.discarded
+    ? answer.analysis.findings : undefined;
+  useEffect(() => {
+    onFindings(scope, findingsOfAnswer(answer));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, onFindings, answered, ruleFindings, modelFindings]);
+
   /**
    * The citation the decision will carry.
    *
@@ -821,13 +858,6 @@ function RiskScope({
    */
   const settle = (next: RiskAnalysisAnswer) => {
     setAnswer(next);
-    // Both halves, in one list. The model's are already marked source: "model", which is what lets
-    // the diagram's panel draw them under their own heading; a discarded run cited an action
-    // granted nowhere, so its verdicts are not findings and none of them travels.
-    onFindings(policy ?? "__plan__", [
-      ...(next.rule_findings ?? []),
-      ...(next.analysis && !next.analysis.discarded ? next.analysis.findings ?? [] : []),
-    ]);
     onAnalysis(
       next.analysis && !next.analysis.discarded
         && next.analysis.findings_sha256 && next.analysis.impact_sha256
@@ -887,6 +917,10 @@ function RiskScope({
    * already finished or is in flight for this same assessment, its answer or its running state
    * rides along on the rules response too (see server/api.js) - not because this call started
    * anything, but because handing back work already paid for costs nothing further.
+   *
+   * NEITHER branch reports its findings to the diagram. Both only set the answer, and the effect
+   * above reports whatever the answer became - which is why "rules" no longer has to remember to,
+   * and why it could forget for as long as it was each branch's own job.
    */
   const run = async (engine: "rules" | "ai") => {
     setError(null);

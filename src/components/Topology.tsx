@@ -890,7 +890,8 @@ function UnmeasuredNote({ unmeasured }: { unmeasured: Record<string, number> }) 
  * gate because it writes something; this one only reads, and an approver who cannot edit is
  * exactly the reader who most needs to see what the policy reaches.
  */
-export function PolicyTopology({ policy, name, accountId, coverage, reference, findings }: {
+export function PolicyTopology({ policy, name, accountId, coverage, reference, findings,
+                                 analysed = false }: {
   policy: ImpactPolicy;
   /** The policy as a person names it - policyName(identifier). */
   name: string;
@@ -904,6 +905,14 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
   /** Every finding both analyses produced, deduplicated by id. Empty until somebody runs one, and
    *  the panel says which of the two it is - empty is not "nothing was found". */
   findings?: Finding[];
+  /**
+   * Whether an analysis has ANSWERED for this plan, told rather than inferred.
+   *
+   * The panel used to read this off `findings.length > 0`, which is the same guess with a rarer
+   * failure: a run that fired no rule at all would have been drawn as a run nobody started. The
+   * count answers "무엇이 나왔나"; this answers "물어보기는 했나", and those are two questions.
+   */
+  analysed?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const uid = useId();
@@ -1144,7 +1153,7 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                                marks={marks} />
                 </div>
                 {facts && (
-                  <ResourcePanel facts={facts} ran={found.length > 0}
+                  <ResourcePanel facts={facts} ran={analysed}
                                  onClose={() => setChosen(null)} />
                 )}
               </div>

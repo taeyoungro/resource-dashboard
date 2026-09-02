@@ -19,6 +19,8 @@ import {
   DENIED, NOT_DENIED, UNKNOWN, evaluate, virtualResource,
 } from "../../server/virtualResource.js";
 import { serviceFold } from "../../server/serviceFold.js";
+import { anyAnswered, everyFinding } from "../../server/analysisFindings.js";
+import type { FindingsByScope } from "../../server/analysisFindings";
 import { INTENT_LABEL, INTENT_NOTE, SECTIONS, isScoped } from "./intents";
 import { PolicyTopology } from "./Topology";
 
@@ -73,8 +75,12 @@ interface Props {
    * clicking a resource asks what was found ABOUT THAT RESOURCE, and the answer is a filter over
    * these. Empty until somebody runs an analysis, and the diagram says so rather than saying
    * nothing was found.
+   *
+   * NULL IS NOT []. Null is a scope that has not answered; [] is one that answered and found
+   * nothing. The diagram prints opposite sentences over the two - 「아직 분석을 돌리지 않았다」 and
+   * 「이 자원을 지목한 발견이 없다」 - and reading a count cannot tell them apart.
    */
-  findings?: Record<string, Finding[]>;
+  findings?: FindingsByScope;
 }
 
 /**
@@ -591,15 +597,10 @@ type ConditionFields = {
 export function Impact({
   assessment, source, restrictions, onChange, disabled, findings,
 }: Props) {
-  // One list, deduplicated by id: the plan scope and a policy scope both report the same finding,
-  // and the diagram's panel would otherwise draw it twice.
-  const allFindings = useMemo(() => {
-    const byId = new Map<string, Finding>();
-    for (const list of Object.values(findings ?? {})) {
-      for (const f of list) if (f?.id && !byId.has(f.id)) byId.set(f.id, f);
-    }
-    return [...byId.values()];
-  }, [findings]);
+  // Two questions, and the second is not the first with a count on it: 무엇이 나왔나, and 물어보기는
+  // 했나. server/analysisFindings.js holds both and the comment saying why they are separate.
+  const allFindings = useMemo(() => everyFinding(findings), [findings]);
+  const analysed = useMemo(() => anyAnswered(findings), [findings]);
   const restrictable = assessment.policies.filter((p) => p.restrictable && !p.unreadable);
   const baseline = assessment.policies.filter((p) => p.is_baseline);
   const unreadable = assessment.policies.filter((p) => p.unreadable);
@@ -705,6 +706,7 @@ export function Impact({
           fenceGrants={fenceGrants}
           tagWriters={tagWriters}
           findings={allFindings}
+          analysed={analysed}
         />
       ))}
 
@@ -760,6 +762,7 @@ function PolicyBlock({
   fenceGrants,
   tagWriters,
   findings,
+  analysed,
 }: {
   policy: ImpactPolicy;
   /** The governed account, for the console list links. The host of those URLs carries it. */
@@ -785,6 +788,9 @@ function PolicyBlock({
   tagWriters: string[];
   /** Every finding both analyses produced, deduplicated. The diagram filters them per resource. */
   findings: Finding[];
+  /** Whether any analysis has ANSWERED - which an empty findings list does not say. The diagram's
+   *  panel prints two different sentences over an empty section and this is what picks. */
+  analysed: boolean;
 }) {
   // Every restriction on this policy - one per action, because generator/restriction.py writes one
   // statement per action and each of those statements now carries its own resources. A single
@@ -915,6 +921,7 @@ function PolicyBlock({
         coverage={coverage}
         reference={reference}
         findings={findings}
+        analysed={analysed}
       />
 
       {/* No checkbox in front of this. There used to be one - "이 정책에 제한을 건다" - and it was a

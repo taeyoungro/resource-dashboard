@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AssessmentState, Finding, Impact as Assessment, PassroleWithdrawal, PassroleWriter,
   PlanDetail as Detail, PlanRefusal, Restriction, RestrictionTemplate, RiskAnalysisCitation,
 } from "../types";
 import { mergeTemplate, seedFromTemplate } from "../../server/templates.js";
+import type { FindingsByScope } from "../../server/analysisFindings";
 import { Impact } from "./Impact";
 import { RiskAnalysis } from "./RiskAnalysis";
 import { clock } from "../time";
@@ -684,8 +685,24 @@ export function PlanDetail({
    *
    * Cleared with the plan, exactly as the citation is: findings about the plan an approver just
    * left, drawn on the plan they are looking at now, would be a lie with no way to see it.
+   *
+   * NULL IS NOT []. A scope reports null until it has answered and [] once it has answered and
+   * fired nothing; the diagram prints 「아직 분석을 돌리지 않았다」 over the first and 「이 자원을
+   * 지목한 발견이 없다」 over the second, and those are opposite news.
    */
-  const [findings, setFindings] = useState<Record<string, Finding[]>>({});
+  const [findings, setFindings] = useState<FindingsByScope>({});
+  /**
+   * One scope's findings, replacing whatever that scope reported before.
+   *
+   * useCallback with no dependency, and that is load-bearing rather than tidiness: the analysis
+   * panel reports its findings from an EFFECT keyed on this handler, so a handler rebuilt on every
+   * render would run that effect on every render - and each run writes the state that causes the
+   * next one. setFindings is stable, so this is too.
+   */
+  const takeFindings = useCallback(
+    (scope: string, found: Finding[] | null) => setFindings((prev) => ({ ...prev, [scope]: found })),
+    [],
+  );
   // Whose PassRole request this approver has ticked. Nobody, until somebody is.
   const [grantTo, setGrantTo] = useState<string[]>([]);
   // And whose this approver has taken back. Separate state, because it is not the complement of the
@@ -889,7 +906,7 @@ export function PlanDetail({
         planId={detail.plan_id}
         ready={!!detail.assessment}
         onAnalysis={setAnalysis}
-        onFindings={(scope, found) => setFindings((prev) => ({ ...prev, [scope]: found }))}
+        onFindings={takeFindings}
         assessment={detail.assessment ?? null}
         restrictions={restrictions}
         onRestrictions={setRestrictions}
