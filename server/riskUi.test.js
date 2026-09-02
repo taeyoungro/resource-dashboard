@@ -77,7 +77,7 @@ test('every action that fired a finding is rendered, and none of it is summarise
 });
 
 test('a card carries the grade, the id, the title, the narrative and the restrictable badge', () => {
-  const card = PANEL.slice(PANEL.indexOf('function Card('), PANEL.indexOf('function Summary('));
+  const card = PANEL.slice(PANEL.indexOf('export function RiskFindingCard('), PANEL.indexOf('function Summary('));
   for (const required of ['GRADE_CLASS[finding.escalationGrade]', 'finding.id', 'finding.title',
                           'finding.narrative', 'finding.restrictable', 'STATUS_LABEL']) {
     assert.ok(card.includes(required), `the card no longer shows ${required}`);
@@ -295,10 +295,16 @@ test('a card is folded shut, and the fold shows what decides whether to open it'
   // Thirty-eight cards open at once is a page nobody reads to the end. What must survive the fold
   // is everything the reader needs to decide WHICH to open - the grade, the id, the title, and the
   // badges that say whether it can be restricted at all and whether a rule already found it.
-  const card = PANEL.slice(PANEL.indexOf('function Card('), PANEL.indexOf('function Summary('));
+  const card = PANEL.slice(PANEL.indexOf('export function RiskFindingCard('), PANEL.indexOf('function Summary('));
   assert.match(card, /<details className=\{`finding grade-/,
                'the card is no longer a details element, so it cannot be collapsed');
-  assert.ok(!/<details[^>]*\bopen\b/.test(card), 'cards render expanded, which is what this avoids');
+  // Collapsed BY DEFAULT. The fold is now a prop, because the diagram's popup shows one card and
+  // wants it open - but the default is false and nothing on THIS page passes it, so the list of
+  // thirty-eight is exactly as folded as it was.
+  assert.ok(card.includes('defaultOpen = false') && card.includes('open={defaultOpen || undefined}'),
+            'the fold is not a defaulted-shut prop, so a caller could open the whole list');
+  const page = PANEL.slice(PANEL.indexOf('function RiskScope('));
+  assert.ok(!page.includes('defaultOpen'), 'this page opens its own cards, which is what this avoids');
   const fold = card.slice(card.indexOf('<summary'), card.indexOf('</summary>'));
   for (const required of ['GRADE_CLASS[finding.escalationGrade]', 'finding.id', 'finding.title',
                           'finding.restrictable', 'alreadyFoundBy', 'STATUS_LABEL']) {
@@ -2084,6 +2090,47 @@ test('the findings reach the diagram from the analysis that produced them', () =
             'the page does not hold the findings, or rebuilds the handler the effect is keyed on');
   assert.ok(IMPACT.includes('findings={allFindings}'), 'the findings do not reach the policy block');
   assert.ok(IMPACT.includes('everyFinding(findings)'), 'the diagram is not given the findings');
+});
+
+test('a finding in the diagram opens the same card the analysis page draws', () => {
+  // The panel's list is a SUMMARY - a grade, a title, and the actions that reached this type. What
+  // a reader needs next is the narrative, the full trigger list, the targets and the containment
+  // badge, and all of that already exists as a card on the analysis page. Drawing a second version
+  // of it here would be a card an approver has to reconcile with the first.
+  assert.ok(PANEL.includes('export function RiskFindingCard('),
+            'the analysis page does not lend its card out');
+  assert.ok(TOPOLOGY.includes('import { RiskFindingCard } from "./RiskAnalysis"')
+            && TOPOLOGY.includes('<RiskFindingCard'),
+            'the diagram draws a card of its own instead of the one that exists');
+  // The row is a button, so the keyboard reaches it and the focus ring says so.
+  assert.ok(TOPOLOGY.includes('className="panel-finding-open"') && TOPOLOGY.includes('<button type="button"'),
+            'a finding row cannot be opened, or is not a button');
+  assert.match(CSS, /\.panel-finding-open\b/, 'the clickable row is unstyled');
+  assert.match(CSS, /\.panel-finding-open:focus-visible/, 'the row takes no focus ring');
+  assert.match(CSS, /dialog\.policy-dialog\.finding-dialog/, 'the card window has no rule of its own');
+  // The fold is opened: a reader who clicked one row has already chosen it, and a window whose
+  // whole content is one collapsed summary line asks them to choose it twice.
+  assert.ok(TOPOLOGY.includes('defaultOpen'), 'the card opens folded shut');
+  // Closed three ways - ESC, the button, a click outside - and only one of them runs a click
+  // handler. Without onClose putting the state back, the row that opened it opens nothing next.
+  assert.match(TOPOLOGY.slice(TOPOLOGY.indexOf('finding-dialog')), /onClose=\{\(\) => setOpenCard\(null\)\}/,
+               'closing the card leaves the state saying it is open');
+});
+
+test('the card in the diagram reads, and says so rather than offering a dead button', () => {
+  // The 차단 button writes into the restriction set the policy block composes. A live one inside a
+  // picture would put the decision form in the wrong window; a dead one would read as "this path
+  // cannot be cut", which is what the 차단 불가 badge means and is a different claim.
+  assert.ok(TOPOLOGY.includes('block={null}'), 'the diagram offers a block button it cannot honour');
+  assert.ok(TOPOLOGY.includes('이 창은 읽기만 한다'),
+            'nothing says where the block button is for a reader who came looking for it');
+  // The containment badge is TOLD, not guessed. The diagram holds no restrictions, so computing it
+  // here would print 차단되지 않음 over a path this very decision has already cut.
+  assert.ok(TOPOLOGY.includes('containmentOf ? containmentOf(card)'),
+            'the diagram decides containment without the restrictions');
+  assert.ok(IMPACT.includes('containmentState(finding, restrictions, protectedActions, fenceGrants)')
+            && IMPACT.includes('containmentOf={containmentOf}'),
+            'the policy block does not hand the diagram the containment it alone can compute');
 });
 
 test('an analysis that found nothing is not drawn as an analysis nobody ran', () => {

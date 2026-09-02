@@ -125,7 +125,7 @@ interface ScopeProps extends Props {
  */
 type View = "rules" | "ai" | "both";
 /** 카드 배지가 말하는 세 상태. server/blockPath.js가 판정한다. */
-type ContainmentState = "full" | "fenced" | "partial" | "none";
+export type ContainmentState = "full" | "fenced" | "partial" | "none";
 
 const GRADE_ORDER: Record<Grade, number> = {
   CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4,
@@ -251,7 +251,7 @@ function AssetGradeBadge({ grade, evidence }: { grade: AssetGrade; evidence: Fin
  * uses. The assessment is on the same page and already holds all three, so the card reads the shape
  * from there and the two screens render one resource one way.
  */
-type ResourceLookup = (arn: string) => ImpactResource | null;
+export type ResourceLookup = (arn: string) => ImpactResource | null;
 
 function Targets({ finding, resourceOf, accountId }: {
   finding: Finding;
@@ -467,7 +467,16 @@ const CONTAINMENT: Record<ContainmentState, { label: string; className: string; 
   },
 };
 
-function Card({ finding, block, containment, resourceOf, accountId, showAxis = false }: {
+/**
+ * ONE finding, in full. The card an approver reads on this page - and, since the diagram grew a
+ * per-resource list, the card its popup shows too.
+ *
+ * Exported for that second reader rather than copied for it. A finding drawn two ways is a finding
+ * an approver has to reconcile: the summary line in the diagram's panel is deliberately a summary,
+ * and what it opens has to be THIS, not a second rendering that agrees with it today.
+ */
+export function RiskFindingCard({ finding, block, containment, resourceOf, accountId,
+                                  showAxis = false, defaultOpen = false }: {
   finding: Finding;
   /** The assessment's own record for an ARN, so a target row reads as it does on the impact panel. */
   resourceOf: ResourceLookup;
@@ -483,6 +492,12 @@ function Card({ finding, block, containment, resourceOf, accountId, showAxis = f
   block: { open: () => void; applied: string[] } | null;
   /** Name the area outright, for cards shown outside one - the 평가 불가 group spans both. */
   showAxis?: boolean;
+  /**
+   * Open the fold on first render. False on this page, where a list of forty cards has to be
+   * skimmable; true in the diagram's popup, where the card IS the window and a reader who clicked
+   * one row has already chosen it.
+   */
+  defaultOpen?: boolean;
 }) {
   const model = finding.source === "model";
   // The card's edge and its grade badge carry the grade until something is DONE about the path, and
@@ -504,7 +519,8 @@ function Card({ finding, block, containment, resourceOf, accountId, showAxis = f
     : containment === "fenced" ? "contained-fenced"
     : containment === "partial" ? "contained-partial" : "";
   return (
-    <details className={`finding grade-${finding.escalationGrade.toLowerCase()} ${cut}`.trim()}>
+    <details className={`finding grade-${finding.escalationGrade.toLowerCase()} ${cut}`.trim()}
+             open={defaultOpen || undefined}>
       <summary className="finding-head">
         <span className={GRADE_CLASS[finding.escalationGrade]}>
           {GRADE_LABEL[finding.escalationGrade]}
@@ -1142,9 +1158,10 @@ function RiskScope({
                         {section} <span className="muted small">{items.length}건 — {reason}</span>
                       </h5>
                       {items.map((f) => (
-                        <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
-                              block={blockProps(f)} containment={containmentOf(f)}
-                              resourceOf={resourceOf} accountId={accountId} />
+                        <RiskFindingCard key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`}
+                                         finding={f} block={blockProps(f)}
+                                         containment={containmentOf(f)}
+                                         resourceOf={resourceOf} accountId={accountId} />
                       ))}
                     </div>
                   );
@@ -1163,9 +1180,10 @@ function RiskScope({
                 </span>
               </h4>
               {unassessable.map((f) => (
-                <Card key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`} finding={f}
-                      block={blockProps(f)} containment={containmentOf(f)}
-                      resourceOf={resourceOf} accountId={accountId} showAxis />
+                <RiskFindingCard key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`}
+                                 finding={f} block={blockProps(f)}
+                                 containment={containmentOf(f)}
+                                 resourceOf={resourceOf} accountId={accountId} showAxis />
               ))}
             </div>
           )}

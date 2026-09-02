@@ -34,7 +34,7 @@
 // notes and the table's grammar; what differs is the caveats and the legend, because what each
 // picture measured differs.
 
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ImpactCoverage, ImpactPolicy } from "../types";
 import type {
   Facets, Frame, Link, Scene, SceneFilter, Slot, TopologySpec,
@@ -50,7 +50,11 @@ import type { FindingCard, ResourceFacts } from "../../server/resourceFacts.js";
 import { LEVEL_LABEL, gradesByResource, resourceFacts } from "../../server/resourceFacts.js";
 import { CATEGORY_LABEL, GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
 import { actionDocUrl } from "../../server/actionDocs.js";
-import type { Finding, ImpactActionReference } from "../types";
+// The finding's own card, from the page that owns it. Imported rather than reimplemented - see the
+// comment on RiskFindingCard. No cycle: RiskAnalysis.tsx reaches neither this file nor Impact.tsx.
+import { RiskFindingCard } from "./RiskAnalysis";
+import type { ContainmentState } from "./RiskAnalysis";
+import type { Finding, ImpactActionReference, ImpactResource } from "../types";
 
 /**
  * One frame: the box, its badge, and a label band of up to three parts.
@@ -542,25 +546,31 @@ function PanelAction({ action, level, makes }:
 }
 
 /** One finding, as this panel shows it: the grade, what it is, and what fired it. */
-function PanelFinding({ card }: { card: FindingCard }) {
+function PanelFinding({ card, onOpen }: { card: FindingCard; onOpen: () => void }) {
+  // A real button rather than a clickable <li>: the keyboard, the focus ring and the reading order
+  // all come with it. It opens the finding's own card and changes nothing, so it is a link to a
+  // window rather than a control - which is why it carries no pressed state.
   return (
     <li className="panel-finding">
-      <div className="panel-finding-head">
-        <span className={GRADE_CLASS[card.grade]}>{GRADE_LABEL[card.grade]}</span>
-        <strong>{card.title}</strong>
-        <span className="muted small">{CATEGORY_LABEL[card.category] ?? card.category}</span>
-        <span className="muted small">{STATUS_LABEL[card.status] ?? card.status}</span>
-        {card.source === "model" && <span className="panel-source">AI</span>}
-        {!card.restrictable && <span className="muted small">차단 불가</span>}
-      </div>
-      <div className="panel-finding-why">
-        <span className="muted small">{card.reachLabel}</span>
-        {card.actions.length > 0 && (
-          <span className="panel-finding-actions">
-            {card.actions.map((a) => <code key={a}>{a}</code>)}
-          </span>
-        )}
-      </div>
+      <button type="button" className="panel-finding-open" onClick={onOpen}
+              title={`${card.title} — 카드 원문을 연다`}>
+        <div className="panel-finding-head">
+          <span className={GRADE_CLASS[card.grade]}>{GRADE_LABEL[card.grade]}</span>
+          <strong>{card.title}</strong>
+          <span className="muted small">{CATEGORY_LABEL[card.category] ?? card.category}</span>
+          <span className="muted small">{STATUS_LABEL[card.status] ?? card.status}</span>
+          {card.source === "model" && <span className="panel-source">AI</span>}
+          {!card.restrictable && <span className="muted small">차단 불가</span>}
+        </div>
+        <div className="panel-finding-why">
+          <span className="muted small">{card.reachLabel}</span>
+          {card.actions.length > 0 && (
+            <span className="panel-finding-actions">
+              {card.actions.map((a) => <code key={a}>{a}</code>)}
+            </span>
+          )}
+        </div>
+      </button>
     </li>
   );
 }
@@ -570,8 +580,13 @@ function PanelFinding({ card }: { card: FindingCard }) {
  * the actions from the assessment's own group, the findings from the two analyses, and the three
  * counts that say which findings reach this resource and which only reach its type.
  */
-function ResourcePanel({ facts, ran, onClose }:
-                       { facts: ResourceFacts; ran: boolean; onClose: () => void }) {
+function ResourcePanel({ facts, ran, onClose, onOpenFinding }: {
+  facts: ResourceFacts;
+  ran: boolean;
+  onClose: () => void;
+  /** Open one finding's own card over the picture, by its id. */
+  onOpenFinding: (id: string) => void;
+}) {
   const { named, typed, elsewhere } = facts.findings;
   return (
     <aside className="graph-panel" aria-label={`${facts.id} 상세`}>
@@ -664,9 +679,18 @@ function ResourcePanel({ facts, ran, onClose }:
         <>
           {named.length > 0 && (
             <>
-              <p className="muted small">이 자원을 지목한 발견 {named.length}개</p>
+              {/* The list below is a summary and says so. What a row opens is the SAME card the
+                  분석 page draws - not a second rendering of it - so a reader can check the
+                  narrative, the full trigger actions, the targets and the containment badge
+                  without leaving the picture. */}
+              <p className="muted small">
+                이 자원을 지목한 발견 {named.length}개 — <strong>줄을 누르면</strong> 그 발견의
+                카드 원문이 열린다.
+              </p>
               <ul className="panel-findings">
-                {named.map((c) => <PanelFinding key={c.id} card={c} />)}
+                {named.map((c) => (
+                  <PanelFinding key={c.id} card={c} onOpen={() => onOpenFinding(c.id)} />
+                ))}
               </ul>
             </>
           )}
@@ -680,7 +704,9 @@ function ResourcePanel({ facts, ran, onClose }:
                 목록이 잘려 자원 이름을 전부 담지 못했다.
               </p>
               <ul className="panel-findings">
-                {typed.map((c) => <PanelFinding key={c.id} card={c} />)}
+                {typed.map((c) => (
+                  <PanelFinding key={c.id} card={c} onOpen={() => onOpenFinding(c.id)} />
+                ))}
               </ul>
             </>
           )}
@@ -891,7 +917,7 @@ function UnmeasuredNote({ unmeasured }: { unmeasured: Record<string, number> }) 
  * exactly the reader who most needs to see what the policy reaches.
  */
 export function PolicyTopology({ policy, name, accountId, coverage, reference, findings,
-                                 analysed = false }: {
+                                 analysed = false, containmentOf }: {
   policy: ImpactPolicy;
   /** The policy as a person names it - policyName(identifier). */
   name: string;
@@ -913,8 +939,21 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
    * count answers "무엇이 나왔나"; this answers "물어보기는 했나", and those are two questions.
    */
   analysed?: boolean;
+  /**
+   * How far this decision cuts one finding's path, for the badge on its card.
+   *
+   * Passed in rather than computed here: it depends on the restrictions being composed right now,
+   * on the permission set's protected actions and on the PassRole fence - none of which this window
+   * holds, and all of which the policy block above it does. Omitted, every card reads 차단되지 않음,
+   * which is the answer for a screen that cannot see the restrictions rather than a claim about
+   * them - so the caller passes it and the two screens agree.
+   */
+  containmentOf?: (finding: Finding) => ContainmentState;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  /** The finding whose own card is open over the picture, by id. Null is the picture alone. */
+  const cardBox = useRef<HTMLDialogElement>(null);
+  const [openCard, setOpenCard] = useState<string | null>(null);
   const uid = useId();
   const empty: SceneFilter = { accounts: [], regions: [], vpcs: [], subnets: [] };
   // 전체 on every dimension, which is the picture the button promises. Reset in onClose below, and
@@ -953,6 +992,30 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
   const found = findings ?? [];
   // Which resources a finding NAMES, so the picture can mark them before anything is clicked.
   const marks = useMemo(() => gradesByResource(policy, found), [policy, found]);
+  /** The findings by id, for the card a panel row opens. */
+  const byId = useMemo(() => new Map(found.map((f) => [f.id, f])), [found]);
+  /**
+   * The assessment's own row for an ARN, so the card's target list reads as it does on the analysis
+   * page - a name and a region rather than a bare ARN. Built once per policy: a card holds eight
+   * targets and an enterprise policy holds thousands of rows.
+   */
+  const rows = useMemo(() => {
+    const index = new Map<string, ImpactResource>();
+    for (const group of policy?.affected ?? []) {
+      for (const r of group.resources ?? []) if (r?.arn && !index.has(r.arn)) index.set(r.arn, r);
+    }
+    return index;
+  }, [policy]);
+  const card = openCard ? byId.get(openCard) ?? null : null;
+  // The dialog element follows the state rather than being opened at the click: showModal() on a
+  // node React has not rendered yet does nothing, and closing it from the ESC key has to put the
+  // state back or the next click on the same row opens nothing.
+  useEffect(() => {
+    const box = cardBox.current;
+    if (!box) return;
+    if (card && !box.open) box.showModal();
+    if (!card && box.open) box.close();
+  }, [card]);
   const facts = useMemo(
     () => (chosen ? resourceFacts(policy, reference ?? null, found, chosen) : null),
     [policy, reference, found, chosen],
@@ -1154,7 +1217,8 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                 </div>
                 {facts && (
                   <ResourcePanel facts={facts} ran={analysed}
-                                 onClose={() => setChosen(null)} />
+                                 onClose={() => setChosen(null)}
+                                 onOpenFinding={setOpenCard} />
                 )}
               </div>
               {!facts && (
@@ -1361,6 +1425,54 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
           <div className="row">
             <button type="button" onClick={() => dialog.current?.close()}>닫기</button>
           </div>
+
+          {/* One finding's own card, over the picture. A second modal inside the first: the reader
+              came from a row in the panel and goes back to it, so the picture stays where it was
+              and nothing about the window - the filter, the open boxes, the chosen resource - is
+              disturbed by reading a card.
+
+              onClose puts the state back rather than only the ESC handler doing it. The dialog can
+              close three ways (ESC, the button, a click outside) and two of them do not run a
+              click handler at all; without this the row that opened it would open nothing next
+              time, because the state still said it was open. */}
+          <dialog ref={cardBox} className="policy-dialog finding-dialog"
+                  aria-label={card ? `${card.id} ${card.title}` : "발견 카드"}
+                  onClose={() => setOpenCard(null)}
+                  onClick={(e) => {
+                    const box = cardBox.current;
+                    if (!box || e.target !== box) return;
+                    const r = box.getBoundingClientRect();
+                    const inside = e.clientX >= r.left && e.clientX <= r.right
+                      && e.clientY >= r.top && e.clientY <= r.bottom;
+                    if (!inside) box.close();
+                  }}>
+            <div className="policy-dialog-body">
+              {card && (
+                <>
+                  <h4>
+                    위험 분석 카드 <code>{card.id}</code>{" "}
+                    <span className="muted">— <code>{name}</code></span>
+                  </h4>
+                  {/* The analysis page's own card, with its own fold opened. `block` is null on
+                      purpose: this window reads, and the 차단 button writes into the restriction
+                      set the policy block below composes. A dead button here would be worse than
+                      no button, and a live one would put the decision form inside a picture. */}
+                  <RiskFindingCard finding={card} block={null} showAxis defaultOpen
+                                   containment={containmentOf ? containmentOf(card) : "none"}
+                                   resourceOf={(arn) => rows.get(arn) ?? null}
+                                   accountId={accountId} />
+                  <p className="muted small">
+                    이 창은 읽기만 한다. <strong>이 경로를 차단</strong>하려면 아래{" "}
+                    <strong>위험 및 공격 경로</strong>의 같은 카드에서 「이 경로 차단」을 누른다 —
+                    제한은 결정과 함께 쓰이는 것이라 그림 안에서 쓰지 않는다.
+                  </p>
+                </>
+              )}
+              <div className="row">
+                <button type="button" onClick={() => cardBox.current?.close()}>닫기</button>
+              </div>
+            </div>
+          </dialog>
         </div>
       </dialog>
     </div>
