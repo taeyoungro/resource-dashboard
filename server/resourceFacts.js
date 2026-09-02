@@ -26,6 +26,8 @@
 //
 //     node --test server/resourceFacts.test.js
 
+import { resourceId as idOf } from './arn.js';
+
 /** CRITICAL first. The order the findings list is sorted in, and the order a summary counts in. */
 export const GRADE_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4 };
 /** Most dangerous first: what an approver looks for before anything else. */
@@ -50,7 +52,6 @@ export const REACH_LABEL = {
   typed: '이 유형에 걸렸다 — 목록이 잘려 이 자원인지는 알 수 없다',
 };
 
-const idOf = (arn) => String(arn ?? '').split('/').pop().split(':').pop();
 
 /**
  * One action, with the level AWS gives it.

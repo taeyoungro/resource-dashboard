@@ -73,3 +73,29 @@ export function parseArn(arn) {
     qualifier,
   };
 }
+
+/**
+ * The short id a picture and a panel both call one resource by.
+ *
+ * ONE function because there were two, and they agreed only by accident. The relationship picture
+ * cut the resource part at the last '/' and the resource panel cut it at the last '/' and then the
+ * last ':' - identical on `instance/i-0aaa111`, which was every ARN the picture drew while it drew
+ * EC2 alone. Drawing any policy put `arn:aws:rds:…:db:opt-main` on a plate, and the plate said
+ * `db:opt-main` while the panel that opens from clicking it said `opt-main`: one resource, two ids,
+ * on one screen.
+ *
+ * The rule is the ARN's own: everything after the last separator between the type token and the
+ * name, and '/' and ':' are both in live use as that separator (`role/opt-Applier`, `db:opt-main`).
+ * An ARN whose resource part has neither is already the name (`arn:aws:s3:::opt-logs`).
+ *
+ * Deliberately NOT parseArn().name, which strips only a LEADING type token and would answer
+ * `/aws/lambda/foo` for a log group where both callers have always answered `foo`. That is arguably
+ * the better name and it is a different change, with the console links and the resource lines to
+ * move with it.
+ */
+export function resourceId(arn) {
+  if (typeof arn !== 'string') return '';
+  const rest = arn.split(':').slice(5).join(':');
+  const cut = Math.max(rest.lastIndexOf('/'), rest.lastIndexOf(':'));
+  return rest.slice(cut + 1) || rest;
+}

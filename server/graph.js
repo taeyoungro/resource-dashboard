@@ -26,8 +26,9 @@
 //
 // Plain JS with a .d.ts beside it, like topology.js and for the same reason.
 
-import { parseArn } from './arn.js';
-import { TOPOLOGIES, filterActive, keeps, specOf } from './topology.js';
+import { parseArn, resourceId } from './arn.js';
+import { TYPE_ICON, TYPE_LABEL, filterActive, keeps } from './topology.js';
+import { resourceIconPath } from './serviceIcons.js';
 
 // ---- geometry ---------------------------------------------------------------------------------
 
@@ -83,13 +84,14 @@ const DROP_ORDER = ['image', 'security', 'route', 'association', 'interface', 'v
 
 // ---- reading rows -----------------------------------------------------------------------------
 
-/** The id a link targets: the ARN's last path segment. i-…, eni-…, subnet-…, vol-…. */
-export function idOf(arn) {
-  if (typeof arn !== 'string') return '';
-  const rest = arn.split(':').slice(5).join(':');
-  const tail = rest.slice(rest.lastIndexOf('/') + 1);
-  return tail || rest;
-}
+/**
+ * The id a link targets. i-…, eni-…, subnet-…, vol-… - and `opt-main` for the RDS instance whose
+ * ARN separates its type with a colon.
+ *
+ * Re-exported rather than defined, so the plate and the panel that opens from clicking it call one
+ * resource by one name. See resourceId in arn.js for what they used to disagree about.
+ */
+export const idOf = resourceId;
 
 function regionOf(resource) {
   return resource?.region || parseArn(resource?.arn ?? '')?.region || 'global';
@@ -118,16 +120,28 @@ export function shortName(name) {
 // ---- the scene --------------------------------------------------------------------------------
 
 /**
- * Everything the relationship window draws, or null when this policy gets no picture.
+ * Everything the relationship window draws, for ANY policy.
  *
- * Only the EC2 picture today: it is the one whose querier records links. The gate is the same
- * one topology.js uses, so the two views open on exactly the same policies.
+ * It used to ask specOf(policy) first and answer null for everything but AmazonEC2FullAccess, and
+ * that gate was wrong for this picture. A spec authorises the 유형별 자리 picture because that one
+ * puts a type where AWS normally puts it - a claim, and one only three services have an answer for.
+ * THIS picture claims nothing of the sort: every border is a placement the querier read off the
+ * resource (VpcId, SubnetId, the zone) and every line is a link it read, so a policy reaching an
+ * S3 bucket and an IAM role draws exactly what was measured about them - a plate each, in their
+ * region - and says nothing it did not measure.
+ *
+ * So the input is the policy's own affected groups, which is the assessment's answer to "which
+ * resources do this policy's actions reach". No service is filtered out; NODE_BUDGET bounds the
+ * drawing and the foot line says what it left.
+ *
+ * The EC2-shaped parts below - the subnet colours, the route tables in the middle column, the
+ * instance boxes - key on resource TYPE and are simply inert for a policy that reaches none of
+ * those. They are not gated again, because a policy that DOES reach an instance should get the
+ * instance box whichever policy it is.
  *
  * Deterministic: two calls on the same input deepEqual. Every list is sorted by id before layout.
  */
 export function relationScene(policy, accountId, filter = null, enumerated = true, options = {}) {
-  const spec = specOf(policy);
-  if (!spec || spec.kind !== 'ec2') return null;
   const narrowed = filterActive(filter);
   /** The instances whose box is open, showing the interfaces inside it. Closed by default: a
    *  reader clicks an instance to see its interfaces; the group lines and the volumes are the
@@ -142,15 +156,28 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   let placedRows = 0;
   let kinds = 0;
   let measured = 0;
-  const omittedServices = new Map();
+  /**
+   * Per service: rows this assessment COUNTED and does not carry.
+   *
+   * The same field as before and a wider question. It used to hold the services the spec excluded,
+   * which was the only way to be outside this picture when the picture drew one service. Nothing is
+   * excluded by service now, so what is left is the honest remainder - a group saying `total: 900`
+   * and carrying eight rows has 892 resources the policy reaches and this picture has no row for,
+   * and that was never reported before although it was always true.
+   *
+   * Not counted while a filter is on: the reader set the filter, and the rows it narrowed away are
+   * not rows the assessment is missing.
+   */
+  const uncarried = new Map();
   for (const group of policy?.affected ?? []) {
-    if (!spec.services.has(group?.service)) {
-      const whole = Number(group?.total) || 0;
-      if (whole > 0) omittedServices.set(group.service, (omittedServices.get(group.service) ?? 0) + whole);
-      continue;
+    const type = group?.resource_type;
+    if (!type) continue;
+    const rows = group?.resources ?? [];
+    if (!narrowed) {
+      const short = (Number(group?.total) || 0) - rows.length;
+      if (short > 0) uncarried.set(group.service, (uncarried.get(group.service) ?? 0) + short);
     }
-    const type = group.resource_type;
-    const kept = (group?.resources ?? []).filter((r) => keeps(filter, r));
+    const kept = rows.filter((r) => keeps(filter, r));
     if (kept.length === 0) continue;
     kinds += 1;
     measured += narrowed ? kept.length : (Number(group?.total) || 0);
@@ -161,13 +188,21 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       const links = r?.links && typeof r.links === 'object' ? r.links : {};
       if (Object.keys(links).length > 0) linkedRows += 1;
       if (vpcOf(r) || subnetOf(r) || zoneOf(r)) placedRows += 1;
-      const slot = spec.slots[type];
       nodes.set(id, {
         id,
         resourceType: type,
-        typeLabel: slot?.kind === 'frame' ? spec.frameLabel[slot.frame]
-          : (slot?.label?.join(' ') ?? type),
-        icon: slot?.kind === 'node' ? (slot.icon ?? null) : null,
+        // By TYPE, not through the open policy's spec: see TYPE_LABEL. A type no spec names is
+        // printed as itself, which is what the assessment calls it everywhere else on this page.
+        typeLabel: TYPE_LABEL.get(type) ?? type,
+        // A WHOLE PATH now, not a bare file name, because two tables feed it and only one of them
+        // ever spoke in file names. The spec's own glyph where there is one - those are the
+        // resource-level glyphs, Res-Amazon-EC2-Instance and its kin - else the type's product
+        // icon, else the service's. resourceIconPath answers for 200 service prefixes, so a plate
+        // for a resource outside the three specs carries an icon rather than a blank tile, and is
+        // null only where AWS's own deck has nothing. Null draws the type name instead.
+        icon: TYPE_ICON.has(type)
+          ? `/aws-icons/${TYPE_ICON.get(type)}`
+          : resourceIconPath(group.service, type),
         name: nameOf(r),
         arn: r.arn,
         region: regionOf(r),
@@ -1146,9 +1181,10 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     foot.push(`그림 밖으로 나가는 연결 ${danglingTotal.toLocaleString()}개 — 상대 자원이 이 평가에 없다 `
       + '(정책이 닿지 않거나 목록이 잘렸다).');
   }
-  if (omittedServices.size > 0) {
-    const total = [...omittedServices.values()].reduce((n, v) => n + v, 0);
-    foot.push(`그림 밖 서비스 ${omittedServices.size}종 · 자원 ${total.toLocaleString()}개 — 표 아래에 적었다.`);
+  if (uncarried.size > 0) {
+    const total = [...uncarried.values()].reduce((n, v) => n + v, 0);
+    foot.push(`평가가 행을 담지 않은 자원 ${total.toLocaleString()}개 (서비스 ${uncarried.size}종) — `
+      + '이 정책이 닿지만 목록이 잘려 이 그림에 판이 없다. 표 아래에 적었다.');
   }
   foot.push(GRAPH_CAPTION);
   const footTop = cloud.y + cloud.h + G_FOOT_PAD;
@@ -1189,7 +1225,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     edges: kept,
     foot: footLines,
     rows,
-    omitted: [...omittedServices.entries()].map(([service, total]) => ({ service, total }))
+    omitted: [...uncarried.entries()].map(([service, total]) => ({ service, total }))
       .sort((a, b) => b.total - a.total || a.service.localeCompare(b.service)),
     regions: regionList,
     counts: {

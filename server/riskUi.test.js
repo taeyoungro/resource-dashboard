@@ -1871,12 +1871,25 @@ test('a narrowed picture says what it left out', () => {
 test('the closed-state summary describes the policy, not the filter', () => {
   // The line beside the button is a fact about the policy. Letting a filter set inside the window
   // change it would make the panel disagree with itself for a reason nobody outside can see.
-  const at = TOPOLOGY.indexOf('{spec.words.title} 자원 {whole.kinds}');
-  assert.ok(at > 0, 'the closed-state line is gone, or no longer takes its noun from the spec');
-  const summary = TOPOLOGY.slice(at, TOPOLOGY.indexOf('</span>', at));
-  assert.ok(summary.includes('whole.kinds') && summary.includes('whole.measured'),
-            'the closed-state line reads the filtered scene, so collapsing the window leaves a '
-            + 'count that describes a filter nobody can see');
+  const at = TOPOLOGY.indexOf('{subject} {summary.kinds}');
+  assert.ok(at > 0, 'the closed-state line is gone');
+  const line = TOPOLOGY.slice(at, TOPOLOGY.indexOf('</span>', at));
+  assert.ok(line.includes('summary.kinds') && line.includes('summary.measured'),
+            'the closed-state line no longer reads the summary');
+  // And `summary` itself is built from the UNFILTERED scenes. Both are read now, because a policy
+  // with no spec has no type scene and the line still has to say what it reaches - but neither of
+  // the filtered ones may appear, or collapsing the window leaves a count describing a filter
+  // nobody outside it can see.
+  const from = TOPOLOGY.indexOf('const summary = whole');
+  const built = TOPOLOGY.slice(from, TOPOLOGY.indexOf('\n\n', from));   // the expression, no comments
+  assert.ok(built.includes('whole.kinds') && built.includes('wholeGraph.kinds'),
+            'the summary does not read both unfiltered scenes');
+  assert.ok(!/[^a-zA-Z]scene\.|[^a-zA-Z]graph\./.test(built),
+            'the summary reads a FILTERED scene');
+  // The noun is the spec's where there is one and plain 자원 where there is not: a heading naming
+  // a service over a picture that spans four of them would lie about the picture.
+  assert.ok(TOPOLOGY.includes('const subject = spec ? `${spec.words.title} 자원` : "자원"'),
+            'the window names a service it may not be about');
 });
 
 // ---- the relationship picture, the EC2 window's second view ------------------------------------
@@ -1965,7 +1978,7 @@ test('the relationship view has its own text equivalent and its own table', () =
 });
 
 test('the closed-state line counts the connections off the unfiltered graph', () => {
-  const at = TOPOLOGY.indexOf('{spec.words.title} 자원 {whole.kinds}');
+  const at = TOPOLOGY.indexOf('{subject} {summary.kinds}');
   const summary = TOPOLOGY.slice(at, TOPOLOGY.indexOf('</span>', at));
   assert.ok(summary.includes('wholeGraph.counts.edges'), 'the closed state does not say how many connections there are');
   assert.ok(!/[^A-Za-z]graph\.counts/.test(summary), 'the closed-state count reads the filtered graph');
@@ -2090,6 +2103,60 @@ test('the findings reach the diagram from the analysis that produced them', () =
             'the page does not hold the findings, or rebuilds the handler the effect is keyed on');
   assert.ok(IMPACT.includes('findings={allFindings}'), 'the findings do not reach the policy block');
   assert.ok(IMPACT.includes('everyFinding(findings)'), 'the diagram is not given the findings');
+});
+
+test('the window opens for any policy, and only the type picture is gated on a spec', () => {
+  // What changed and what did not. The 유형별 자리 picture puts a type where AWS normally puts it,
+  // which is a claim only three services have an answer for - so it keeps its spec. The
+  // relationship picture claims nothing of the sort: every border is a placement the querier read
+  // off the resource and every line is a link it read, so it is drawn for every policy, from the
+  // groups the assessment says that policy's actions reach.
+  assert.ok(TOPOLOGY.includes('if (!facets || !graph || !wholeGraph) return null;'),
+            'the window is still gated on something other than what can be drawn');
+  assert.ok(!TOPOLOGY.includes('!scene || !whole || !facets || !spec'),
+            'the window still refuses a policy for not being one of three');
+  // The switch appears only where both pictures exist, and the fallback view inverted with it: a
+  // policy with no spec has no type picture to fall back TO.
+  assert.ok(TOPOLOGY.includes('const typed = !!(spec && scene && whole)')
+            && TOPOLOGY.includes(': "graph";'),
+            'the view still falls back to a picture that may not exist');
+  // A policy that reaches nothing, on an assessment that enumerated fine, gets no button - the
+  // group list above already says it reaches nothing. A FAILED lookup still does, because there
+  // the empty picture is a fact about the assessment.
+  assert.ok(TOPOLOGY.includes('if (wholeGraph.empty && enumerated && !spec) return null;'),
+            'an empty picture is offered over a policy that reaches nothing, or withheld over a '
+            + 'failed lookup');
+});
+
+test('the legend explains only the marks this picture actually carries', () => {
+  // This file's own banner is the rule, and drawing every policy is what made it bite: a policy
+  // reaching only S3 buckets used to get a legend about instance boxes, subnet colours and six
+  // line colours, none of which were on the screen. A legend that explains marks the reader cannot
+  // see teaches them to skim it.
+  const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('<ul className="topology-legend">'));
+  assert.ok(legend.includes('graph.nodes.some((n) => n.box)'),
+            'the instance box is explained over a picture with no instance in it');
+  assert.ok(legend.includes('graph.containers.some((c) => c.kind === "subnet")'),
+            'the subnet colours are explained over a picture with no subnet in it');
+  assert.ok(legend.includes('{drawnKinds.map((kind)') && !legend.includes('Object.keys(KIND_LABEL) as EdgeKind[]).map'),
+            'every line colour is explained, including the ones this picture does not draw');
+  assert.ok(TOPOLOGY.includes('.filter((kind) => graph.edges.some((e) => e.kind === kind))'),
+            'the drawn kinds are not read off the edges');
+});
+
+test('a resource type is named and drawn the same whatever policy reached it', () => {
+  // The labels and the glyphs used to be read through the OPEN POLICY's spec, so the same instance
+  // was 「인스턴스」 under one policy and `ec2:instance` under another. They are keyed by type now,
+  // and a type outside every spec falls back to the service's own icon rather than a blank tile.
+  const topo = read('../server/topology.js');
+  assert.ok(topo.includes('export const TYPE_LABEL') && topo.includes('export const TYPE_ICON'),
+            'the type names are still reachable only through a policy');
+  const graph = read('../server/graph.js');
+  assert.ok(graph.includes('TYPE_LABEL.get(type) ?? type'), 'the picture names a type some other way');
+  assert.ok(graph.includes('resourceIconPath(group.service, type)'),
+            'a resource outside the three specs draws no icon');
+  assert.ok(!/spec\.(slots|services|frameLabel)/.test(graph),
+            'the picture still reads a policy-chosen spec');
 });
 
 test('a finding in the diagram opens the same card the analysis page draws', () => {
