@@ -1,0 +1,478 @@
+// The relationship picture - what a reader cannot verify by looking at it.
+//
+// The claims here are stronger than the type picture's, because the picture is: it says WHICH
+// instance is in WHICH subnet and WHAT is attached to it. So what these tests pin is that every
+// one of those claims comes from a recorded field and never from this module's guess; that a node
+// is drawn inside the container its row names and nowhere else; that an edge joins two things
+// that are both drawn, or is counted as dangling; that the budget stops the picture rather than
+// letting it draw a prefix; and that two runs on the same input draw the same picture.
+//
+//     node --test server/graph.test.js
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  CARDS_PER_SUBNET, EDGE_BUDGET, GRAPH_CAPTION, GRAPH_W, NODE_BUDGET, RELATIONS,
+  graphSummary, idOf, relationScene, shortId, shortName,
+} from './graph.js';
+
+const A = '718100330247';
+const R = 'us-east-1';
+const ARN = 'arn:aws:iam::aws:policy/AmazonEC2FullAccess';
+const arn = (t, id) => `arn:aws:ec2:${R}:${A}:${t}/${id}`;
+const row = (t, id, over = {}) => ({ arn: arn(t, id), region: R, tags: {}, sensitive: false, ...over });
+const g = (type, resources) => ({
+  service: 'ec2', resource_type: type, actions: [], scope: '*', total: resources.length,
+  truncated: false, sensitive_hits: resources.filter((r) => r.sensitive).length, resources,
+});
+const policyOf = (affected) => ({
+  source: 'aws_managed', identifier: ARN, default_version_id: 'v1', is_baseline: false,
+  restrictable: true, unreadable: null, actions_granted: ['ec2:*'], affected,
+});
+const sceneOf = (affected, filter = null, enumerated = true) =>
+  relationScene(policyOf(affected), A, filter, enumerated);
+
+/** The operator's account in miniature: two VPCs, two zones, two instances with everything. */
+function ACCOUNT() {
+  return [
+    g('ec2:vpc', [row('vpc', 'vpc-0a1', { vpc_id: 'vpc-0a1', tags: { Name: 'prod' } }),
+                  row('vpc', 'vpc-0b2', { vpc_id: 'vpc-0b2' })]),
+    g('ec2:subnet', [
+      row('subnet', 'subnet-a1', { vpc_id: 'vpc-0a1', subnet_id: 'subnet-a1', zone: 'us-east-1a',
+                                   tags: { Name: 'prod-public-a' } }),
+      row('subnet', 'subnet-a2', { vpc_id: 'vpc-0a1', subnet_id: 'subnet-a2', zone: 'us-east-1a' }),
+      row('subnet', 'subnet-b1', { vpc_id: 'vpc-0a1', subnet_id: 'subnet-b1', zone: 'us-east-1b' }),
+      row('subnet', 'subnet-c1', { vpc_id: 'vpc-0b2', subnet_id: 'subnet-c1', zone: 'us-east-1a' }),
+    ]),
+    g('ec2:instance', [
+      row('instance', 'i-0aaa111', {
+        vpc_id: 'vpc-0a1', subnet_id: 'subnet-a1', zone: 'us-east-1a', sensitive: true,
+        tags: { Name: 'web-1' },
+        links: { network_interface: ['eni-1', 'eni-2'], security_group: ['sg-web', 'sg-ssh'],
+                 volume: ['vol-1'], image: ['ami-1'] },
+      }),
+      row('instance', 'i-0bbb222', {
+        vpc_id: 'vpc-0a1', subnet_id: 'subnet-b1', zone: 'us-east-1b',
+        links: { network_interface: ['eni-3'], security_group: ['sg-db'], volume: ['vol-2', 'vol-3'],
+                 image: ['ami-1'] },
+      }),
+    ]),
+    g('ec2:network-interface', [
+      row('network-interface', 'eni-1', { vpc_id: 'vpc-0a1', subnet_id: 'subnet-a1', zone: 'us-east-1a',
+                                          links: { instance: ['i-0aaa111'], security_group: ['sg-web', 'sg-ssh'] } }),
+      row('network-interface', 'eni-2', { vpc_id: 'vpc-0a1', subnet_id: 'subnet-a1', zone: 'us-east-1a',
+                                          links: { instance: ['i-0aaa111'], security_group: ['sg-web'] } }),
+      row('network-interface', 'eni-3', { vpc_id: 'vpc-0a1', subnet_id: 'subnet-b1', zone: 'us-east-1b',
+                                          links: { instance: ['i-0bbb222'], security_group: ['sg-db'] } }),
+      row('network-interface', 'eni-nat', { vpc_id: 'vpc-0a1', subnet_id: 'subnet-a1', zone: 'us-east-1a' }),
+      row('network-interface', 'eni-lone', { vpc_id: 'vpc-0b2', subnet_id: 'subnet-c1', zone: 'us-east-1a' }),
+      row('network-interface', 'eni-6', { vpc_id: 'vpc-0a1', subnet_id: 'subnet-a2', zone: 'us-east-1a',
+                                          links: { security_group: ['sg-web'] } }),
+    ]),
+    g('ec2:security-group', ['sg-web', 'sg-ssh', 'sg-db', 'sg-default']
+      .map((s) => row('security-group', s, { vpc_id: 'vpc-0a1' }))),
+    g('ec2:volume', [
+      row('volume', 'vol-1', { zone: 'us-east-1a', links: { instance: ['i-0aaa111'] } }),
+      row('volume', 'vol-2', { zone: 'us-east-1b', links: { instance: ['i-0bbb222'] } }),
+      row('volume', 'vol-3', { zone: 'us-east-1b', links: { instance: ['i-0bbb222'] } }),
+      row('volume', 'vol-spare', { zone: 'us-east-1a' }),
+    ]),
+    g('ec2:route-table', [
+      row('route-table', 'rtb-main', { vpc_id: 'vpc-0a1', links: { main: ['vpc-0a1'], internet_gateway: ['igw-1'] } }),
+      row('route-table', 'rtb-priv', { vpc_id: 'vpc-0a1', links: { subnet: ['subnet-b1'], nat_gateway: ['nat-1'] } }),
+      row('route-table', 'rtb-c', { vpc_id: 'vpc-0b2', links: { main: ['vpc-0b2'] } }),
+    ]),
+    g('ec2:network-acl', [
+      row('network-acl', 'acl-default', { vpc_id: 'vpc-0a1',
+                                          links: { subnet: ['subnet-a1', 'subnet-a2', 'subnet-b1'], default: ['vpc-0a1'] } }),
+      row('network-acl', 'acl-c', { vpc_id: 'vpc-0b2', links: { subnet: ['subnet-c1'], default: ['vpc-0b2'] } }),
+    ]),
+    g('ec2:natgateway', [row('natgateway', 'nat-1', { vpc_id: 'vpc-0a1', subnet_id: 'subnet-a1',
+                                                       links: { network_interface: ['eni-nat'] } })]),
+    g('ec2:internet-gateway', [row('internet-gateway', 'igw-1', { vpc_id: 'vpc-0a1' }),
+                               row('internet-gateway', 'igw-2', { vpc_id: 'vpc-0b2' })]),
+    g('ec2:image', [row('image', 'ami-1')]),
+    g('ec2:key-pair', [row('key-pair', 'key-1'), row('key-pair', 'key-2')]),
+    { service: 'elasticloadbalancing', resource_type: 'loadbalancer', actions: [], scope: '*',
+      total: 3, truncated: false, sensitive_hits: 0, resources: [] },
+  ];
+}
+
+const inside = (inner, outer) => inner.x >= outer.x && inner.x + inner.w <= outer.x + outer.w
+  && inner.y >= outer.y && inner.y + inner.h <= outer.y + outer.h;
+const boxes = (scene) => new Map([
+  ...scene.containers.map((c) => [c.id, c]),
+  ...scene.nodes.map((n) => [n.id, n]),
+]);
+
+test('only the EC2 policy gets a relationship picture', () => {
+  assert.equal(relationScene({ identifier: 'arn:aws:iam::aws:policy/AWSLambda_FullAccess', affected: [] }, A), null);
+  assert.equal(relationScene({ identifier: 'AdministratorAccess', affected: [] }, A), null);
+  assert.ok(sceneOf([]));
+});
+
+test('every node is drawn inside the container its row names, and nowhere else', () => {
+  // THE CLAIM THE PICTURE MAKES. An instance is in the subnet its subnet_id names, which is in
+  // the zone its zone names, which is in the VPC its vpc_id names - and every one of those is a
+  // field the querier recorded. A node in the wrong box is the picture lying about where a
+  // resource is.
+  const scene = sceneOf(ACCOUNT());
+  const by = boxes(scene);
+  const rowsById = new Map(ACCOUNT().flatMap((grp) => grp.resources.map((r) => [idOf(r.arn), r])));
+  for (const n of scene.nodes) {
+    if (n.erase) continue;                                   // the straddling gateway, below
+    const r = rowsById.get(n.id);
+    if (r.subnet_id) {
+      const sub = by.get(`subnet:${r.subnet_id}`);
+      assert.ok(sub && inside(n, sub), `${n.id} is not inside its subnet ${r.subnet_id}`);
+    } else if (r.vpc_id) {
+      const vpc = by.get(`vpc:${r.vpc_id}`);
+      assert.ok(vpc && inside(n, vpc), `${n.id} is not inside its VPC ${r.vpc_id}`);
+      for (const c of scene.containers) {
+        if (c.kind === 'subnet' || c.kind === 'az') {
+          assert.ok(!inside(n, c), `${n.id} has no subnet and was drawn inside ${c.id}`);
+        }
+      }
+    } else if (!n.id.startsWith('vol-') || !scene.edges.some((e) => e.kind === 'volume' && (e.from === n.id || e.to === n.id))) {
+      for (const c of scene.containers) {
+        if (c.kind === 'vpc' || c.kind === 'subnet' || c.kind === 'az') {
+          assert.ok(!inside(n, c), `${n.id} names no VPC and was drawn inside ${c.id}`);
+        }
+      }
+    }
+    assert.ok(inside(n, by.get('region')), `${n.id} is outside the region`);
+  }
+});
+
+test('a volume is drawn beside the instance it is attached to, and the unattached one is not', () => {
+  // The one deliberate placement a row does not name: a volume has no subnet, but the edge from a
+  // disk to the instance that would lose it is the edge an approver most wants, so an ATTACHED
+  // volume sits in its instance's card. An unattached one stays in the region band with its zone.
+  const scene = sceneOf(ACCOUNT());
+  const by = boxes(scene);
+  const vol1 = by.get('vol-1');
+  const i1 = by.get('i-0aaa111');
+  assert.ok(inside(vol1, by.get('subnet:subnet-a1')), 'the attached volume is not beside its instance');
+  assert.equal(vol1.x, i1.x, 'the volume is not in its instance\'s column');
+  assert.ok(vol1.y > i1.y, 'the volume is not below its instance');
+  const spare = by.get('vol-spare');
+  assert.ok(!scene.containers.some((c) => c.kind === 'vpc' && inside(spare, c)),
+            'an unattached volume was drawn inside a VPC');
+  assert.equal(spare.sub, 'us-east-1a', 'the region-band volume does not say its zone');
+  assert.equal(vol1.sub, '볼륨', 'a volume beside its instance repeats the zone the subnet already says');
+});
+
+test('every container is inside its parent, and every measured border is solid', () => {
+  const scene = sceneOf(ACCOUNT());
+  const by = boxes(scene);
+  for (const c of scene.containers) {
+    if (c.kind === 'cloud') continue;
+    const parent = c.kind === 'region' ? by.get('cloud')
+      : c.kind === 'vpc' ? by.get('region')
+        : c.kind === 'az' ? by.get(`vpc:${c.id.split(':')[1]}`)
+          : scene.containers.find((z) => z.kind === 'az' && inside(c, z));
+    assert.ok(parent && inside(c, parent), `${c.id} is not inside its parent`);
+    assert.equal(c.dashed, false, `${c.id} was measured and is dashed`);
+    assert.equal(c.measured, true);
+  }
+});
+
+test('a subnet the assessment holds no row for is still drawn - dashed and saying so', () => {
+  // Its instances are inside SOMETHING. Dropping the frame would put them in the VPC band, which
+  // says "no subnet"; drawing it solid would say the subnet was reached. Dashed, 평가에 없음.
+  const scene = sceneOf([
+    g('ec2:instance', [row('instance', 'i-1', { vpc_id: 'vpc-x', subnet_id: 'subnet-ghost', zone: 'us-east-1a' })]),
+  ]);
+  const sub = scene.containers.find((c) => c.id === 'subnet:subnet-ghost');
+  assert.ok(sub, 'the named subnet was not drawn');
+  assert.equal(sub.dashed, true);
+  assert.match(sub.note, /평가에 없음/);
+  const vpc = scene.containers.find((c) => c.id === 'vpc:vpc-x');
+  assert.equal(vpc.dashed, true, 'a VPC nobody reached was drawn as measured');
+  assert.ok(inside(boxes(scene).get('i-1'), sub));
+});
+
+test('no two nodes overlap and no node crosses a container border it is not on', () => {
+  for (const affected of [ACCOUNT(), BIG(120)]) {
+    const scene = sceneOf(affected);
+    const plates = [...scene.nodes, ...scene.overflow];
+    for (let i = 0; i < plates.length; i += 1) {
+      for (let j = i + 1; j < plates.length; j += 1) {
+        const a = plates[i];
+        const b = plates[j];
+        assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y,
+                  `${a.id ?? a.label} overlaps ${b.id ?? b.label}`);
+      }
+    }
+    for (const n of scene.nodes) {
+      for (const c of scene.containers) {
+        const crossesX = n.x < c.x + c.w && n.x + n.w > c.x && (n.y < c.y && n.y + n.h > c.y
+          || n.y < c.y + c.h && n.y + n.h > c.y + c.h);
+        if (n.erase && c.kind === 'vpc' && n.y + n.h / 2 === c.y) continue;   // the straddler
+        assert.ok(!crossesX, `${n.id} crosses the border of ${c.id}`);
+      }
+    }
+  }
+});
+
+test('the internet gateway straddles its VPC border, and only that border', () => {
+  const scene = sceneOf(ACCOUNT());
+  const by = boxes(scene);
+  for (const [igw, vpc] of [['igw-1', 'vpc:vpc-0a1'], ['igw-2', 'vpc:vpc-0b2']]) {
+    const n = by.get(igw);
+    const c = by.get(vpc);
+    assert.ok(n.erase, `${igw} does not erase the border under it`);
+    assert.equal(n.y + n.h / 2, c.y, `${igw} is not centred on ${vpc}'s top border`);
+    assert.ok(n.x >= c.x && n.x + n.w <= c.x + c.w, `${igw} is outside ${vpc} horizontally`);
+  }
+});
+
+test('every edge joins two drawn things, or is counted as dangling - never invented, never lost', () => {
+  const scene = sceneOf(ACCOUNT());
+  const by = boxes(scene);
+  for (const e of scene.edges) {
+    assert.ok(by.has(e.from) && by.has(e.to), `${e.from} -> ${e.to} names something not drawn`);
+    assert.ok(e.kind in RELATIONS_KINDS, `${e.kind} is not a kind the legend explains`);
+    // The line starts on the border of one box and ends on the border of the other.
+    const a = by.get(e.from);
+    const b = by.get(e.to);
+    const on = (p, box) => (Math.abs(p.x - box.x) < 1 || Math.abs(p.x - (box.x + box.w)) < 1
+      || Math.abs(p.y - box.y) < 1 || Math.abs(p.y - (box.y + box.h)) < 1)
+      && p.x >= box.x - 1 && p.x <= box.x + box.w + 1 && p.y >= box.y - 1 && p.y <= box.y + box.h + 1;
+    assert.ok(on({ x: e.x1, y: e.y1 }, a), `${e.from} -> ${e.to} does not start on ${e.from}'s border`);
+    assert.ok(on({ x: e.x2, y: e.y2 }, b), `${e.from} -> ${e.to} does not end on ${e.to}'s border`);
+  }
+  // The dangling ones: a link to a row the assessment does not hold.
+  const cut = sceneOf([
+    g('ec2:instance', [row('instance', 'i-1', { vpc_id: 'vpc-x', subnet_id: 'subnet-x',
+                                                links: { network_interface: ['eni-missing'], volume: ['vol-missing'] } })]),
+  ]);
+  assert.deepEqual(cut.counts.dangling, { network_interface: 1, volume: 1 });
+  assert.equal(cut.edges.length, 0);
+  assert.ok(cut.foot.some((l) => /그림 밖으로 나가는 연결 2개/.test(l.text)));
+});
+const RELATIONS_KINDS = { interface: 1, volume: 1, security: 1, association: 1, route: 1, image: 1 };
+
+test('the same fact seen from both ends is one line', () => {
+  // The instance records its volumes and the volume records its instance; the instance records
+  // its interfaces and the interface records its instance. Two Describes, one edge each.
+  const scene = sceneOf(ACCOUNT());
+  const between = (a, b) => scene.edges.filter((e) => [e.from, e.to].sort().join() === [a, b].sort().join());
+  assert.equal(between('i-0aaa111', 'vol-1').length, 1);
+  assert.equal(between('i-0aaa111', 'vol-1')[0].kind, 'volume');
+  assert.equal(between('i-0aaa111', 'eni-1').length, 1);
+  assert.equal(between('i-0aaa111', 'eni-1')[0].kind, 'interface');
+  // And the instance's own security groups are its interface's - drawn from the interface, once.
+  assert.equal(between('i-0aaa111', 'sg-web').length, 0, 'the group edge was drawn from both ends');
+  assert.equal(between('eni-1', 'sg-web').length, 1);
+});
+
+test('a subnet with no explicit route-table association gets the main table, dashed and derived', () => {
+  // AWS marks the main table on the association entry with no SubnetId. The subnet's edge to it
+  // is REAL - that is the table it routes by - but nothing recorded it, so it is drawn dashed and
+  // the count says how many were derived.
+  const scene = sceneOf(ACCOUNT());
+  const implicit = scene.edges.filter((e) => e.implicit);
+  assert.deepEqual(implicit.map((e) => [e.from, e.to]).sort(), [
+    ['rtb-c', 'subnet:subnet-c1'], ['rtb-main', 'subnet:subnet-a1'], ['rtb-main', 'subnet:subnet-a2'],
+  ]);
+  assert.equal(scene.counts.implicitEdges, 3);
+  // subnet-b1 HAS an explicit association, so the main table is NOT drawn to it.
+  assert.ok(!scene.edges.some((e) => e.from === 'rtb-main' && e.to === 'subnet:subnet-b1'));
+  assert.ok(scene.edges.some((e) => e.from === 'rtb-priv' && e.to === 'subnet:subnet-b1' && !e.implicit));
+  assert.match(graphSummary(scene), /3개는 기본 라우팅 테이블에서 도출했다/);
+});
+
+test('every network ACL association reaches its subnet', () => {
+  const scene = sceneOf(ACCOUNT());
+  const acl = scene.edges.filter((e) => e.from === 'acl-default');
+  assert.deepEqual(acl.map((e) => e.to).sort(),
+                   ['subnet:subnet-a1', 'subnet:subnet-a2', 'subnet:subnet-b1']);
+  assert.ok(acl.every((e) => e.kind === 'association' && !e.implicit));
+});
+
+test('a route to a gateway is an edge from the table to the gateway, and `local` never is', () => {
+  const scene = sceneOf(ACCOUNT());
+  assert.ok(scene.edges.some((e) => e.kind === 'route' && e.from === 'rtb-main' && e.to === 'igw-1'));
+  assert.ok(scene.edges.some((e) => e.kind === 'route' && e.from === 'rtb-priv' && e.to === 'nat-1'));
+  assert.ok(!scene.edges.some((e) => e.to === 'local'));
+});
+
+/** `n` instances in one subnet, each with an interface, a volume and a group. */
+function BIG(n) {
+  const groups = Array.from({ length: 5 }, (_, i) => `sg-${i}`);
+  const instances = [];
+  const enis = [];
+  const vols = [];
+  for (let i = 0; i < n; i += 1) {
+    const id = `i-${String(i).padStart(6, '0')}`;
+    instances.push(row('instance', id, {
+      vpc_id: 'vpc-big', subnet_id: 'subnet-big', zone: 'us-east-1a',
+      links: { network_interface: [`eni-${i}`], volume: [`vol-${i}`], security_group: [groups[i % 5]], image: ['ami-1'] },
+    }));
+    enis.push(row('network-interface', `eni-${i}`, { vpc_id: 'vpc-big', subnet_id: 'subnet-big', zone: 'us-east-1a',
+                                                     links: { instance: [id], security_group: [groups[i % 5]] } }));
+    vols.push(row('volume', `vol-${i}`, { zone: 'us-east-1a', links: { instance: [id] } }));
+  }
+  return [
+    g('ec2:vpc', [row('vpc', 'vpc-big', { vpc_id: 'vpc-big' })]),
+    g('ec2:subnet', [row('subnet', 'subnet-big', { vpc_id: 'vpc-big', subnet_id: 'subnet-big', zone: 'us-east-1a' })]),
+    g('ec2:instance', instances), g('ec2:network-interface', enis), g('ec2:volume', vols),
+    g('ec2:security-group', groups.map((s) => row('security-group', s, { vpc_id: 'vpc-big' }))),
+    g('ec2:image', [row('image', 'ami-1')]),
+  ];
+}
+
+test('past the node budget the picture stops and says how much it left out', () => {
+  // Never a silent prefix. 300 instances x 3 nodes is 900 rows against NODE_BUDGET; the subnet
+  // draws what fits, one plate says 외 N개, and the foot line says what to do about it.
+  const scene = sceneOf(BIG(300));
+  assert.ok(scene.nodes.length <= NODE_BUDGET, `${scene.nodes.length} nodes drawn over the budget`);
+  assert.ok(scene.overflow.length >= 1, 'nothing says what was left out');
+  const left = scene.counts.omittedNodes;
+  assert.ok(left > 0);
+  // Every row is a plate, an omitted plate, or a border (the VPC and subnet rows). Nothing else.
+  assert.equal(scene.nodes.length + left + scene.counts.containerRows, scene.counts.totalRows,
+               'drawn plus omitted plus containers is not every row - a resource vanished');
+  assert.equal(scene.counts.containerRows, 2);
+  assert.ok(scene.foot.some((l) => l.text.includes(`그리지 못한 자원 ${left.toLocaleString()}개`)));
+  assert.ok(scene.foot.some((l) => l.text.includes('좁히면')), 'the foot line does not say how to see the rest');
+  // Whole cards, never half an instance: an instance drawn without its interface would say it
+  // has none.
+  const drawn = new Set(scene.nodes.map((n) => n.id));
+  for (const n of scene.nodes) {
+    if (!n.id.startsWith('i-')) continue;
+    const i = Number(n.id.slice(2));
+    assert.ok(drawn.has(`eni-${i}`) && drawn.has(`vol-${i}`), `${n.id} was drawn without its card`);
+  }
+});
+
+test('a subnet folds its instances past CARDS_PER_SUBNET into one plate', () => {
+  const scene = sceneOf(BIG(CARDS_PER_SUBNET + 5));
+  const plate = scene.overflow.find((o) => o.container === 'subnet:subnet-big');
+  assert.ok(plate, 'the subnet did not fold');
+  assert.equal(plate.count, 5 * 3);
+  assert.equal(scene.nodes.filter((n) => n.id.startsWith('i-')).length, CARDS_PER_SUBNET);
+});
+
+test('past the edge budget the least load-bearing kinds go first, whole kinds at a time', () => {
+  // With 60 instances everything fits; the budget is exercised by shrinking it in the ONE place
+  // the module reads it. Rather than monkey-patch, assert the order the module declares and that a
+  // scene under budget drops nothing.
+  const scene = sceneOf(BIG(60));
+  assert.ok(scene.edges.length <= EDGE_BUDGET);
+  assert.deepEqual(scene.counts.droppedEdges, {});
+  // Every relation the querier writes is one the picture explains.
+  for (const rel of ['network_interface', 'instance', 'volume', 'security_group', 'subnet', 'main',
+                     'default', 'route_table', 'internet_gateway', 'nat_gateway', 'image']) {
+    assert.ok(rel in RELATIONS, `${rel} is recorded by the querier and this picture does not know it`);
+  }
+});
+
+test('the scene is deterministic and exactly GRAPH_W wide', () => {
+  for (const affected of [ACCOUNT(), BIG(40), []]) {
+    const a = sceneOf(affected);
+    const b = sceneOf(affected);
+    assert.deepEqual(a, b);
+    assert.equal(a.width, GRAPH_W);
+  }
+});
+
+test('the filter narrows the picture by the same rule as the type picture', () => {
+  const whole = sceneOf(ACCOUNT());
+  const one = sceneOf(ACCOUNT(), { subnets: ['subnet-b1'] });
+  assert.ok(one.narrowed);
+  assert.ok(one.nodes.every((n) => ['i-0bbb222', 'eni-3', 'vol-2', 'vol-3'].includes(n.id) || !n.id.startsWith('i-')),
+            'a resource outside the chosen subnet was drawn');
+  assert.ok(one.nodes.some((n) => n.id === 'i-0bbb222'));
+  assert.ok(!one.nodes.some((n) => n.id === 'i-0aaa111'));
+  assert.ok(one.nodes.length < whole.nodes.length);
+});
+
+test('an older assessment with neither placement nor links is not informative', () => {
+  // Its graph would be one region band of unconnected plates. The screen opens the type picture
+  // for that document and offers this one second.
+  const old = sceneOf([g('ec2:instance', [row('instance', 'i-1'), row('instance', 'i-2')])]);
+  assert.equal(old.informative, false);
+  assert.equal(sceneOf(ACCOUNT()).informative, true);
+});
+
+test('an empty picture says whether EC2 was even looked at', () => {
+  const failed = sceneOf([], null, false);
+  assert.ok(failed.empty && !failed.enumerated);
+  assert.match(graphSummary(failed), /조회에 실패/);
+  assert.match(failed.containers.find((c) => c.kind === 'region').note, /조회가 실패/);
+  assert.match(graphSummary(sceneOf([])), /인벤토리에 없다/);
+  assert.match(graphSummary(sceneOf(ACCOUNT(), { regions: ['eu-west-1'] })), /고른 조건에 맞는/);
+});
+
+test('names and ids are cut to the plate and never silently', () => {
+  assert.equal(shortId('i-0123456789abcdef0'), 'i-0123456…def0');
+  assert.equal(shortId('sg-web'), 'sg-web');
+  assert.equal(shortName('a-very-long-name-indeed'), 'a-very-long-n…');
+  assert.equal(shortName('web-1'), 'web-1');
+  assert.equal(idOf('arn:aws:ec2:us-east-1:1:instance/i-0abc'), 'i-0abc');
+  assert.equal(idOf('arn:aws:ec2:us-east-1::snapshot/snap-1'), 'snap-1');
+  const scene = sceneOf(ACCOUNT());
+  const web = scene.nodes.find((n) => n.id === 'i-0aaa111');
+  assert.equal(web.label, 'web-1');
+  assert.equal(web.sub, 'i-0aaa111');
+  assert.match(web.title, /web-1/);
+  assert.match(web.title, /arn:aws:ec2/);
+  assert.equal(web.sensitive, true);
+});
+
+test('the caption is inside the viewBox and the table has a row per drawn node', () => {
+  const scene = sceneOf(ACCOUNT());
+  assert.ok(scene.foot.some((l) => l.text === GRAPH_CAPTION));
+  assert.ok(scene.foot.every((l) => l.y < scene.height));
+  assert.equal(scene.rows.length, scene.nodes.length);
+  const web = scene.rows.find((r) => r.id === 'i-0aaa111');
+  assert.equal(web.where, 'subnet-a1');
+  assert.ok(web.degree >= 3, 'the row does not count the instance\'s edges');
+  assert.deepEqual(scene.omitted, [{ service: 'elasticloadbalancing', total: 3 }]);
+});
+
+test('a line leaves by the side facing its other end and never runs under the plate beside it', () => {
+  // Defect it prevents: the centre-to-centre line from eni-3 to sg-db ran under i-0bbb222 and came
+  // out the far side, so it read as a group line from the instance; the route from rtb-main to the
+  // internet gateway surfaced from under acl-default two plates along.
+  const scene = sceneOf(ACCOUNT());
+  const by = boxes(scene);
+  const through = (p, q, r) => {       // the engine's own rule restated: through the box shrunk by a pixel
+    const x0 = r.x + 1; const y0 = r.y + 1; const x1 = r.x + r.w - 1; const y1 = r.y + r.h - 1;
+    const dx = q.x - p.x; const dy = q.y - p.y;
+    let t0 = 0; let t1 = 1;
+    for (const [den, num] of [[-dx, p.x - x0], [dx, x1 - p.x], [-dy, p.y - y0], [dy, y1 - p.y]]) {
+      if (den === 0) { if (num < 0) return false; continue; }
+      const t = num / den;
+      if (den < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
+      else { if (t < t0) return false; if (t < t1) t1 = t; }
+    }
+    return t0 < t1;
+  };
+  const runsUnder = (e, id) => {
+    const r = by.get(id);
+    for (let i = 1; i < e.points.length; i += 1) if (through(e.points[i - 1], e.points[i], r)) return true;
+    return false;
+  };
+  const edge = (from, to) => scene.edges.find((e) => e.from === from && e.to === to)
+    ?? assert.fail(`${from} -> ${to} is not drawn`);
+  assert.ok(!runsUnder(edge('eni-3', 'sg-db'), 'i-0bbb222'), 'the group line runs under the instance beside the interface');
+  const igw = edge('rtb-main', 'igw-1');
+  assert.equal(igw.points.length, 4, 'the route to the gateway on the border is not routed over the band');
+  for (const id of ['rtb-priv', 'acl-default']) assert.ok(!runsUnder(igw, id), `the route runs under ${id}`);
+  // Adjacent plates are joined straight, and every line's ends are its first and last points.
+  assert.equal(edge('i-0aaa111', 'eni-1').points.length, 2);
+  for (const e of scene.edges) {
+    assert.ok(e.points.length === 2 || e.points.length === 4, `${e.from} -> ${e.to} has ${e.points.length} points`);
+    assert.deepEqual([e.x1, e.y1], [e.points[0].x, e.points[0].y]);
+    const last = e.points[e.points.length - 1];
+    assert.deepEqual([e.x2, e.y2], [last.x, last.y]);
+    assert.ok(!runsUnder(e, e.from) && !runsUnder(e, e.to), `${e.from} -> ${e.to} runs back through its own end`);
+    assert.match(e.title, /: .+ — .+/, `${e.from} -> ${e.to} has no hover text naming both ends`);
+  }
+  // The table row carries the type's Korean name beside the type.
+  assert.ok(scene.rows.every((r) => typeof r.typeLabel === 'string' && r.typeLabel.length > 0));
+});

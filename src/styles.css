@@ -1445,7 +1445,11 @@ dialog.picker.block-path { width: min(44rem, 94vw); }
    no longer depends on any of this: the component compares the pointer against the dialog's own
    rectangle rather than trusting e.target, which is the dialog itself for a click on its scrollbar
    and for a mouseup that started inside. */
-dialog.policy-dialog.topology-dialog { width: min(796px, 94vw); }
+/* The window is the whole screen, near enough. It holds a relationship graph now - one node per
+   resource, one line per connection - and a graph in a 796px window is a graph nobody can read.
+   The figure scrolls inside it rather than shrinking: legible-and-scrollable beats
+   fits-and-unreadable. */
+dialog.policy-dialog.topology-dialog { width: min(1720px, 97vw); }
 
 /* The dialog itself does not scroll; .topology-scroll does. The UA stylesheet gives dialog:modal
    `overflow: auto`, so setting nothing was not the same as setting none - the whole window scrolled
@@ -1456,7 +1460,7 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
 .topology-dialog .policy-dialog-body {
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 6em);
+  max-height: calc(100vh - 3em);
 }
 .topology-scroll { overflow: auto; flex: 1 1 auto; min-height: 0; }
 /* Focused by showModal() so a screen reader reaches the caveats before the filter controls. It is
@@ -1467,7 +1471,7 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
    fits-and-unreadable, and shrinking an 11px Korean label is not a smaller picture but an
    unreadable one. */
 .topology-figure {
-  max-height: 62vh;
+  max-height: 78vh;
   overflow: auto;
   margin: 10px 0;
   border: 1px solid var(--border);
@@ -1562,3 +1566,52 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
    reach for a VPC filter, and the useful answer is why it is not there. */
 .topology-chip.off { cursor: not-allowed; color: var(--muted); background: var(--bg); }
 .topology-chip input { margin: 0; }
+
+/* ---- the relationship picture, server/graph.js ---------------------------------------------- */
+/* Two views of one window. The switch is a pair of pressed/unpressed buttons rather than tabs, so
+   the filter bar, the notes and the 닫기 row are visibly shared between the two pictures. */
+.topology-views { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 2px 0 8px; }
+.topology-views button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+/* Containers: the cloud, the region, a VPC, a zone, a subnet. The AWS group colours arrive as
+   inline styles from the engine, exactly as the type picture's frames do. */
+.graph-box-rect { fill: none; stroke: var(--border); stroke-width: 1; }
+.graph-box-vpc .graph-box-rect { stroke-width: 1.5; }
+/* Painted after the lines, with a halo in the ground colour: a line that crosses a label passes
+   under the letters, and the label stays readable. */
+.graph-box-text { font-size: 12px; paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+.graph-box-label { fill: var(--text); font-weight: 600; }
+.graph-box-note { fill: var(--muted); font-size: 11px; }
+/* Dashed: the container's own row is not in the assessment, or its zone could not be read. Quieter
+   than a measured border, for the type picture's reason. */
+.graph-box-dashed .graph-box-rect { stroke-opacity: 0.6; }
+.graph-box-dashed .graph-box-label { fill: var(--muted); }
+
+/* One resource. 민감 runs on the same two channels as the type picture's plate: the outline here
+   and the table's 민감 column. */
+.graph-plate { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
+.graph-plate-sensitive { stroke: var(--danger); stroke-width: 2; }
+/* What the budget left out of one container: a plate that is visibly not a resource. */
+.graph-plate-overflow { fill: var(--panel); stroke: var(--muted); }
+.graph-node-type { fill: var(--muted); font-size: 10px; }
+.graph-node-label { fill: var(--text); font-size: 11px; font-weight: 600; }
+.graph-node-sub { fill: var(--muted); font-size: 10px; }
+
+/* The connections. One colour per kind, every one a palette token; the legend draws the same
+   classes on a 28px line, so it cannot drift from the picture. */
+.graph-edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
+.graph-edge-interface { stroke: var(--accent); }
+.graph-edge-volume { stroke: var(--cut-fence); }
+.graph-edge-security { stroke: var(--warn); }
+.graph-edge-association { stroke: var(--cut-partial); }
+.graph-edge-route { stroke: var(--text); }
+.graph-edge-image { stroke: var(--muted); stroke-dasharray: 1 3; stroke-linecap: round; }
+/* Derived rather than recorded: the main route table's association with a subnet that has no
+   explicit one. */
+.graph-edge-implicit { stroke-dasharray: 6 4; }
+.graph-edge-marker { fill: var(--text); }
+/* The ring on each end of a line, in the line's colour: where the line really stops, whatever it
+   passes under on the way. */
+.graph-edge-end { fill: var(--bg); stroke-dasharray: none; }
+.graph-legend-item { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; white-space: nowrap; }
+.graph-legend-swatch { display: inline-block; vertical-align: middle; }

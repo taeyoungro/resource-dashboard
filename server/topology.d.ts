@@ -1,7 +1,7 @@
 // Types for topology.js and its three specs, so the page can import a plain-JS module the test
 // runner can load. Same arrangement as blockPath.d.ts, and for the same reason.
 
-import type { ImpactCoverage, ImpactPolicy } from "../src/types";
+import type { ImpactCoverage, ImpactPolicy, ImpactResource } from "../src/types";
 
 export const SCENE_W: number;
 export const SKY: number;
@@ -237,6 +237,7 @@ export interface SceneFilter {
 
 export function facets(policy: ImpactPolicy): Facets | null;
 export function filterActive(filter: SceneFilter | null): boolean;
+export function keeps(filter: SceneFilter | null, resource: ImpactResource): boolean;
 export function topologyPolicy(identifier: string): TopologyKind | null;
 export function specOf(policy: ImpactPolicy | null | undefined): TopologySpec | null;
 export function textUnits(line: string): number;

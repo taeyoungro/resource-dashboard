@@ -342,8 +342,10 @@ export const DIMENSION_LABEL = {
   accounts: '계정', regions: '리전', vpcs: 'VPC', subnets: '서브넷', clusters: '클러스터',
 };
 
-/** Whether a row survives the filter. A null or empty list on a dimension means 전체. */
-function keeps(filter, resource) {
+/** Whether a row survives the filter. A null or empty list on a dimension means 전체.
+ *  Exported for graph.js, which narrows the relationship picture by exactly the same rule - two
+ *  filters that could disagree would be two pictures of one account. */
+export function keeps(filter, resource) {
   if (!filter) return true;
   const { accounts, regions, vpcs, subnets, clusters } = filter;
   if (accounts?.length && !accounts.includes(accountOf(resource))) return false;
@@ -453,7 +455,11 @@ export function scene(policy, accountId, filter = null, enumerated = true) {
     for (const resource of kept) regions.add(regionOf(resource));
     if (spec.placeable.has(group.resource_type)) {
       for (const resource of kept) {
-        const state = placementOf(resource);
+        // A VPC id IS the answer 'vpc'. The EC2 lookup records the VPC and the subnet on the row
+        // and writes no `placement` word - that word is the Lambda and ECS lookups' - and reading
+        // its absence as "unanswered" printed 조회가 답하지 않았다 over every EC2 row the lookup
+        // had placed. facets() already counts a row with a VPC as answered; this is the same rule.
+        const state = placementOf(resource) || (vpcOf(resource) ? 'vpc' : '');
         // 'none' is an ANSWER - AWS said this resource is in no VPC - so it is neither placed nor
         // unmeasured. For a Lambda function that is the ordinary case, and counting it as a gap
         // would print "배치를 읽지 못했다" about rows the lookup answered perfectly well about.

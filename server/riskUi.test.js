@@ -1869,3 +1869,85 @@ test('the closed-state summary describes the policy, not the filter', () => {
             'the closed-state line reads the filtered scene, so collapsing the window leaves a '
             + 'count that describes a filter nobody can see');
 });
+
+// ---- the relationship picture, the EC2 window's second view ------------------------------------
+// server/graph.test.js pins the geometry - containment, no overlaps, where a line leaves a plate.
+// What is pinned here is the screen half: that it is a view of the same window and not a second
+// window, the sentences that keep it honest, and that the legend cannot drift from the picture.
+
+import { KIND_LABEL } from './graph.js';
+
+test('the relationship picture is a second view of the same window, not a second window', () => {
+  assert.ok(TOPOLOGY.includes('relationScene('), 'the component does not draw the relationship picture');
+  assert.ok(TOPOLOGY.includes('aria-pressed={view === "graph"}') && TOPOLOGY.includes('aria-pressed={view === "types"}'),
+            'the two views are not a pressed/unpressed pair');
+  // The document decides the default: a graph of unconnected plates says less than the type picture.
+  assert.ok(TOPOLOGY.includes('wholeGraph.informative ? "graph" : "types"'),
+            'an older assessment with no placement and no link would open on an empty graph');
+  // One switch above the caveats, one filter bar, one 닫기 row.
+  assert.ok(TOPOLOGY.indexOf('topology-views') < TOPOLOGY.indexOf('topology-caveats'),
+            'the switch is below the caveats it changes');
+  assert.equal((TOPOLOGY.match(/<FilterBar/g) ?? []).length, 1, 'the two views grew two filter bars');
+  assert.match(CSS, /\.topology-views\b/, 'the switch is unstyled');
+});
+
+test('the window is as wide as the screen allows', () => {
+  // A graph of one plate per resource in a 796px window is a graph nobody can read; the figure
+  // scrolls inside the window rather than the window shrinking the figure.
+  assert.match(CSS, /dialog\.policy-dialog\.topology-dialog\s*\{\s*width:\s*min\(1720px,\s*97vw\)/,
+               'the window shrank back to a width a graph cannot be read in');
+});
+
+test('the relationship picture says what a line is and what a missing line is not', () => {
+  assert.ok(TOPOLOGY.includes('조회기가 자원마다 읽은 연결'), 'nothing says the lines were read off the resources');
+  assert.ok(TOPOLOGY.includes('선이 없다고 연결이 없다는 뜻은 아니다'), 'a missing line is not declared non-evidence');
+  assert.ok(TOPOLOGY.includes('보안 그룹 선은 규칙이 아니라 소속이다'), 'a group line could be read as a rule');
+  assert.ok(TOPOLOGY.includes('자원이 자기 자리라고 답한 VPC·가용 영역·서브넷'),
+            'the borders are not said to be what the resource answered');
+  // Above the figure, as the type picture's caveat is.
+  assert.ok(TOPOLOGY.indexOf('조회기가 자원마다 읽은 연결') < TOPOLOGY.indexOf('<GraphFigure'),
+            'the caveat sits below the drawing');
+});
+
+test('the legend draws each kind of line with the class the picture uses, and every kind has a rule', () => {
+  for (const kind of Object.keys(KIND_LABEL)) {
+    assert.match(CSS, new RegExp(`\\.graph-edge-${kind}\\b`), `${kind} lines have no colour`);
+  }
+  assert.ok(TOPOLOGY.includes('className={`graph-edge graph-edge-${kind}`}'),
+            "the legend swatch is not the picture's own class, so the two can drift");
+  assert.ok(TOPOLOGY.includes('graph-edge-implicit'), 'a derived line is drawn like a recorded one');
+  assert.match(CSS, /\.graph-edge-implicit\s*\{[^}]*stroke-dasharray/, 'a derived line is not dashed');
+  // Only a route has a direction; an arrowhead on a membership line would claim one.
+  assert.ok(TOPOLOGY.includes('edge.kind === "route" ? `url(#${uid}-ga)` : undefined'),
+            'an arrowhead landed on an undirected line');
+});
+
+test('a line cannot be mistaken for a line from the plate it passes under', () => {
+  // Lines are painted under the plates, so a line can vanish under one and reappear. The rings on
+  // both ends say where it really stops, and the container labels are painted over the lines with
+  // a halo so a crossed label stays readable.
+  assert.ok(TOPOLOGY.includes('graph-edge-end'), 'the line ends carry no ring');
+  assert.match(CSS, /\.graph-edge-end\b/, 'the end ring is unstyled');
+  assert.match(CSS, /\.graph-box-text\s*\{[^}]*paint-order:\s*stroke/, 'container labels have no halo');
+  const figure = TOPOLOGY.slice(TOPOLOGY.indexOf('function GraphFigure'), TOPOLOGY.indexOf('function GraphTable'));
+  const layers = ['<GraphContainerShape', '<GraphEdgeShape', '<GraphContainerLabel', '<GraphOverflowShape', '<GraphNodeShape'];
+  const at = layers.map((tag) => figure.indexOf(tag));
+  assert.ok(at.every((i) => i >= 0), 'a layer is missing from the figure');
+  assert.deepEqual([...at].sort((a, b) => a - b), at,
+                   'the paint order is not borders, lines, labels, overflow, plates');
+});
+
+test('the relationship view has its own text equivalent and its own table', () => {
+  assert.ok(TOPOLOGY.includes('graphSummary(') && TOPOLOGY.includes('aria-label="자원 연결 관계도"'),
+            'the relationship picture has no text equivalent');
+  assert.ok(TOPOLOGY.includes('<GraphTable'), 'the relationship picture has no table to check it against');
+  assert.ok(TOPOLOGY.includes('{row.typeLabel}') && TOPOLOGY.includes('row.degree'),
+            'the table does not say the type or the number of lines');
+});
+
+test('the closed-state line counts the connections off the unfiltered graph', () => {
+  const at = TOPOLOGY.indexOf('{spec.words.title} 자원 {whole.kinds}');
+  const summary = TOPOLOGY.slice(at, TOPOLOGY.indexOf('</span>', at));
+  assert.ok(summary.includes('wholeGraph.counts.edges'), 'the closed state does not say how many connections there are');
+  assert.ok(!/[^A-Za-z]graph\.counts/.test(summary), 'the closed-state count reads the filtered graph');
+});
