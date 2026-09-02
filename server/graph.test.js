@@ -665,3 +665,55 @@ test('a subnet says which route table coloured it, and why', () => {
   assert.equal(one.tint, 'public');
   assert.match(one.note, /rtb-main/);
 });
+
+test('a subnet is coloured from its own row, even when the policy reaches no route table', () => {
+  // THE DEFECT THE DEPLOYED ACCOUNT SHOWED. Instances, interfaces, groups, volumes, ACLs and an
+  // internet gateway all enumerated; not one route table; every subnet uncoloured. Whether a
+  // subnet is public is a fact about the SUBNET, so the querier records it on the subnet's row
+  // and the picture reads it there first.
+  const noTables = sceneOf([
+    g('ec2:vpc', [row('vpc', 'vpc-x', { vpc_id: 'vpc-x' })]),
+    g('ec2:subnet', [
+      row('subnet', 'subnet-pub', { vpc_id: 'vpc-x', subnet_id: 'subnet-pub', zone: 'us-east-1a',
+        route_table: 'rtb-main',
+        default_routes: [{ destination: '0.0.0.0/0', target: 'igw-1', state: 'active' }] }),
+      row('subnet', 'subnet-priv', { vpc_id: 'vpc-x', subnet_id: 'subnet-priv', zone: 'us-east-1a',
+        route_table: 'rtb-priv',
+        default_routes: [{ destination: '0.0.0.0/0', target: 'nat-1', state: 'active' }] }),
+      row('subnet', 'subnet-none', { vpc_id: 'vpc-x', subnet_id: 'subnet-none', zone: 'us-east-1a',
+        route_table: 'rtb-bare', default_routes: [] }),
+    ]),
+  ]);
+  assert.ok(!noTables.nodes.some((n) => n.resourceType === 'ec2:route-table'),
+            'the fixture is meant to hold no route table at all');
+  const by = boxes(noTables);
+  const pub = by.get('subnet:subnet-pub');
+  assert.equal(pub.tint, 'public');
+  assert.equal(pub.tintBasis, 'subnet');
+  assert.equal(pub.routeTable, 'rtb-main');
+  assert.match(pub.note, /rtb-main: 0\.0\.0\.0\/0 → igw-1/);
+  assert.equal(by.get('subnet:subnet-priv').tint, 'private');
+  // A table with no default route is private, and says that rather than printing nothing.
+  assert.equal(by.get('subnet:subnet-none').tint, 'private');
+  assert.match(by.get('subnet:subnet-none').note, /rtb-bare: 기본 경로 없음/);
+  // The same rules as the table's own row: blackhole and egress-only are not public.
+  const tintFor = (routes) => boxes(sceneOf([
+    g('ec2:subnet', [row('subnet', 'subnet-1', { vpc_id: 'vpc-x', subnet_id: 'subnet-1',
+      zone: 'us-east-1a', route_table: 'rtb-1', default_routes: routes })]),
+  ])).get('subnet:subnet-1').tint;
+  assert.equal(tintFor([{ destination: '0.0.0.0/0', target: 'igw-1', state: 'blackhole' }]), 'private');
+  assert.equal(tintFor([{ destination: '::/0', target: 'eigw-1', state: 'active' }]), 'private');
+  assert.equal(tintFor([{ destination: '::/0', target: 'igw-1', state: 'active' }]), 'public');
+  // The subnet's own row WINS over a route-table row that disagrees: it is the newer, and the
+  // measured, answer - the table row cannot know about an association it does not carry.
+  const both = boxes(sceneOf([
+    g('ec2:subnet', [row('subnet', 'subnet-1', { vpc_id: 'vpc-x', subnet_id: 'subnet-1',
+      zone: 'us-east-1a', route_table: 'rtb-real',
+      default_routes: [{ destination: '0.0.0.0/0', target: 'igw-1', state: 'active' }] })]),
+    g('ec2:route-table', [row('route-table', 'rtb-other', { vpc_id: 'vpc-x',
+      links: { main: ['vpc-x'] },
+      routes: [{ destination: '0.0.0.0/0', target: 'nat-9', state: 'active' }] })]),
+  ])).get('subnet:subnet-1');
+  assert.equal(both.tint, 'public');
+  assert.equal(both.routeTable, 'rtb-real');
+});

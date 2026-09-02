@@ -47,10 +47,14 @@ export interface GraphContainer {
   /** The route table this subnet is associated with - its explicit one, else the VPC's main
    *  table - printed on the label band so the association survives a crowded picture. */
   routeTable?: string | null;
-  /** How the tint was decided. 'routes' read the default route's destination and target and is
-   *  the measured answer; 'links' is the older approximation on an assessment made before the
-   *  routes were recorded, and over-reports public. */
-  tintBasis?: "routes" | "links" | null;
+  /** How the tint was decided.
+   *  'subnet' - the subnet's own row named its table and that table's default routes. The answer
+   *             the querier now records, and the only one that does not depend on the policy
+   *             also reaching route tables.
+   *  'routes' - read off a route table's own row, which the policy happened to reach.
+   *  'links'  - the older approximation ("the table has some internet-gateway route") on an
+   *             assessment made before the routes were recorded. It over-reports public. */
+  tintBasis?: "subnet" | "routes" | "links" | null;
 }
 
 /** One resource. */
