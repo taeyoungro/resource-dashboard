@@ -1654,6 +1654,11 @@ dialog.policy-dialog.finding-dialog { max-height: calc(100vh - 48px); overflow: 
 .graph-edge-security { stroke: var(--warn); }
 .graph-edge-association { stroke: var(--cut-partial); }
 .graph-edge-route { stroke: var(--text); }
+/* The chain between two security groups: which group may reach which, in the direction of the
+   arrow. Its own colour because it is the one line that is not membership or attachment - it is
+   permission, and reading it as "these two are related" would miss the whole point. */
+.graph-edge-chain { stroke: var(--danger); }
+.graph-chain-marker { fill: var(--danger); }
 .graph-edge-image { stroke: var(--muted); }
 /* Derived rather than recorded: the main route table's association with a subnet that has no
    explicit one. A tighter dash than the recorded lines, so the two read apart. */

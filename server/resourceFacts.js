@@ -203,8 +203,32 @@ export function resourceFacts(policy, reference, findings, arn) {
         state: `${r?.state ?? ''}`,
       })).filter((r) => r.destination && r.target)
       : [],
+    /** What a security group ALLOWS - every rule of it, in the querier's order. Empty for every
+     *  other type, and empty on a group read before the querier read its rules; the panel tells
+     *  the two apart by the resource type, exactly as it does for a route table's routes.
+     *
+     *  A RULE row carries the one rule it is, in the same shape and the same field, so the panel
+     *  and the plate say the same thing about it. */
+    rules: normaliseRules(row?.rules ?? (row?.rule ? [row.rule] : [])),
   };
 }
+
+/** Every rule of a row, keeping only the ones that name what they allow and where. */
+function normaliseRules(rules) {
+  if (!Array.isArray(rules)) return [];
+  return rules
+    .filter((r) => r && typeof r === 'object')
+    .map((r) => ({
+      direction: r.direction === 'egress' ? 'egress' : 'ingress',
+      protocol: typeof r.protocol === 'string' && r.protocol ? r.protocol : '-1',
+      from_port: Number.isInteger(r.from_port) ? r.from_port : null,
+      to_port: Number.isInteger(r.to_port) ? r.to_port : null,
+      target_kind: typeof r.target_kind === 'string' ? r.target_kind : '',
+      target: typeof r.target === 'string' ? r.target : '',
+    }))
+    .filter((r) => r.target);
+}
+
 
 /**
  * Which resources carry a finding at all, as arn -> the worst grade reaching it.

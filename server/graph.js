@@ -87,10 +87,28 @@ export const RELATIONS = {
   internet_gateway: { kind: 'route', label: '인터넷 게이트웨이로 가는 경로' },
   nat_gateway: { kind: 'route', label: 'NAT 게이트웨이로 가는 경로' },
   image: { kind: 'image', label: 'AMI' },
+  // THE CHAIN between two security groups, which is the one relation whose line means nothing
+  // without a direction. A group's ingress rule naming another group says traffic is allowed FROM
+  // that group; an egress rule says TO it. The querier writes the two as different relations for
+  // exactly this reason (inventory.LINK_PREFIX), and an undirected line would say the opposite
+  // thing on half of them.
+  //
+  // `flip` on allows_from because the link is recorded on the group that ADMITS the traffic and
+  // the arrow points the way the traffic goes: the referenced group is where it starts. A separate
+  // word from `reverse` above, which is a note about how the LABEL reads and moves no line.
+  allows_from: { kind: 'chain', label: '이 그룹으로 허용', flip: true },
+  allows_to: { kind: 'chain', label: '이 그룹에서 허용' },
+  // A RULE row's own reference to another group. Not drawn: the same fact is already a line
+  // between the two GROUPS (above), with the direction the rule gave it, and the rule plate's own
+  // label names the group it points at. Registered so the target does not count as dangling.
+  referenced_group: { kind: 'chain', label: '규칙이 지목한 보안 그룹', onRuleRow: true },
 };
 
 /** The order edges are dropped in when the budget is hit: least load-bearing first. */
-const DROP_ORDER = ['image', 'security', 'route', 'association', 'interface', 'volume'];
+// `chain` is late because it is the one edge that carries a fact no plate repeats: which
+// group may reach which. Dropping it first would drop the answer the picture was opened for.
+const DROP_ORDER = ['image', 'security', 'route', 'association', 'interface', 'volume',
+                    'chain'];
 
 // ---- reading rows -----------------------------------------------------------------------------
 
@@ -112,6 +130,55 @@ function zoneOf(r) { return typeof r?.zone === 'string' && r.zone ? r.zone : '';
 function nameOf(r) {
   const tag = r?.tags?.Name;
   return typeof tag === 'string' && tag.trim() ? tag.trim() : '';
+}
+
+/**
+ * What a security group rule ALLOWS, as the two lines a plate holds.
+ *
+ * `{ head, tail }`: the protocol and ports on the first line, and the direction and target on the
+ * second. That split is the point of the plate - an approver reading a group is asking two
+ * questions, "what may come in" and "from where", and a single line answers neither at a glance.
+ *
+ *   ingress tcp 443 from 0.0.0.0/0   ->  { head: 'tcp 443',  tail: '← 0.0.0.0/0' }
+ *   egress every protocol to sg-0db  ->  { head: '모든 프로토콜', tail: '→ sg-0db' }
+ *
+ * The ARROW is the direction and not decoration: ← is traffic coming IN to whatever carries the
+ * group, → is traffic going out. '-1' is AWS's spelling of "every protocol" and must never be
+ * printed as a protocol named -1; a rule with no ports is every port of that protocol, which for
+ * tcp and udp is worth saying and for icmp or "every protocol" is not (they have none).
+ *
+ * Null when the row carries no rule - every type but ec2:security-group-rule, and any assessment
+ * made before the querier read them.
+ */
+export function ruleText(rule) {
+  if (!rule || typeof rule !== 'object') return null;
+  const protocol = typeof rule.protocol === 'string' && rule.protocol ? rule.protocol : '-1';
+  const from = Number.isInteger(rule.from_port) ? rule.from_port : null;
+  const to = Number.isInteger(rule.to_port) ? rule.to_port : null;
+  const ports = from === null ? '' : (from === to ? `${from}` : `${from}-${to}`);
+  const every = protocol === '-1';
+  const head = every
+    ? '모든 프로토콜'
+    : (ports ? `${protocol} ${ports}` : `${protocol} 전체 포트`);
+  const target = typeof rule.target === 'string' ? rule.target : '';
+  const arrow = rule.direction === 'egress' ? '→' : '←';
+  return { head, tail: target ? `${arrow} ${shortId(target)}` : arrow };
+}
+
+/**
+ * One rule as a whole sentence, for a hover title and the resource panel - where there is room for
+ * the target in full and no reason to shorten an address range to something a reader cannot paste.
+ *
+ *   '인바운드 tcp 443 ← 0.0.0.0/0'      '아웃바운드 모든 프로토콜 → sg-0db (보안 그룹)'
+ */
+export function ruleSentence(rule) {
+  const text = ruleText(rule);
+  if (!text) return '';
+  const way = rule.direction === 'egress' ? '아웃바운드' : '인바운드';
+  const arrow = rule.direction === 'egress' ? '→' : '←';
+  const kind = rule.target_kind === 'security_group' ? ' (보안 그룹)'
+    : rule.target_kind === 'prefix_list' ? ' (접두사 목록)' : '';
+  return `${way} ${text.head} ${arrow} ${rule.target ?? ''}${kind}`.trim();
 }
 
 /** `i-0123456789abcdef0` -> `i-01234…def0`. Whole ids up to 15 characters are kept. */
@@ -241,6 +308,11 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
         zone: zoneOf(r),
         sensitive: !!r.sensitive,
         links,
+        // What this one rule allows, for the plate's two lines. Absent on every other type.
+        rule: r?.rule && typeof r.rule === 'object' ? r.rule : null,
+        // And on a GROUP row, what all of its rules allow - read by the resource panel, which has
+        // room for the list a plate has no room for.
+        rules: Array.isArray(r?.rules) ? r.rules : [],
       });
       if (!byType.has(type)) byType.set(type, []);
       byType.get(type).push(id);
@@ -402,8 +474,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   for (const [, set] of eniOf) for (const e of set) claimed.add(e);
   for (const [v] of attachedTo) claimed.add(v);
 
-  const BAND_TYPES = new Set(['ec2:security-group', 'ec2:route-table', 'ec2:network-acl',
-                              'ec2:vpc-endpoint', 'ec2:internet-gateway', 'ec2:vpc']);
+  const BAND_TYPES = new Set(['ec2:security-group', 'ec2:security-group-rule', 'ec2:route-table',
+                              'ec2:network-acl', 'ec2:vpc-endpoint', 'ec2:internet-gateway',
+                              'ec2:vpc']);
   const placeOf = (n) => {
     if (CONTAINER_TYPES.has(n.resourceType)) return null;          // the container itself
     if (n.resourceType === 'ec2:internet-gateway') return n.vpc ? { edge: n.vpc } : { region: true };
@@ -466,12 +539,19 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     const n = nodes.get(id);
     placedNodes.push({
       id, resourceType: n.resourceType, typeLabel: n.typeLabel, icon: n.icon,
-      label: n.name ? shortName(n.name) : shortId(id),
+      label: ruleText(n.rule)?.head ?? (n.name ? shortName(n.name) : shortId(id)),
       // The zone is worth a line only where nothing around the node says it - the region band. A
       // volume drawn beside its instance is in that instance's zone, and the subnet frame says so.
-      sub: n.name ? shortId(id) : (extra.zoneSub && n.zone ? n.zone : n.typeLabel),
+      //
+      // A RULE says what it allows instead, on both lines: its id names nothing a reader wants and
+      // its Name tag does not exist, while "tcp 443" over "← 0.0.0.0/0" is the whole content of
+      // the resource.
+      sub: ruleText(n.rule)?.tail
+        ?? (n.name ? shortId(id) : (extra.zoneSub && n.zone ? n.zone : n.typeLabel)),
       x, y: yy, w: extra.w ?? NODE_W, h: extra.h ?? NODE_H, sensitive: n.sensitive, arn: n.arn,
       title: `${n.typeLabel} ${id}${n.name ? ` (${n.name})` : ''}` + (n.zone ? ` · ${n.zone}` : '')
+        + (n.rule ? `\n${ruleSentence(n.rule)}` : '')
+        + (n.rules?.length ? `\n${n.rules.map(ruleSentence).join('\n')}` : '')
         + `\n${n.arn}`,
       erase: !!extra.erase,
       // A box rather than a plate: an instance, drawn as a frame with its interfaces inside when
@@ -559,7 +639,10 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     members.sort((a, b) => isInstance(a) - isInstance(b) || a.localeCompare(b));
   }
   // Order inside a VPC band: security groups, route tables, ACLs, endpoints, the rest.
-  const BAND_ORDER = ['ec2:security-group', 'ec2:route-table', 'ec2:network-acl', 'ec2:vpc-endpoint'];
+  // Rules directly after the groups they belong to, so the line from a rule to its group is
+  // short and the two read as one thing.
+  const BAND_ORDER = ['ec2:security-group', 'ec2:security-group-rule', 'ec2:route-table',
+                      'ec2:network-acl', 'ec2:vpc-endpoint'];
   for (const [, members] of bandMembers) {
     members.sort((a, b) => {
       const ai = BAND_ORDER.indexOf(nodes.get(a).resourceType);
@@ -1176,7 +1259,15 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
           addEdge('security', boxedIn.get(n.id), target, relation);
           continue;
         }
-        if (drawn.has(target)) { addEdge(kind, n.id, target, relation); continue; }
+        // The rule row's own reference is not drawn - see RELATIONS.referenced_group - but the
+        // target is real, so it is not counted as dangling either.
+        if (rel.onRuleRow) continue;
+        // A flipped relation points the other way: the link is recorded on the group that ADMITS
+        // the traffic, and the arrow follows the traffic.
+        if (drawn.has(target)) {
+          addEdge(kind, ...(rel.flip ? [target, n.id] : [n.id, target]), relation);
+          continue;
+        }
         if (relation === 'subnet' && containerOf.has(`subnet:${target}`)) {
           addEdge('association', n.id, `subnet:${target}`, relation);
           if (src.resourceType === 'ec2:route-table') {
@@ -1357,6 +1448,7 @@ export const KIND_LABEL = {
   security: '보안 그룹 소속',
   association: '서브넷 연결(라우팅 테이블·ACL·엔드포인트)',
   route: '라우팅 테이블의 경로',
+  chain: '보안 그룹 간 허용(화살표 방향으로)',
   image: 'AMI',
 };
 

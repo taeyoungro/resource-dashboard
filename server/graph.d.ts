@@ -19,9 +19,17 @@ export const EDGE_BUDGET: number;
 export const CARDS_PER_SUBNET: number;
 export const GRAPH_CAPTION: string;
 
-export type EdgeKind = "interface" | "volume" | "security" | "association" | "route" | "image";
+export type EdgeKind =
+  | "interface" | "volume" | "security" | "association" | "route" | "chain" | "image";
 
 export const RELATIONS: Record<string, { kind: EdgeKind; label: string; reverse?: true;
+                                         /** The arrow points from the TARGET to the row that
+                                          *  recorded the link - a group admits traffic FROM
+                                          *  another, and the arrow follows the traffic. */
+                                         flip?: true;
+                                         /** Recorded on a rule row and not drawn: the same fact is
+                                          *  already a line between the two groups. */
+                                         onRuleRow?: true;
                                           implicit?: true; vpcFlag?: true }>;
 export const KIND_LABEL: Record<EdgeKind, string>;
 
@@ -190,3 +198,10 @@ export function relationScene(
   options?: { expanded?: Iterable<string> },
 ): RelationScene | null;
 export function graphSummary(scene: RelationScene | null): string;
+
+/** What a security group rule allows, as the two lines a plate holds: `{ head, tail }`. Null when
+ *  the row carries no rule. */
+export declare function ruleText(rule: unknown): { head: string; tail: string } | null;
+
+/** One rule as a whole sentence, for a hover title and the resource panel. */
+export declare function ruleSentence(rule: unknown): string;

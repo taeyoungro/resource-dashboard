@@ -919,6 +919,18 @@ export interface ImpactGroup {
   resources: ImpactResource[];
 }
 
+/** One security group rule, as impact/inventory.py reads it off DescribeSecurityGroupRules. */
+export interface SecurityGroupRule {
+  direction: "ingress" | "egress";
+  /** AWS's own spelling: 'tcp', 'udp', 'icmp', or '-1' for every protocol. */
+  protocol: string;
+  from_port: number | null;
+  to_port: number | null;
+  /** 'cidr' | 'prefix_list' | 'security_group'. The last is the chain. */
+  target_kind: string;
+  target: string;
+}
+
 export interface ImpactResource {
   arn: string;
   region: string;
@@ -982,6 +994,25 @@ export interface ImpactResource {
    *  (0.0.0.0/0, or ::/0) going to an `igw-` does, and only the pair says which. `state` is
    *  'active' or 'blackhole'; a blackhole route names a target that no longer exists. */
   routes?: { destination: string; target: string; state?: string }[];
+  /**
+   * WHAT A SECURITY GROUP RULE ALLOWS. `rule` is the one rule an `ec2:security-group-rule` row is;
+   * `rules` is every rule of an `ec2:security-group` row. Absent - never null - everywhere else,
+   * and on both types in an assessment made before the querier read them.
+   *
+   * The rules are on the GROUP as well as on their own rows for the reason a subnet carries its
+   * own route table: what a group allows is a fact about the group, and reading it off the rules'
+   * rows would make it depend on whether the policy being assessed happens to reach them.
+   *
+   * `target_kind` is what the target IS, and the picture treats the three differently: 'cidr' and
+   * 'prefix_list' are addresses and belong on the rule's own plate, and 'security_group' is
+   * ANOTHER GROUP - a chain, drawn as a line with an arrow, because traffic is allowed with
+   * whatever carries that group wherever it sits. The direction is `direction`, and the group row
+   * carries the same fact as links.allows_from / links.allows_to.
+   *
+   * Ports are null for a protocol that has none ('-1', icmp) and for "every port".
+   */
+  rule?: SecurityGroupRule;
+  rules?: SecurityGroupRule[];
   /** A SUBNET'S ROUTE TABLE - its explicit association, else the VPC's main table - and that
    *  table's DEFAULT routes. Written only on `ec2:subnet` rows.
    *
