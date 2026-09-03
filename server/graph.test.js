@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 
 import {
   CARDS_PER_SUBNET, EDGE_BUDGET, GRAPH_CAPTION, GRAPH_W, NODE_BUDGET, RELATIONS,
-  graphSummary, idOf, relationScene, shortId, shortName,
+  graphSummary, idOf, relationScene, ruleSentence, ruleText, shortId, shortName,
 } from './graph.js';
 
 const A = '718100330247';
@@ -301,7 +301,8 @@ test('every edge joins two drawn things, or is counted as dangling - never inven
   assert.equal(cut.edges.length, 0);
   assert.ok(cut.foot.some((l) => /그림 밖으로 나가는 연결 2개/.test(l.text)));
 });
-const RELATIONS_KINDS = { interface: 1, volume: 1, security: 1, association: 1, route: 1, image: 1 };
+const RELATIONS_KINDS = { interface: 1, volume: 1, security: 1, association: 1, route: 1,
+                          chain: 1, image: 1 };
 
 test('the same fact seen from both ends is one line, or one border', () => {
   // The instance records its volumes and the volume records its instance: two Describes, one
@@ -908,4 +909,75 @@ test('the public band runs across every zone, above the private band', () => {
     assert.equal(held.length, 2, `${zone.id} does not hold exactly its own two subnets`);
     assert.equal(new Set(held.map((b) => b.id.split('-')[1])).size, 1, 'a zone holds another zone\'s subnet');
   }
+});
+
+
+// ---- what a security group allows, and the chain between two groups ----------------------------
+//
+// The defect these are about: the picture drew a security group as a box with nothing in it and a
+// rule as a plate attached to nothing, because the querier read neither the values nor the group a
+// rule belongs to. A reader could see THAT a group was reached and never what it allows.
+
+const SG_VPC = { vpc_id: 'vpc-0a1' };
+const WEB_RULES = [
+  { direction: 'ingress', protocol: 'tcp', from_port: 443, to_port: 443,
+    target_kind: 'cidr', target: '0.0.0.0/0' },
+  { direction: 'egress', protocol: '-1', from_port: null, to_port: null,
+    target_kind: 'security_group', target: 'sg-db' },
+];
+const SG_ACCOUNT = () => [
+  g('ec2:vpc', [row('vpc', 'vpc-0a1', SG_VPC)]),
+  g('ec2:security-group', [
+    row('security-group', 'sg-web', { ...SG_VPC, rules: WEB_RULES,
+                                      links: { allows_to: ['sg-db'] } }),
+    row('security-group', 'sg-db', { ...SG_VPC,
+                                     rules: [{ direction: 'ingress', protocol: 'tcp',
+                                               from_port: 3306, to_port: 3306,
+                                               target_kind: 'security_group', target: 'sg-web' }],
+                                     links: { allows_from: ['sg-web'] } }),
+  ]),
+  g('ec2:security-group-rule', [
+    row('security-group-rule', 'sgr-0in', { ...SG_VPC, rule: WEB_RULES[0],
+                                            links: { security_group: ['sg-web'] } }),
+  ]),
+];
+
+test('a rule plate says what it allows, not what it is called', () => {
+  const scene = sceneOf(SG_ACCOUNT());
+  const plate = scene.nodes.find((n) => n.id === 'sgr-0in');
+  assert.ok(plate, 'the rule was not drawn');
+  // The two lines a reader came for: the protocol and ports, then the direction and the target.
+  // Its id names nothing and it has no Name tag, so both lines would otherwise be wasted.
+  assert.equal(plate.label, 'tcp 443');
+  assert.equal(plate.sub, '← 0.0.0.0/0');
+  assert.match(plate.title, /인바운드 tcp 443 ← 0\.0\.0\.0\/0/);
+  // And it is joined to the group it belongs to, which is what makes it a rule OF something.
+  const toGroup = scene.edges.filter(
+    (e) => [e.from, e.to].sort().join() === ['sg-web', 'sgr-0in'].sort().join());
+  assert.equal(toGroup.length, 1);
+  assert.equal(toGroup[0].kind, 'security');
+});
+
+test('the chain between two groups is one line per direction, pointing the way traffic goes', () => {
+  const scene = sceneOf(SG_ACCOUNT());
+  const chain = scene.edges.filter((e) => e.kind === 'chain');
+  assert.equal(chain.length, 1, 'the two ends of one chain drew two lines');
+  // sg-web's egress names sg-db, and sg-db's ingress names sg-web: the SAME permission from both
+  // sides, and both say traffic goes web -> db. An undirected line would say neither.
+  assert.equal(chain[0].from, 'sg-web');
+  assert.equal(chain[0].to, 'sg-db');
+  // The group's own plate keeps its name; the rules are in the panel and the hover title.
+  const web = scene.nodes.find((n) => n.id === 'sg-web');
+  assert.match(web.title, /아웃바운드 모든 프로토콜 → sg-db \(보안 그룹\)/);
+});
+
+test('a rule reading is null where there is no rule, and never a protocol named -1', () => {
+  assert.equal(ruleText(null), null);
+  assert.equal(ruleText({}).head, '모든 프로토콜');
+  assert.equal(ruleText({ protocol: 'tcp', from_port: 80, to_port: 443 }).head, 'tcp 80-443');
+  assert.equal(ruleText({ protocol: 'tcp' }).head, 'tcp 전체 포트');
+  assert.equal(ruleText({ direction: 'egress', target: 'sg-0db' }).tail, '→ sg-0db');
+  assert.equal(ruleSentence({ direction: 'ingress', protocol: 'tcp', from_port: 22, to_port: 22,
+                              target_kind: 'cidr', target: '10.0.0.0/8' }),
+               '인바운드 tcp 22 ← 10.0.0.0/8');
 });

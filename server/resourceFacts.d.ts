@@ -56,6 +56,22 @@ export interface ResourceFacts {
   worstGrade: Grade | null;
   /** A route table's routes: (destination, target, state). Empty for every other type. */
   routes: { destination: string; target: string; state: string }[];
+  /**
+   * What a security group allows - one entry per rule, and on a RULE row the one rule it is.
+   * Empty for every other type.
+   *
+   * `target_kind` is 'cidr', 'prefix_list' or 'security_group', and the last is the chain: the
+   * traffic is allowed with whatever carries THAT group, wherever it sits, which is a relation
+   * between two resources rather than an address.
+   */
+  rules: {
+    direction: "ingress" | "egress";
+    protocol: string;
+    from_port: number | null;
+    to_port: number | null;
+    target_kind: string;
+    target: string;
+  }[];
 }
 
 export function reachOf(

@@ -2024,7 +2024,13 @@ test('the window is as wide as the screen allows', () => {
 test('the relationship picture says what a line is and what a missing line is not', () => {
   assert.ok(TOPOLOGY.includes('조회기가 자원마다 읽은 연결'), 'nothing says the lines were read off the resources');
   assert.ok(TOPOLOGY.includes('선이 없다고 연결이 없다는 뜻은 아니다'), 'a missing line is not declared non-evidence');
-  assert.ok(TOPOLOGY.includes('보안 그룹 선은 규칙이 아니라 소속이다'), 'a group line could be read as a rule');
+  // TWO sentences now, because there are two lines and they mean opposite kinds of thing: the
+  // instance-to-group line is membership, and the group-to-group arrow IS a rule - the direction
+  // a rule allows traffic in. Reading either as the other is the misreading this pins against.
+  assert.ok(TOPOLOGY.includes('보안 그룹으로 가는 선은 소속이고'),
+            'a membership line could be read as a rule');
+  assert.ok(TOPOLOGY.includes('규칙이 허용하는 방향이지 오간 트래픽을 본 것이 아니다'),
+            'the chain arrow could be read as observed traffic');
   assert.ok(TOPOLOGY.includes('자원이 자기 자리라고 답한 VPC·가용 영역·서브넷'),
             'the borders are not said to be what the resource answered');
   // Above the figure, as the type picture's caveat is.
@@ -2040,9 +2046,15 @@ test('the legend draws each kind of line with the class the picture uses, and ev
             "the legend swatch is not the picture's own class, so the two can drift");
   assert.ok(TOPOLOGY.includes('graph-edge-implicit'), 'a derived line is drawn like a recorded one');
   assert.match(CSS, /\.graph-edge-implicit\s*\{[^}]*stroke-dasharray/, 'a derived line is not dashed');
-  // Only a route has a direction; an arrowhead on a membership line would claim one.
-  assert.ok(TOPOLOGY.includes('edge.kind === "route" ? `url(#${uid}-ga)` : undefined'),
+  // TWO kinds have a direction - a route points at its gateway, a security group chain points the
+  // way traffic is allowed to go - and only those two carry an arrowhead. One on a membership line
+  // would claim a direction the fact does not have.
+  assert.ok(TOPOLOGY.includes('const DIRECTED_EDGES = new Set(["route", "chain"]);'),
+            'the directed kinds are not stated in one place');
+  assert.ok(TOPOLOGY.includes('markerEnd={directed ?'),
             'an arrowhead landed on an undirected line');
+  // And the chain's head is its own, because a marker takes the colour of where it is defined.
+  assert.match(CSS, /\.graph-chain-marker\s*\{[^}]*fill/, 'the chain arrowhead has no colour');
 });
 
 test('a line cannot be mistaken for a line from the plate it passes under', () => {

@@ -45,7 +45,8 @@ import {
 import type {
   EdgeKind, GraphContainer, GraphEdge, GraphNode, GraphOverflow, GraphType, RelationScene,
 } from "../../server/graph.js";
-import { G_ICON, KIND_LABEL, graphSummary, relationScene } from "../../server/graph.js";
+import { G_ICON, KIND_LABEL, graphSummary, relationScene, ruleText }
+  from "../../server/graph.js";
 import type { FindingCard, ResourceFacts } from "../../server/resourceFacts.js";
 import { LEVEL_LABEL, gradesByResource, resourceFacts } from "../../server/resourceFacts.js";
 import { CATEGORY_LABEL, GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
@@ -432,28 +433,36 @@ function GraphOverflowShape({ plate }: { plate: GraphOverflow }) {
 
 /**
  * One connection. The engine's polyline, coloured by kind, dashed when the engine derived it
- * rather than read it, and with an arrowhead only on a route - the one kind that has a direction
- * (a route points at its gateway). Membership and attachment have none, and an arrowhead on them
- * would claim one.
+ * rather than read it, and with an arrowhead on the two kinds that HAVE a direction: a route
+ * points at its gateway, and a security group chain points the way the traffic is allowed to go.
+ * Membership and attachment have no direction, and an arrowhead on them would claim one.
+ *
+ * The chain's direction is not decoration. `allows_from` and `allows_to` are opposite facts about
+ * the same pair of groups - one admits traffic from the other, the other sends traffic to it - and
+ * a line without a head would read as "these two groups are related", which is the one thing an
+ * approver cannot act on.
  *
  * A ring on each end. Lines are painted under the plates, so a line can vanish under a plate it
  * does not end at and reappear on the far side; the rings are what says where it really stops.
- * The route's far end has the arrowhead instead.
+ * A directed line's far end has the arrowhead instead.
  */
+const DIRECTED_EDGES = new Set(["route", "chain"]);
+
 function GraphEdgeShape({ edge, uid }: { edge: GraphEdge; uid: string }) {
   const kind = `graph-edge graph-edge-${edge.kind}`;
   const cls = `${kind}${edge.implicit ? " graph-edge-implicit" : ""}`;
+  const directed = DIRECTED_EDGES.has(edge.kind);
   return (
     <g>
       <polyline
         className={cls}
         points={edge.points.map((p) => `${p.x},${p.y}`).join(" ")}
-        markerEnd={edge.kind === "route" ? `url(#${uid}-ga)` : undefined}
+        markerEnd={directed ? `url(#${uid}-${edge.kind === "chain" ? "ca" : "ga"})` : undefined}
       >
         <title>{edge.title}</title>
       </polyline>
       <circle className={`${kind} graph-edge-end`} cx={edge.x1} cy={edge.y1} r={2.5} />
-      {edge.kind !== "route" && (
+      {!directed && (
         <circle className={`${kind} graph-edge-end`} cx={edge.x2} cy={edge.y2} r={2.5} />
       )}
     </g>
@@ -492,6 +501,13 @@ function GraphFigure({ scene, name, title, uid, onToggle, onSelect, selected, ma
         <marker id={`${uid}-ga`} viewBox="0 0 8 8" refX="8" refY="4"
                 markerWidth="5" markerHeight="5" orient="auto">
           <path className="graph-edge-marker" d="M 0 0 L 8 4 L 0 8 z" />
+        </marker>
+        {/* The chain's own head, because a marker takes its colour from where it is DEFINED and
+            not from the line that references it. One shared head would paint the security-group
+            chain in the route colour, and the two lines mean opposite kinds of thing. */}
+        <marker id={`${uid}-ca`} viewBox="0 0 8 8" refX="8" refY="4"
+                markerWidth="5" markerHeight="5" orient="auto">
+          <path className="graph-chain-marker" d="M 0 0 L 8 4 L 0 8 z" />
         </marker>
       </defs>
       <rect className="topo-ground" x={0} y={0} width={scene.width} height={scene.height} />
@@ -638,6 +654,53 @@ function ResourcePanel({ facts, ran, onClose, onOpenFinding }: {
             <strong>기본 경로(0.0.0.0/0 · ::/0)가 <code>igw-</code>로 가면</strong> 이 표에 연결된
             서브넷이 퍼블릭이다. 좁은 대역만 게이트웨이로 가는 표는 퍼블릭이 아니고,{" "}
             <code>eigw-</code>는 IPv6 송신 전용이라 퍼블릭이 아니다.
+          </p>
+        </>
+      )}
+
+      {/* What a security group ALLOWS - on the group and on a rule row alike. For these two types
+          the rules ARE what the reader came to check: an approver looking at a group is asking
+          "what may reach what carries this", and the answer is the protocol, the ports and the
+          target, with the direction. A target that is another GROUP is the chain, and it is
+          marked as one because it is a relation and not an address - the picture draws it as a
+          line with an arrow. */}
+      {(facts.resourceType === "ec2:security-group"
+        || facts.resourceType === "ec2:security-group-rule") && (
+        <>
+          <h6>규칙 {facts.rules.length}개</h6>
+          {facts.rules.length === 0 ? (
+            <p className="muted small">
+              이 평가에는 이 그룹의 규칙이 없다 — 조회기가 규칙을 기록하기 전에 만들어진
+              평가이거나, 규칙이 하나도 없는 그룹이다. 다시 조회하면 갈린다.
+            </p>
+          ) : (
+            <table className="panel-routes">
+              <thead><tr><th>방향</th><th>프로토콜·포트</th><th>대상</th></tr></thead>
+              <tbody>
+                {facts.rules.map((r) => {
+                  const text = ruleText(r);
+                  const chain = r.target_kind === "security_group";
+                  const open = r.target === "0.0.0.0/0" || r.target === "::/0";
+                  return (
+                    <tr key={`${r.direction}|${r.protocol}|${r.from_port}|${r.target}`}
+                        className={open ? "panel-route-default" : undefined}>
+                      <td>{r.direction === "egress" ? "아웃바운드" : "인바운드"}</td>
+                      <td>{text?.head}</td>
+                      <td>
+                        <code>{r.target}</code>
+                        {chain && <span className="muted"> 보안 그룹</span>}
+                        {open && <span className="sensitive"> 모든 주소</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          <p className="muted small">
+            대상이 <strong>보안 그룹</strong>이면 주소가 아니라 <strong>체인</strong>이다 — 그
+            그룹을 단 자원이 어디에 있든 허용된다. 구성도에서는 화살표가 트래픽이 가는 쪽을
+            가리킨다.
           </p>
         </>
       )}
@@ -1236,11 +1299,14 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                 이 그림은 자원 하나를 판 하나로 그리고,{" "}
                 <strong>조회기가 자원마다 읽은 연결</strong>을 선으로 잇는다 — 인스턴스에 붙은
                 네트워크 인터페이스·볼륨·보안 그룹·AMI, 서브넷에 붙은 라우팅 테이블과 네트워크 ACL과
-                엔드포인트, 라우팅 테이블의 경로가 가리키는 게이트웨이. 테두리는{" "}
+                엔드포인트, 라우팅 테이블의 경로가 가리키는 게이트웨이, 보안 그룹 규칙과 그 규칙이
+                속한 그룹. 테두리는{" "}
                 <strong>자원이 자기 자리라고 답한 VPC·가용 영역·서브넷</strong>이다.{" "}
                 선이 없다고 연결이 없다는 뜻은 아니다 — 조회기는 위의 연결만 읽고, 상대가 이 평가에
-                없는 연결은 그림 밖으로 나간 것으로 센다. 무엇이 무엇과 통신하는지는 여전히 답하지
-                않는다 — 보안 그룹 선은 규칙이 아니라 소속이다.
+                없는 연결은 그림 밖으로 나간 것으로 센다.{" "}
+                <strong>무엇이 무엇과 통신하는지는 여전히 답하지 않는다</strong> — 인스턴스에서
+                보안 그룹으로 가는 선은 소속이고, 그룹과 그룹 사이의 <strong>화살표</strong>는
+                규칙이 허용하는 방향이지 오간 트래픽을 본 것이 아니다.
               </p>
             )}
             {view === "types" && scene && spec && (
@@ -1445,6 +1511,15 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   <li>
                     <strong>화살표</strong> — 라우팅 테이블의 경로가 가리키는 게이트웨이다. 경로표의
                     대상이지 트래픽을 확인한 것이 아니다.
+                  </li>
+                )}
+                {graph.edges.some((e) => e.kind === "chain") && (
+                  <li>
+                    <strong>보안 그룹 사이의 화살표</strong> — 한쪽 그룹의 규칙이 상대 그룹을
+                    지목한 것이고, 화살표는 <strong>허용된 방향</strong>을 가리킨다. 인바운드 규칙은
+                    지목한 그룹에서 이쪽으로, 아웃바운드 규칙은 이쪽에서 저쪽으로. 주소가 아니라
+                    그룹이 대상이므로 그 그룹을 단 자원이 어디에 있든 허용된다 — 규칙 값은 판을
+                    누르면 옆에 표로 나온다.
                   </li>
                 )}
                 <li>
