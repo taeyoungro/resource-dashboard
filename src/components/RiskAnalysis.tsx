@@ -98,8 +98,21 @@ interface Props {
   assessment: ImpactAssessment | null;
   restrictions: Restriction[];
   onRestrictions: (next: Restriction[]) => void;
-  /** Decisions are closed - the plan is decided or a decision is in flight. Buttons only. */
-  restrictDisabled: boolean;
+  /**
+   * WHY a restriction cannot be composed right now, as a sentence - or null when it can.
+   *
+   * A reason and not a boolean, because the screen has to print it. This was `restrictDisabled`,
+   * and a card whose 차단 button it withheld simply had no 차단 row: three different states - a
+   * decision in flight, a decided plan, and standing restrictions nobody can read - collapsed into
+   * one silent gap, and a reader looking for the button could not tell which of them it was or
+   * whether the button had ever been there. PlanDetail is the only place that knows which, so the
+   * sentence is composed there and carried here.
+   *
+   * Every state it covers is one in which a composed restriction would NOT reach the writer - see
+   * `decidable` in PlanDetail, which is the same condition read from the decision's side. So the
+   * answer is never "offer the button anyway"; it is "say why it is not there".
+   */
+  restrictBlocked: string | null;
 }
 
 /** What one scope's analysis needs on top of the shared props. */
@@ -475,8 +488,8 @@ const CONTAINMENT: Record<ContainmentState, { label: string; className: string; 
  * an approver has to reconcile: the summary line in the diagram's panel is deliberately a summary,
  * and what it opens has to be THIS, not a second rendering that agrees with it today.
  */
-export function RiskFindingCard({ finding, block, containment, resourceOf, accountId,
-                                  showAxis = false, defaultOpen = false }: {
+export function RiskFindingCard({ finding, block, blockWhy = null, containment, resourceOf,
+                                  accountId, showAxis = false, defaultOpen = false }: {
   finding: Finding;
   /** The assessment's own record for an ARN, so a target row reads as it does on the impact panel. */
   resourceOf: ResourceLookup;
@@ -490,6 +503,16 @@ export function RiskFindingCard({ finding, block, containment, resourceOf, accou
    * whose policy the assessment cannot restrict, or a decision already closed.
    */
   block: { open: () => void; applied: string[] } | null;
+  /**
+   * Why there is no 차단 button, printed where the button would be. Null when there is one, and
+   * null for a finding whose 차단 불가 badge already carries the reason.
+   *
+   * The row is drawn either way. An absent control that is absent for a reason has to say the
+   * reason - the same rule the filter bar follows when a dimension falls below the coverage floor,
+   * and for the same cause: silence reads as "this screen does not do that" rather than as "not
+   * right now, and here is what would change it".
+   */
+  blockWhy?: string | null;
   /** Name the area outright, for cards shown outside one - the 평가 불가 group spans both. */
   showAxis?: boolean;
   /**
@@ -602,7 +625,7 @@ export function RiskFindingCard({ finding, block, containment, resourceOf, accou
         <span><code>{policyName(finding.policyName)}</code></span>
       </div>
 
-      {block && (
+      {block ? (
         <div className="finding-row block-row">
           <span className="finding-label">차단</span>
           <span>
@@ -615,7 +638,14 @@ export function RiskFindingCard({ finding, block, containment, resourceOf, accou
             )}
           </span>
         </div>
-      )}
+      ) : blockWhy ? (
+        <div className="finding-row block-row">
+          <span className="finding-label">차단</span>
+          <span className="muted small">
+            <strong>지금은 이 경로를 차단할 수 없습니다.</strong> {blockWhy}
+          </span>
+        </div>
+      ) : null}
 
       {model && (
         <>
@@ -793,7 +823,7 @@ const POLL_MS = 3000;
  */
 function RiskScope({
   planId, policy, onAnalysis, onFindings, assessment, restrictions, onRestrictions,
-  restrictDisabled,
+  restrictBlocked,
 }: ScopeProps) {
   const [answer, setAnswer] = useState<RiskAnalysisAnswer | null>(null);
   // Independent toggles, one per button, and never unset by the other - "both pressed" is a state
@@ -1010,17 +1040,44 @@ function RiskScope({
   /**
    * Whether this card gets a 차단 button, and what it says afterwards.
    *
-   * No button rather than a dead one when the path cannot be cut by a restriction at all
-   * (finding.restrictable false - the card already carries the 차단 불가 badge and the reason),
-   * when the assessment does not hold the policy as restrictable, or when the decision is closed.
+   * No button rather than a dead one: every branch below is a state in which a composed restriction
+   * would not reach the writer, so offering the control would be offering one whose submission is
+   * discarded or refused. What changed is that the row no longer VANISHES - blockWhy carries the
+   * reason and the card prints it where the button would be. The gap was identical for all three
+   * causes, which is how "the button is gone" became a report nobody could act on.
    */
   const blockProps = (finding: Finding) => {
-    if (restrictDisabled || !finding.restrictable) return null;
+    if (restrictBlocked || !finding.restrictable) return null;
     if (!policyOf(finding)) return null;
     return {
       open: () => setBlocking(finding),
       applied: alreadyRestricted(finding, restrictions),
     };
+  };
+
+  /**
+   * Why this card has no 차단 button, or null when it has one - and null too for a finding the
+   * 차단 불가 badge already explains, which carries the reason in its own title.
+   *
+   * The per-card reasons come first. They are permanent facts about the policy the finding names,
+   * and a reader told 「결정이 진행 중입니다」 about a baseline policy would wait for something that
+   * will never change the answer.
+   */
+  const blockWhy = (finding: Finding): string | null => {
+    if (!finding.restrictable) return null;
+    const held = assessment?.policies.find((p) => p.identifier === finding.policyName) ?? null;
+    if (!held) {
+      return '이 평가에는 이 정책이 없습니다 — 다른 검사의 분석 결과입니다. 다시 조회하면 이 카드도 '
+        + '다시 판정됩니다.';
+    }
+    if (held.is_baseline) {
+      return '기반 정책입니다. 요청 이전부터 붙어 있던 것이라 이 결정으로 제한하지 않습니다.';
+    }
+    if (held.unreadable) {
+      return '이 정책의 문서를 읽지 못했습니다. 무엇을 허용하는지 대조할 수 없어 제한을 쓰지 않습니다.';
+    }
+    if (!held.restrictable) return '이 평가가 제한할 수 있는 정책이 아닙니다.';
+    return restrictBlocked;
   };
 
   /**
@@ -1159,7 +1216,7 @@ function RiskScope({
                       </h5>
                       {items.map((f) => (
                         <RiskFindingCard key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`}
-                                         finding={f} block={blockProps(f)}
+                                         finding={f} block={blockProps(f)} blockWhy={blockWhy(f)}
                                          containment={containmentOf(f)}
                                          resourceOf={resourceOf} accountId={accountId} />
                       ))}
@@ -1181,7 +1238,7 @@ function RiskScope({
               </h4>
               {unassessable.map((f) => (
                 <RiskFindingCard key={`${f.policyId}:${f.id}:${f.source ?? "rule"}`}
-                                 finding={f} block={blockProps(f)}
+                                 finding={f} block={blockProps(f)} blockWhy={blockWhy(f)}
                                  containment={containmentOf(f)}
                                  resourceOf={resourceOf} accountId={accountId} showAxis />
               ))}

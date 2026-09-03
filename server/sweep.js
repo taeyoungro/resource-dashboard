@@ -265,6 +265,49 @@ export function nothingRestricted(assessment) {
   return Array.isArray(current) && current.length === 0;
 }
 
+/**
+ * WHY nothing can say what is standing, when nothing can. Null when something can.
+ *
+ * 무엇인가   제한 편집이 닫혀 있는 이유 한 문장. 네 가지가 있고 승인자가 할 일이 저마다 다르다
+ * 어디 있나  계획 상세 응답의 restrictions_unknown_why. 저장되지 않는다 - 응답마다 계산한다
+ * 누가 쓰나  이 함수 하나
+ * 누가 읽나  계획 상세의 안내 상자와, 위험 카드의 「차단」 줄
+ *
+ * The four collapsed into one `null` and the screen printed one sentence over all of them. They
+ * are not one thing: one clears itself when the running inspection lands, one never clears on this
+ * plan at all, one clears the first time the writer runs, and one clears on a re-query. An approver
+ * told only 「확인할 수 없습니다」 has no way to know which, and the risk cards - which lost every
+ * 차단 button to the same null - said nothing at all.
+ *
+ * `hasDigest` rather than the digest itself: this asks whether a restriction composed here could be
+ * submitted, and the digest's VALUE is no business of this function.
+ */
+export function unknownInForceWhy(assessment, hasDigest) {
+  if (!assessment) {
+    return '이 계획에는 영향도 평가가 없습니다. 제한은 자원을 지목하고, 그 이름을 대조할 근거가 '
+      + '평가뿐입니다.';
+  }
+  if (!hasDigest) {
+    return '지금 보고 있는 것은 앞선 검사의 평가입니다. 제한은 승인자가 읽은 평가에 대조해서 '
+      + '검증되므로 이 평가로는 작성할 수 없습니다 — 지금 도는 검사가 끝나면 열립니다.';
+  }
+  const name = assessment.permission_set_name;
+  if (typeof name !== 'string' || !name.trim()) {
+    return '이 계획에는 인라인 정책을 쓸 대상이 없습니다. 권한 세트 계획이 아니라서 조회기가 인라인 '
+      + '문서를 읽지 않았고, 적용기도 제한을 보낼 곳이 없습니다.';
+  }
+  const current = assessment.current_admin_deny;
+  if (!Array.isArray(current)) {
+    return '이 평가는 지금 걸려 있는 제한을 기록하기 전에 만들어졌습니다. 다시 조회하면 열립니다.';
+  }
+  if (current.length > 0) {
+    return `이 권한 세트의 인라인 정책에 이미 AdminDeny 문장이 ${current.length}건 걸려 있는데, `
+      + '어느 결정이 그것을 만들었는지 기록이 없습니다. 승인은 그 가족 전체를 고른 것으로 '
+      + '교체하므로, 지금 고르면 보이지 않는 기존 제한이 함께 지워집니다.';
+  }
+  return null;
+}
+
 /** One line per resource the plan changes, from the machine-readable rendering. */
 export function changesFromPlan(planJson) {
   const changes = [];

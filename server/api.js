@@ -20,7 +20,8 @@ import { getBytes, getBucketPolicy, listBuckets, putBytes, putJson } from './s3.
 import { openStatements, parsePolicy, readPolicy, sameAccountOf } from './bucketPolicy.js';
 import { governedPrincipals } from './governedPrincipals.js';
 import { ImpactError, parse as parseImpact } from './impacts.js';
-import { nothingRestricted, planPrefixFromId, readImpact, readPlan, reclassify } from './sweep.js';
+import { nothingRestricted, planPrefixFromId, readImpact, readPlan, reclassify,
+         unknownInForceWhy } from './sweep.js';
 import { controlPlane } from './controlPlane.js';
 import { condense, digestBytes } from './riskDigest.js';
 import { candidates as proposeCandidates } from './candidatePaths.js';
@@ -810,11 +811,16 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // digest), so opening the editor on it would offer a form whose submission is refused.
       const inForce = plan.restrictions_in_force
         ?? (digest && nothingRestricted(assessment) ? [] : null);
+      // And WHICH of the four reasons it is, when it is null. The page prints one sentence per
+      // reason - in the notice above the editor and on every risk card that lost its 차단 button
+      // to the same null - because what an approver has to do about it differs for each.
+      const inForceWhy = inForce === null ? unknownInForceWhy(assessment, !!digest) : null;
 
       // The digest the page has to send back with a restriction. Not computed here - see readImpact.
       return {
         ...plan,
         restrictions_in_force: inForce,
+        restrictions_unknown_why: inForceWhy,
         assessment,
         assessment_source: source,
         assessment_sha256: digest,

@@ -319,6 +319,17 @@ export interface PlanDetail {
    */
   restrictions_in_force: Restriction[] | null;
   /**
+   * WHY nobody can say what is standing, when the field above is null. Null when it is not.
+   *
+   * Four reasons collapse into that one null and an approver has to do a different thing about
+   * each: wait for the running inspection, re-query, let the writer run once, or nothing at all
+   * because this plan has no inline target. The screen printed one sentence over all four, and the
+   * risk cards - which lose every 차단 button to the same null - printed none.
+   *
+   * Composed per response by unknownInForceWhy in server/sweep.js; never stored.
+   */
+  restrictions_unknown_why: string | null;
+  /**
    * Why the last inspection of this resource produced no plan, when it produced none.
    *
    * Read from the prefix as this page opens rather than carried from the sweep's row: the sweep

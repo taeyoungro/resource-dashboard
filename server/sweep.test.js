@@ -15,6 +15,7 @@ import {
   planIdFromKey, reclassify,
   requestersFromConfig,
   nothingRestricted, permissionSetFromConfig, planPrefixFromId, readPlan, restrictionsInForce,
+  unknownInForceWhy,
   requestIdFromMarkerKey, sweep, unavailableFromConfig, writerVerification,
 } from './sweep.js';
 
@@ -1748,4 +1749,43 @@ test('the assessment answers what the writer has no record of', () => {
   assert.equal(nothingRestricted({ ...ps }), false, 'an assessment from before the field existed');
   assert.equal(nothingRestricted({ ...ps, current_admin_deny: null }), false);
   assert.equal(nothingRestricted(null), false, 'no assessment at all');
+});
+
+
+test('a closed editor says WHICH of the four reasons closed it', () => {
+  // The defect, as a user met it: 「모든 위험 카드에서 이 경로 차단 버튼이 사라졌다」. Four states
+  // answer null above and the screen printed one sentence over all of them - the one about the
+  // writer never having run, which is true of exactly one. The risk cards, which lose every 차단
+  // button to the same null, printed nothing at all.
+  //
+  // They are four different things to do: wait for the running inspection, re-query, let the
+  // writer run once, or nothing because this plan has no inline target.
+  const ps = { permission_set_name: '644701781058-alice' };
+
+  // Nothing at all to compose against.
+  assert.match(unknownInForceWhy(null, false), /영향도 평가가 없습니다/);
+
+  // An earlier inspection's assessment. It carries no digest, so the decision route would refuse a
+  // restriction composed from it - and this clears itself when the running inspection lands.
+  assert.match(unknownInForceWhy({ ...ps, current_admin_deny: [] }, false), /앞선 검사의 평가/);
+
+  // A mirror plan: no permission set, so no inline document to write into. This one never clears.
+  assert.match(unknownInForceWhy({ current_admin_deny: [] }, true), /인라인 정책을 쓸 대상이 없습니다/);
+
+  // An assessment from before the querier recorded the standing family. A re-query clears it.
+  assert.match(unknownInForceWhy({ ...ps }, true), /다시 조회하면/);
+  assert.match(unknownInForceWhy({ ...ps, current_admin_deny: null }, true), /다시 조회하면/);
+
+  // Statements stand and no record says which decisions made them - the case the closed editor was
+  // built for. The count is named, because "some" and "eleven" are different news.
+  const standing = unknownInForceWhy(
+    { ...ps, current_admin_deny: [{ Sid: 'AdminDeny1' }, { Sid: 'AdminDeny2' }] }, true,
+  );
+  assert.match(standing, /AdminDeny 문장이 2건/);
+  assert.match(standing, /보이지 않는 기존 제한이 함께 지워집니다/);
+
+  // And null exactly when nothingRestricted says the empty form is the truth, so the two never
+  // disagree about whether the editor opens.
+  assert.equal(unknownInForceWhy({ ...ps, current_admin_deny: [] }, true), null);
+  assert.equal(nothingRestricted({ ...ps, current_admin_deny: [] }), true);
 });
