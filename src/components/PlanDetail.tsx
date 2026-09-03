@@ -676,6 +676,31 @@ export function PlanDetail({
   // or the last run could not say - and a decision composed against that would drop what it cannot
   // see. The form is shown read-only and the button refuses; see the notice below.
   const inForceUnknown = detail.restrictions_in_force === null;
+  /**
+   * Why a restriction cannot be composed on this plan right now, as a sentence - or null when it
+   * can. The risk cards print it where the 차단 button would be.
+   *
+   * A SENTENCE and not the boolean it used to be. The three states below are one boolean by the
+   * time they reach the analysis panel, and that panel then withheld the 차단 button on every card
+   * with nothing anywhere saying which of them it was - the button had simply vanished. They are
+   * three different things to know: one passes on its own, one never passes, and one is fixed by
+   * an inline writer run.
+   *
+   * This is the same condition as `decidable` in submit() below, read from the other side: exactly
+   * when this is non-null, an approval sends `active = null` and whatever the form holds is
+   * carried no further. So the sentence is the truth about what the button would do, not an
+   * apology for a control somebody could have offered.
+   */
+  const restrictBlocked = busy
+    ? '이 계획에 대한 결정을 보내는 중입니다. 끝나면 다시 고를 수 있습니다.'
+    : decided
+      ? '이미 결정이 끝난 계획입니다. 제한은 결정과 함께 쓰이므로 이 계획에는 더 쓸 수 없습니다.'
+      : inForceUnknown
+        // The server's own reason, which says WHICH of the four it is - and so what would change
+        // it. The fallback is for a response written before that field existed.
+        ? (detail.restrictions_unknown_why
+          ?? '지금 이 권한 세트에 걸려 있는 제한을 확인할 수 없습니다.')
+        : null;
   const [analysis, setAnalysis] = useState<RiskAnalysisCitation | null>(null);
   /**
    * The findings themselves, by the scope that produced them, so the resource diagram in the
@@ -865,9 +890,14 @@ export function PlanDetail({
               that is the difference this notice exists to keep true. */}
           {inForceUnknown && (
             <div className="notice">
-              <strong>지금 걸려 있는 제한을 확인할 수 없어 제한 편집을 닫았습니다.</strong> 이
-              권한 세트에 대해 인라인 작성기가 아직 돌지 않았거나, 마지막 실행이 무엇이 걸렸는지
-              기록하지 못했습니다. 이 상태에서 제한을 고르면 <strong>화면에 보이지 않는 기존
+              <strong>지금 걸려 있는 제한을 확인할 수 없어 제한 편집을 닫았습니다.</strong>{" "}
+              {/* The reason, from the server, because there are four of them and they are fixed by
+                  four different things. This box used to name only one of them - "the writer has
+                  not run" - which is a true sentence about one case and a wrong one about the
+                  other three, and the risk cards below said nothing at all. */}
+              {detail.restrictions_unknown_why
+                ?? "이 권한 세트에 대해 인라인 작성기가 아직 돌지 않았거나, 마지막 실행이 무엇이 걸렸는지 기록하지 못했습니다."}
+              {" "}이 상태에서 제한을 고르면 <strong>화면에 보이지 않는 기존
               제한이 함께 지워집니다</strong> — 승인은 그 가족 전체를 고른 것으로 교체하기
               때문입니다. 제한 없이 승인하는 것은 안전합니다. 기존 제한은 그대로 이월됩니다.
             </div>
@@ -910,7 +940,7 @@ export function PlanDetail({
         assessment={detail.assessment ?? null}
         restrictions={restrictions}
         onRestrictions={setRestrictions}
-        restrictDisabled={busy || decided || inForceUnknown}
+        restrictBlocked={restrictBlocked}
       />
       )}
 

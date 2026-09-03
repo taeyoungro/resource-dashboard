@@ -802,7 +802,7 @@ test('a finding card offers 차단, and only where a restriction can actually la
   // decision already closed.
   const gateStart = PANEL.indexOf('const blockProps =');
   const gate = PANEL.slice(gateStart, PANEL.indexOf('};', gateStart));
-  assert.ok(gate.includes('restrictDisabled'), 'the button renders after the decision closed');
+  assert.ok(gate.includes('restrictBlocked'), 'the button renders after the decision closed');
   assert.ok(gate.includes('!finding.restrictable'), 'an uncuttable path still gets a button');
   assert.ok(gate.includes('policyOf(finding)'), 'the button renders with no policy to key on');
   // The policy match is the IDENTIFIER the digest wrote into policyName - exact, not a heuristic.
@@ -814,6 +814,37 @@ test('a finding card offers 차단, and only where a restriction can actually la
   assert.ok(PANEL.includes('alreadyRestricted(finding, restrictions)'),
             'the card cannot say whether its path is already restricted');
   assert.ok(PANEL.includes('제한에 반영되어 있다'), 'applying gives no confirmation on the card');
+});
+
+test('a card with no 차단 button says why, instead of losing the row', () => {
+  // The defect, as a user met it: 「모든 카드에서 이 경로 차단 버튼이 사라졌다」. Three states
+  // withhold the button and all three produced the SAME silent gap - a decision in flight, a
+  // decided plan, and standing restrictions nobody can read - so a reader could not tell which it
+  // was, or whether the button had ever been there. The gate itself was right in every case; what
+  // was wrong was that it said nothing.
+  assert.ok(PANEL.includes('지금은 이 경로를 차단할 수 없습니다'),
+            'a card without the button gives no reason for it');
+  const at = PANEL.indexOf('const blockWhy =');
+  const why = PANEL.slice(at, PANEL.indexOf('const containmentOf', at));
+  // The per-card reasons come FIRST: they are permanent facts about the policy the finding names,
+  // and a reader told 「결정이 진행 중입니다」 about a baseline policy would wait for something that
+  // never changes the answer.
+  assert.ok(why.indexOf('is_baseline') < why.indexOf('return restrictBlocked'),
+            'the plan-wide reason is printed over a policy that can never be restricted');
+  for (const [what, text] of [['not in this assessment', '이 평가에는 이 정책이 없습니다'],
+                              ['a baseline policy', '기반 정책입니다'],
+                              ['an unreadable policy', '문서를 읽지 못했습니다']]) {
+    assert.ok(why.includes(text), `a finding on ${what} gets no reason`);
+  }
+  // The 차단 불가 badge already carries its own reason, so that card gets no second sentence.
+  assert.ok(why.includes('if (!finding.restrictable) return null;'),
+            'a path that cannot be cut at all is explained twice');
+  // And the plan-wide reason is a SENTENCE from PlanDetail rather than a boolean, because the
+  // three states it covers are fixed by three different things.
+  assert.match(DETAIL, /const restrictBlocked = busy[\s\S]{0,900}: null;/,
+               'the plan-wide reason is not composed where the three causes are known');
+  assert.ok(DETAIL.includes('restrictBlocked={restrictBlocked}'),
+            'the reason does not reach the cards');
 });
 
 test('the block dialog writes into the SHARED restriction set, never a copy', () => {
@@ -834,9 +865,12 @@ test('the block dialog writes into the SHARED restriction set, never a copy', ()
   // gate fail the test: closing the editor when nothing can say what is already restricted is an
   // addition, and a test that forbids additions to a safety condition is a test that argues against
   // safety. What has to hold is that neither of these two is dropped.
-  const gate = DETAIL.match(/restrictDisabled=\{([^}]*)\}/)?.[1] ?? '';
+  const gate = DETAIL.slice(DETAIL.indexOf('const restrictBlocked = busy'),
+                            DETAIL.indexOf('// Whose PassRole request'));
   assert.ok(/\bbusy\b/.test(gate), 'the block button survives a write in flight');
   assert.ok(/\bdecided\b/.test(gate), 'the block button outlives the decision');
+  assert.ok(DETAIL.includes('restrictBlocked={restrictBlocked}'),
+            'the gate no longer reaches RiskAnalysis');
 });
 
 test('the editor is closed when nothing can say what is already restricted', () => {
@@ -855,12 +889,21 @@ test('the editor is closed when nothing can say what is already restricted', () 
   // The three controls that AUTHOR restrictions, by name. Not every disabled gate in the file:
   // approving with nothing ticked stays available on purpose, because an approval carrying no
   // restrictions is read as saying nothing about them and carries the existing ones forward.
-  for (const control of ['RestrictionTemplates', 'Impact', 'RiskAnalysis']) {
+  for (const control of ['RestrictionTemplates', 'Impact']) {
     const block = DETAIL.match(new RegExp(`<${control}[\\s\\S]{0,600}?/>`))?.[0] ?? '';
     assert.ok(block, `${control} is no longer rendered here - this test cannot see it`);
-    assert.match(block, /(disabled|restrictDisabled)=\{[^}]*inForceUnknown[^}]*\}/,
+    assert.match(block, /disabled=\{[^}]*inForceUnknown[^}]*\}/,
                  `${control} can author restrictions while what they would replace is unknown`);
   }
+  // RiskAnalysis takes the REASON rather than the boolean, so the condition is one line up. It
+  // has to be the same condition: the cards' 차단 button authors restrictions exactly as the two
+  // controls above do.
+  const reason = DETAIL.slice(DETAIL.indexOf('const restrictBlocked = busy'),
+                              DETAIL.indexOf('// Whose PassRole request'));
+  assert.ok(/\binForceUnknown\b/.test(reason),
+            'RiskAnalysis can author restrictions while what they would replace is unknown');
+  assert.ok(DETAIL.includes('restrictBlocked={restrictBlocked}'),
+            'the condition does not reach RiskAnalysis');
   // And the approver is told why, rather than finding a dead form.
   assert.match(DETAIL, /지금 걸려 있는 제한을 확인할 수 없어/,
                'the editor closes with no explanation on screen');
