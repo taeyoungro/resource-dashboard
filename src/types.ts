@@ -796,6 +796,9 @@ export interface ImpactPassRoleGrant {
   services: string[];
   /** True when the grant carries no iam:PassedToService at all. The writer refuses those by name. */
   unconditioned: boolean;
+  /** The role ARNs the granting statement names. riskDigest reads it; the fence is composed from
+   *  the services above, so this is evidence rather than input. */
+  resources?: string[];
 }
 
 export interface ImpactActionReference {
@@ -883,6 +886,12 @@ export interface ImpactPolicy {
    * container carried it, and the screen falls back to typing.
    */
   actions_offerable?: string[];
+  /** Granted actions no resource list can scope - they name no resource, or they make what they
+   *  name. The editor offers these as a flat Deny only. riskDigest.js reads it. */
+  actions_non_restrictable?: string[];
+  /** Granted actions the reference could not resolve to a resource type, so their group lists the
+   *  whole service rather than what they reach. riskDigest.js reads it. */
+  actions_unscoped?: string[];
   affected: ImpactGroup[];
   summary?: string;
 }
@@ -994,10 +1003,27 @@ export interface ImpactCoverage {
    */
   services_enumerated?: Record<
     string,
-    { seen: number; kept: number; truncated: boolean; error: string | null }
+    {
+      seen: number;
+      kept: number;
+      truncated: boolean;
+      error: string | null;
+      /** How the placement lookup did, by verdict, plus the calls it spent and the Describes that
+       *  failed. Absent for a service with no lookup and nothing to report. */
+      placement?: Record<string, number>;
+      /** The query scopes never issued because the result limit filled first - region:global among
+       *  them. Absent when the enumeration asked everything it meant to. */
+      scopes_skipped?: string[];
+    }
   >;
   truncated_groups: string[];
   policies_unreadable: string[];
+  /**
+   * Whether the CURRENT restriction could be read. True means current_admin_deny is empty because
+   * the call failed, not because the permission set carries none - the one distinction an approver
+   * deciding what to replace cannot do without. Absent on assessments written before it existed.
+   */
+  inline_unreadable?: boolean;
   /** Actions the reference did not know. Their groups fall back to service level attribution. */
   actions_unresolved?: string[];
   /**

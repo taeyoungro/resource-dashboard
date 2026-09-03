@@ -25,6 +25,8 @@ import { nothingRestricted, planPrefixFromId, readImpact, readPlan, reclassify,
 import { controlPlane } from './controlPlane.js';
 import { condense, digestBytes } from './riskDigest.js';
 import { candidates as proposeCandidates } from './candidatePaths.js';
+import { coversProtected, swallowedByExemption } from './actionPattern.js';
+import { creationExemption } from './inlinePreview.js';
 import { loadTemplates } from './templates.js';
 import { findings as ruleFindings, sections, summary } from './findings.js';
 import { referenceIndex } from './capabilities.js';
@@ -1350,6 +1352,41 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
               );
             }
           }
+          // The tag, on the two intents whose statement composes no condition at all. Their
+          // resource list is the whole of what they scope by, so a tag here sits in the marker as
+          // part of the decision and never reaches the account - the approval record then says
+          // "only resources tagged env=prod" about a control that does not exist. The writer
+          // refuses it; this says so while the person who chose it is still on the page.
+          if ((restriction.intent === 'allow_only' || restriction.intent === 'deny_only')
+              && (restriction.tag_key || (Array.isArray(restriction.tag_values)
+                                          && restriction.tag_values.length > 0))) {
+            throw new HttpError(
+              400,
+              `a ${restriction.intent} restriction carries a tag. Its statement scopes by the `
+              + 'resource list and composes no condition, so the tag would be recorded as part of '
+              + 'the decision and never evaluated. Restricting BY a tag is the section "태그로 '
+              + '거부", which names no resources.',
+            );
+          }
+          // And tag_condition's own two, which the key_condition branch below has had all along.
+          if (restriction.intent === 'tag_condition') {
+            const values = Array.isArray(restriction.tag_values) ? restriction.tag_values : [];
+            if (!restriction.tag_key || typeof restriction.tag_key !== 'string'
+                || !restriction.tag_key.trim() || values.length === 0
+                || values.some((v) => typeof v !== 'string' || !v.trim())) {
+              throw new HttpError(
+                400,
+                '"태그로 거부" needs both a tag key and at least one value, as strings.',
+              );
+            }
+            if (Array.isArray(restriction.resources) && restriction.resources.length > 0) {
+              throw new HttpError(
+                400,
+                '"태그로 거부" names no resources - the tag is what selects them, and that is the '
+                + 'point: a resource created tomorrow carrying that tag is covered too.',
+              );
+            }
+          }
           // The mirror of the writer's cross-intent gate: only key_condition composes a request-key
           // condition, so the KEY and the VALUES on any other intent would sit in the marker as
           // part of the decision and never reach the statement - recorded-and-inert. The OPERATOR
@@ -1438,10 +1475,18 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
               throw new HttpError(400, `a wildcard action cannot be restricted (${action}): with `
                                        + 'NotResource it would deny everything outside the list');
             }
-            if (protectedActions.has(action.trim())) {
+            // Wildcard-aware, and that is the whole of B-1 on this side. `Set.has` is an exact
+            // comparison, so iam:Create* passed it here and denied iam:CreateRole - and the
+            // denial only became visible after the approval, in the account, as a user who could
+            // no longer declare anything. The matcher treats `*` as the only metacharacter.
+            const denied = coversProtected(action, protectedActions);
+            if (denied.length) {
+              const named = denied.length === 1 && denied[0] === action.trim()
+                ? action
+                : `${action} denies ${denied.slice(0, 4).join(', ')}`;
               throw new HttpError(
                 400,
-                `${action} is part of the declaration path and cannot be restricted. It is how a `
+                `${named} is part of the declaration path and cannot be restricted. It is how a `
                 + 'user writes a spec, and restricting it would leave them unable to request the fix.',
               );
             }
@@ -1502,6 +1547,28 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
                 `${action} brings the resource it names into being, and a tag condition on it can `
                 + 'never match: aws:ResourceTag reads the tags of a resource that exists, and this '
                 + 'one does not until the call succeeds.',
+              );
+            }
+          }
+          // The one thing a WILDCARD allow_only can be that no per-member gate catches: its own
+          // creation exemption keeping the type it claims to scope. The exemption is written once
+          // for the whole Action, so every covered member the created type is an EXISTING resource
+          // for is judged against it - athena:* covers CreateDataCatalog, the statement must
+          // exempt datacatalog/*, and that pattern matches every other catalog in the account. The
+          // statement then reads "only this catalog" and permits deleting all of them. The writer
+          // refuses this decision; this refuses it while the person who chose it is still here.
+          if (restriction.intent === 'allow_only') {
+            for (const action of actions) {
+              const swallowed = swallowedByExemption(
+                stored.document.action_reference, action, named, creationExemption,
+              );
+              if (!swallowed) continue;
+              throw new HttpError(
+                400,
+                `${action}이 덮는 ${swallowed.action}은 ${swallowed.resource}의 타입을 만드는 `
+                + `동작이라, 문장이 ${swallowed.pattern}을 면제해야 한다. 그 패턴이 고른 자원까지 `
+                + '덮으므로 문장은 "이것만"이라고 읽히면서 같은 타입의 자원 전부를 허용한다 — '
+                + '와일드카드 대신 제한할 동작을 지목하거나, "동작 자체 거부"를 쓴다.',
               );
             }
           }

@@ -12,13 +12,15 @@ import { ServiceIcon } from "./ServiceIcon";
 import { ActionPicker } from "./ActionPicker";
 import type { Choice, Offer } from "./ActionPicker";
 import {
-  INLINE_LIMIT, composeInline, inlineBytes, policyContribution, readable, readableStatements,
+  INLINE_LIMIT, composeInline, creationExemption, inlineBytes, policyContribution, readable,
+  readableStatements,
 } from "../../server/inlinePreview.js";
 import type { InlineDocument } from "../../server/inlinePreview";
 import {
   DENIED, NOT_DENIED, UNKNOWN, evaluate, virtualResource,
 } from "../../server/virtualResource.js";
 import { serviceFold } from "../../server/serviceFold.js";
+import { createdFormats, reachesInside, swallowedByExemption } from "../../server/actionPattern.js";
 import { anyAnswered, everyFinding } from "../../server/analysisFindings.js";
 import { containmentState } from "../../server/blockPath.js";
 import type { FindingsByScope } from "../../server/analysisFindings";
@@ -94,14 +96,11 @@ interface Props {
  * means no expansion - which is what those assessments were written under.
  */
 function nestedActions(reference: ImpactActionReference | null): (action: string) => boolean {
-  const nested = reference?.nested_types ?? {};
-  return (action: string) => {
-    const [service, name] = [action.slice(0, action.indexOf(":")), action.slice(action.indexOf(":") + 1)];
-    const types = nested[service];
-    if (!types?.length) return false;
-    const entry = reference?.services?.[service]?.[name];
-    return Boolean(entry?.[1]?.some((t) => types.includes(t)));
-  };
+  // Through actionPattern.reachesInside, which expands a WILDCARD against the same reference. The
+  // lookup used to be by exact name, and no reference entry is called "s3:Delete*" - so a wildcard
+  // answered false, the preview listed the bucket alone, and the writer (which holds the table and
+  // expands the pattern) wrote the bucket AND everything inside it.
+  return (action: string) => reachesInside(reference, action);
 }
 
 /**
@@ -114,11 +113,10 @@ function nestedActions(reference: ImpactActionReference | null): (action: string
  * written before the reference carried it compose as.
  */
 function createdFormatsOf(reference: ImpactActionReference | null): (action: string) => string[] {
-  const created = reference?.created_formats ?? {};
-  return (action: string) => {
-    const cut = action.indexOf(":");
-    return created[action.slice(0, cut)]?.[action.slice(cut + 1)] ?? [];
-  };
+  // The union over what a wildcard covers, which is how the writer composes it. Keyed lookup alone
+  // answered [] for `ec2:Create*` - and the writer wrote 83 whole-type exemptions the approver
+  // never saw, against a preview that read as a scope over the one subnet they picked.
+  return (action: string) => createdFormats(reference, action);
 }
 
 /**
@@ -208,12 +206,13 @@ const SOURCE_LABEL: Record<ImpactPolicy["source"], string> = {
  * server/inlinePreview.js composes it, and a fixture test pins that module byte-for-byte against
  * generator/restriction.py. A preview that differs from what gets written would be worse than none.
  */
-function InlinePreview({ restrictions, accountId, fenceGrants, nested, createdFormats }: {
+function InlinePreview({ restrictions, accountId, fenceGrants, nested, createdFormats, reference }: {
   restrictions: Restriction[];
   accountId: string;
   fenceGrants: Assessment["passrole_grants"];
   nested: (action: string) => boolean;
   createdFormats: (action: string) => string[];
+  reference: ImpactActionReference | null;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const active = restrictions.filter((r) => r.actions.length > 0);
@@ -221,6 +220,18 @@ function InlinePreview({ restrictions, accountId, fenceGrants, nested, createdFo
     const doc = composeInline(active, { accountId, fenceGrants, nested, createdFormats });
     return { document: doc, bytes: inlineBytes(doc) };
   }, [active, accountId, fenceGrants, nested, createdFormats]);
+
+  // The decisions the writer refuses OUTRIGHT, said here rather than after an approval. A wildcard
+  // allow_only whose own exemption keeps the type it claims to scope is not a narrow control that
+  // is slightly wrong - it permits every resource of that type while reading as "only these".
+  const swallowed = useMemo(() => active.flatMap((r) => (
+    r.intent === "allow_only"
+      ? r.actions
+        .map((action) => swallowedByExemption(reference, action, r.resources ?? [], creationExemption))
+        .filter(Boolean)
+        .map((hit) => ({ ...hit!, action: hit!.action, policy: r.policy }))
+      : []
+  )), [active, reference]);
 
   if (active.length === 0 && (fenceGrants ?? []).length === 0) return null;
   const over = bytes > INLINE_LIMIT;
@@ -253,6 +264,16 @@ function InlinePreview({ restrictions, accountId, fenceGrants, nested, createdFo
             {bytes.toLocaleString()}바이트 / 한도 {INLINE_LIMIT.toLocaleString()}바이트
             {over && " — 이대로면 인라인 작성기가 거부한다. 동작을 줄이거나 태그 조건을 쓰면 된다."}
           </p>
+          {swallowed.length > 0 && (
+            <p className="error">
+              {swallowed[0].action} 은(는) {swallowed[0].resource} 의 타입을 만드는 동작이라
+              문장이 <code>{swallowed[0].pattern}</code> 을(를) 면제해야 한다. 그 패턴이 고른
+              자원까지 덮어서, 이 문장은 「이것만」 이라고 읽히면서 같은 타입의 자원 전부를
+              허용한다 — 인라인 작성기가 거부한다. 와일드카드 대신 동작을 지목하거나
+              <strong> 동작 자체 거부</strong>를 쓴다.
+              {swallowed.length > 1 && ` (이런 동작이 ${swallowed.length}개)`}
+            </p>
+          )}
           <pre className="policy-json">{readable(composed)}</pre>
           <VirtualResourceTest document={composed} />
           <div className="row">
@@ -686,6 +707,7 @@ export function Impact({
           fenceGrants={fenceGrants}
           nested={nestedActions(assessment.action_reference ?? null)}
           createdFormats={createdFormatsOf(assessment.action_reference ?? null)}
+          reference={assessment.action_reference ?? null}
         />
       )}
 
@@ -1461,6 +1483,14 @@ function RestrictionEditor({
       granted,
     });
     if (!folded) return null;
+    // And the offer the writer would refuse: an allow_only wildcard whose creation exemption keeps
+    // the type it claims to scope. `athena:*` covers CreateDataCatalog, so the statement exempts
+    // datacatalog/* and every other catalog with it. Offering the fold there would hand somebody a
+    // one-click way to turn a real restriction into one that restricts nothing.
+    if (intent === "allow_only"
+        && swallowedByExemption(reference, folded.wildcard, choices[0].resources, creationExemption)) {
+      return null;
+    }
     return (
       <p className="fold-offer">
         <button type="button" disabled={disabled}
