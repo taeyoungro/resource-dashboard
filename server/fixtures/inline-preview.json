@@ -994,6 +994,177 @@
      }
     }
    ]
+  },
+  {
+   "label": "와일드카드 동작도 버킷 안쪽까지 간다",
+   "restrictions": [
+    {
+     "policy": "AmazonS3FullAccess",
+     "intent": "deny_only",
+     "actions": [
+      "s3:Delete*"
+     ],
+     "resources": [
+      "arn:aws:s3:::opt-solution-markers"
+     ]
+    }
+   ],
+   "virtual_probes": [
+    {
+     "label": "버킷 자체는 거부",
+     "action": "s3:DeleteBucket",
+     "arn": "arn:aws:s3:::opt-solution-markers"
+    },
+    {
+     "label": "그 안의 객체도 거부",
+     "action": "s3:DeleteObject",
+     "arn": "arn:aws:s3:::opt-solution-markers/reports/2026.csv"
+    },
+    {
+     "label": "다른 버킷의 객체는 통과",
+     "action": "s3:DeleteObject",
+     "arn": "arn:aws:s3:::opt-solution-plans/x"
+    }
+   ],
+   "nested_actions": [
+    "s3:Delete*"
+   ],
+   "created_formats": {},
+   "bytes": 184,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:Delete*\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "virtual": [
+    {
+     "label": "버킷 자체는 거부",
+     "action": "s3:DeleteBucket",
+     "arn": "arn:aws:s3:::opt-solution-markers",
+     "outcome": "DENIED_BY",
+     "sid": "AdminDeny1",
+     "missing_keys": [],
+     "considered": [
+      "AdminDeny1"
+     ]
+    },
+    {
+     "label": "그 안의 객체도 거부",
+     "action": "s3:DeleteObject",
+     "arn": "arn:aws:s3:::opt-solution-markers/reports/2026.csv",
+     "outcome": "DENIED_BY",
+     "sid": "AdminDeny1",
+     "missing_keys": [],
+     "considered": [
+      "AdminDeny1"
+     ]
+    },
+    {
+     "label": "다른 버킷의 객체는 통과",
+     "action": "s3:DeleteObject",
+     "arn": "arn:aws:s3:::opt-solution-plans/x",
+     "outcome": "NOT_DENIED",
+     "sid": null,
+     "missing_keys": [],
+     "considered": []
+    }
+   ]
+  },
+  {
+   "label": "와일드카드 allow_only — 덮는 동작들이 만드는 유형을 전부 면제한다",
+   "restrictions": [
+    {
+     "policy": "AmazonEC2FullAccess",
+     "intent": "allow_only",
+     "actions": [
+      "ec2:Run*"
+     ],
+     "resources": [
+      "arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82"
+     ]
+    }
+   ],
+   "virtual_probes": [
+    {
+     "label": "고른 서브넷은 통과",
+     "action": "ec2:RunInstances",
+     "arn": "arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82"
+    },
+    {
+     "label": "다른 서브넷은 거부",
+     "action": "ec2:RunInstances",
+     "arn": "arn:aws:ec2:us-east-1:718100330247:subnet/subnet-0other"
+    },
+    {
+     "label": "만들어지는 인스턴스는 면제되어 통과",
+     "action": "ec2:RunInstances",
+     "arn": "arn:aws:ec2:us-east-1:718100330247:instance/i-0new"
+    }
+   ],
+   "nested_actions": [],
+   "created_formats": {
+    "ec2:Run*": [
+     "arn:${Partition}:ec2:*:${Account}:instance/*",
+     "arn:${Partition}:ec2:*:${Account}:network-interface/*",
+     "arn:${Partition}:ec2:*:${Account}:secondary-interface/*",
+     "arn:${Partition}:ec2:*:${Account}:spot-instances-request/*",
+     "arn:${Partition}:ec2:*:${Account}:volume/*"
+    ]
+   },
+   "bytes": 412,
+   "serialised": "{\"Statement\":[{\"Action\":\"ec2:Run*\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:*:718100330247:instance/*\",\"arn:aws:ec2:*:718100330247:network-interface/*\",\"arn:aws:ec2:*:718100330247:secondary-interface/*\",\"arn:aws:ec2:*:718100330247:spot-instances-request/*\",\"arn:aws:ec2:*:718100330247:volume/*\",\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "virtual": [
+    {
+     "label": "고른 서브넷은 통과",
+     "action": "ec2:RunInstances",
+     "arn": "arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82",
+     "outcome": "NOT_DENIED",
+     "sid": null,
+     "missing_keys": [],
+     "considered": []
+    },
+    {
+     "label": "다른 서브넷은 거부",
+     "action": "ec2:RunInstances",
+     "arn": "arn:aws:ec2:us-east-1:718100330247:subnet/subnet-0other",
+     "outcome": "DENIED_BY",
+     "sid": "AdminDeny1",
+     "missing_keys": [],
+     "considered": [
+      "AdminDeny1"
+     ]
+    },
+    {
+     "label": "만들어지는 인스턴스는 면제되어 통과",
+     "action": "ec2:RunInstances",
+     "arn": "arn:aws:ec2:us-east-1:718100330247:instance/i-0new",
+     "outcome": "NOT_DENIED",
+     "sid": null,
+     "missing_keys": [],
+     "considered": []
+    }
+   ]
+  },
+  {
+   "label": "한글 태그 값 — 두 직렬화가 같은 바이트를 낸다",
+   "restrictions": [
+    {
+     "policy": "AmazonS3FullAccess",
+     "intent": "tag_condition",
+     "actions": [
+      "s3:DeleteObject"
+     ],
+     "tag_key": "소유",
+     "tag_values": [
+      "데이터팀",
+      "zeta"
+     ],
+     "condition_operator": "StringNotEquals"
+    }
+   ],
+   "nested_actions": [
+    "s3:DeleteObject"
+   ],
+   "created_formats": {},
+   "bytes": 200,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:DeleteObject\",\"Condition\":{\"StringNotEquals\":{\"aws:ResourceTag/소유\":[\"zeta\",\"데이터팀\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "virtual": []
   }
  ]
 }

@@ -30,6 +30,13 @@
 /** A permission set's provisioned role, as a pattern. Region and suffix are both AWS's to choose. */
 const RESERVED_PATH = 'aws-reserved/sso.amazonaws.com';
 
+// The two governed-name prefixes this has to tell apart, and the permission set name's budget for
+// the part after the account. All three are the generator's: PERMISSION_SET_NAME_LIMIT is 32, an
+// account id is 12 and the separator is 1, which leaves 19 (generator/permission_set.py).
+const PS_ROLE_PREFIX = 'ps-';
+const SPEC_POLICY_PREFIX = 'cmp-';
+const BARE_NAME_LIMIT = 19;
+
 export const PRINCIPAL_KIND = {
   MIRROR_ROLE: 'mirror_role',
   PERMISSION_SET: 'permission_set',
@@ -47,21 +54,50 @@ export function principalOf(plan, { mirrorPrefix = 'mirror-' } = {}) {
   const resource = String(plan?.resource ?? '');
   if (!/^\d{12}$/.test(accountId) || !resource) return null;
 
-  if (mirrorPrefix && resource.startsWith(mirrorPrefix)) {
+  // WHICH NAME THIS IS. `resource` is the governed SOURCE name the listener recorded and the plan
+  // key carries - ps-alice, cmp-WebHosting, lambda-Report - and it is none of the three names a
+  // bucket policy can hold. The two derivations below are the generator's own, and getting them
+  // from the source name is the only option here: the plan list is built from the state bucket's
+  // keys, and neither the permission set name nor the mirror role name is in one.
+  //
+  //   ps-<bare>     the permission set <account>-<bare truncated to 19>, provisioned as the role
+  //                 AWSReservedSSO_<that name>_<suffix AWS chose>
+  //                 (generator/permission_set.py name_for)
+  //   cmp-<name>    a customer managed POLICY. Not a principal at all - nothing assumes it - and
+  //                 describing it as a permission set put a row on the screen that could never
+  //                 match anything
+  //   <service>-*   a governed service role, whose principal is its MIRROR: mirror-<that name>
+  //                 (generator/mirror_role.py mirror_name)
+  //
+  // The old code tested `resource.startsWith(mirrorPrefix)` and the listener refuses to plan
+  // anything already in the mirror namespace, so that branch was unreachable and every service
+  // role was described as a permission set named after the source role.
+  if (resource.startsWith(SPEC_POLICY_PREFIX)) return null;
+
+  if (!resource.startsWith(PS_ROLE_PREFIX)) {
+    const mirrorName = resource.startsWith(mirrorPrefix)
+      ? resource
+      : `${mirrorPrefix}${resource}`;
     return {
       id: `${accountId}:${resource}`,
       kind: PRINCIPAL_KIND.MIRROR_ROLE,
-      label: resource,
+      label: mirrorName,
       accountId,
-      arn: `arn:aws:iam::${accountId}:role/${resource}`,
+      arn: `arn:aws:iam::${accountId}:role/${mirrorName}`,
       arnIsPattern: false,
       planId: plan.plan_id ?? `${accountId}:${resource}`,
     };
   }
+
+  // <account>-<bare, truncated to 19>. The same derivation permission_set.name_for makes, and the
+  // truncation is load-bearing: an Identity Center user name longer than nineteen characters
+  // produces a permission set - and therefore a provisioned role - under the SHORT name, so a
+  // pattern built from the full one matches nothing for exactly the people whose names are long.
+  const permissionSetName = `${accountId}-${resource.slice(PS_ROLE_PREFIX.length).slice(0, BARE_NAME_LIMIT)}`;
   return {
     id: `${accountId}:${resource}`,
     kind: PRINCIPAL_KIND.PERMISSION_SET,
-    label: resource,
+    label: permissionSetName,
     accountId,
     // Two wildcards, and each stands for something genuinely unknown rather than something not
     // looked up: the suffix AWS appended, and whether there is a region segment at all.
@@ -75,7 +111,7 @@ export function principalOf(plan, { mirrorPrefix = 'mirror-' } = {}) {
     // so a pattern anchored on /<region>/ misses every us-east-1-homed organisation entirely - and
     // misses it silently, as a permission set nothing ever matches. The wildcard sits BEFORE the
     // name with no slash of its own, which covers both spellings.
-    arn: `arn:aws:iam::${accountId}:role/${RESERVED_PATH}/*AWSReservedSSO_${resource}_*`,
+    arn: `arn:aws:iam::${accountId}:role/${RESERVED_PATH}/*AWSReservedSSO_${permissionSetName}_*`,
     arnIsPattern: true,
     planId: plan.plan_id ?? `${accountId}:${resource}`,
   };

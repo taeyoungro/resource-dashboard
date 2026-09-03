@@ -16,7 +16,12 @@ const OTHER = '999900001111';
 
 const mirror = principalOf({ account_id: ACCOUNT, resource: 'mirror-lambda-Test' });
 const foreign = principalOf({ account_id: OTHER, resource: 'mirror-ec2-Test' });
-const permissionSet = principalOf({ account_id: ACCOUNT, resource: 'SolutionAdmin' });
+// ps-<name>, because that is what a plan key holds for the permission set domain: the governed
+// SOURCE role. The permission set it produces is <account>-<name truncated to 19>, and the role
+// AWS provisions for it is AWSReservedSSO_<that>_<suffix> - so the pattern below is built from the
+// derived name and not from the source one. Naming the source role there matched nothing.
+const permissionSet = principalOf({ account_id: ACCOUNT, resource: 'ps-SolutionAdmin' });
+const PS_NAME = `${ACCOUNT}-SolutionAdmin`;
 
 const policy = (...statements) => parsePolicy(JSON.stringify({
   Version: '2012-10-17', Statement: statements,
@@ -35,7 +40,7 @@ test('a mirror role is an ARN and a permission set is a pattern', () => {
   assert.equal(mirror.arn, `arn:aws:iam::${ACCOUNT}:role/mirror-lambda-Test`);
   assert.equal(mirror.arnIsPattern, false);
   assert.equal(permissionSet.arn,
-    `arn:aws:iam::${ACCOUNT}:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_SolutionAdmin_*`);
+    `arn:aws:iam::${ACCOUNT}:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_${PS_NAME}_*`);
   assert.equal(permissionSet.arnIsPattern, true);
   // A key this cannot read is not a principal with an unknown ARN - it is not a principal.
   assert.equal(principalOf({ account_id: 'nope', resource: 'x' }), null);
@@ -47,13 +52,15 @@ test('the governed list is every plan once, ordered', () => {
     { account_id: ACCOUNT, resource: 'mirror-lambda-Test' },
     { account_id: ACCOUNT, resource: 'mirror-lambda-Test' },
     { account_id: OTHER, resource: 'mirror-ec2-Test' },
-    { account_id: ACCOUNT, resource: 'SolutionAdmin' },
+    { account_id: ACCOUNT, resource: 'ps-SolutionAdmin' },
     { account_id: null, resource: null },
   ] };
-  // Account first, then label by locale order - which puts mirror- before SolutionAdmin. What the
-  // test pins is that it is STABLE and deduplicated, not which of the two collation rules applies.
+  // Account first, then LABEL by locale order - and the label is the derived name, so the
+  // permission set sorts under <account>-SolutionAdmin and not under its source role's ps- name.
+  // What the test pins is that the order is STABLE and the list deduplicated, not which of the two
+  // collation rules applies.
   assert.deepEqual(governedPrincipals(state).map((p) => p.id),
-                   [`${ACCOUNT}:mirror-lambda-Test`, `${ACCOUNT}:SolutionAdmin`,
+                   [`${ACCOUNT}:ps-SolutionAdmin`, `${ACCOUNT}:mirror-lambda-Test`,
                     `${OTHER}:mirror-ec2-Test`]);
 });
 
@@ -123,7 +130,7 @@ test('a bucket policy is one door of four, and an explicit deny outranks everyth
 
 test('a permission set is reached through a condition, because Principal takes no wildcard', () => {
   // The Principal element accepts no wildcard other than the lone "*", so a policy CANNOT name
-  // AWSReservedSSO_SolutionAdmin_* there. The only way to write that intent is Principal "*" with
+  // AWSReservedSSO_<permission set>_* there. The only way to write that intent is Principal "*" with
   // a condition on aws:PrincipalArn, which does take wildcards - so that shape is the one an
   // Identity Center role is reached by, and the match is reported as a condition rather than as
   // "everyone".
@@ -144,7 +151,7 @@ test('a policy naming the provisioned role in full is matched against our patter
   // the suffix AWS assigned; this deployment holds a pattern. Testing the literal against the
   // pattern is the only way the two meet.
   const provisioned = `arn:aws:iam::${ACCOUNT}:role/aws-reserved/sso.amazonaws.com/`
-    + 'ap-northeast-2/AWSReservedSSO_SolutionAdmin_2f9a1c4d8b6e0a53';
+    + `ap-northeast-2/AWSReservedSSO_${PS_NAME}_2f9a1c4d8b6e0a53`;
   const doc = policy({
     Sid: 'ByFullArn', Effect: 'Allow', Principal: { AWS: provisioned },
     Action: 's3:GetObject', Resource: 'arn:aws:s3:::b/*',
@@ -222,7 +229,7 @@ test('ArnEquals globs, exactly as ArnLike does', () => {
     Sid: 'AdminsOnly', Effect: 'Allow', Principal: '*',
     Action: 's3:*', Resource: 'arn:aws:s3:::b/*',
     Condition: { ArnEquals: { 'aws:PrincipalArn':
-      `arn:aws:iam::${ACCOUNT}:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_SolutionAdmin_*` } },
+      `arn:aws:iam::${ACCOUNT}:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_${PS_NAME}_*` } },
   });
   assert.equal(read(doc, permissionSet).outcome, OUTCOME.ALLOWED);
 });
@@ -233,7 +240,7 @@ test('a condition naming one provisioned role is about the permission set it bel
   // the only way the two meet, and without it every policy written the way AWS recommends reads as
   // being about nobody.
   const provisioned = `arn:aws:iam::${ACCOUNT}:role/aws-reserved/sso.amazonaws.com/`
-    + 'ap-northeast-2/AWSReservedSSO_SolutionAdmin_2f9a1c4d8b6e0a53';
+    + `ap-northeast-2/AWSReservedSSO_${PS_NAME}_2f9a1c4d8b6e0a53`;
   for (const operator of ['ArnEquals', 'StringEquals', 'ArnLike']) {
     const doc = policy({
       Sid: 'ExactArn', Effect: 'Allow', Principal: '*',
@@ -252,7 +259,7 @@ test('an Identity Center role provisioned with no region segment is still matche
   // component at all. A pattern anchored on /<region>/ misses every such organisation, silently, as
   // a permission set nothing ever matches.
   const noRegion = `arn:aws:iam::${ACCOUNT}:role/aws-reserved/sso.amazonaws.com/`
-    + 'AWSReservedSSO_SolutionAdmin_2f9a1c4d8b6e0a53';
+    + `AWSReservedSSO_${PS_NAME}_2f9a1c4d8b6e0a53`;
   const doc = policy({
     Sid: 'ByFullArn', Effect: 'Allow', Principal: { AWS: noRegion },
     Action: 's3:GetObject', Resource: 'arn:aws:s3:::b/*',
