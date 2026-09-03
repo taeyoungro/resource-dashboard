@@ -438,10 +438,17 @@ export function keeps(filter, resource) {
   return true;
 }
 
-/** Whether any dimension of the filter actually narrows anything. */
+/**
+ * Whether any dimension of the filter actually narrows anything.
+ *
+ * hiddenTypes counts, and it reads the opposite way round from the rest: the others narrow TO what
+ * is listed and this one hides what is listed, so a non-empty list means something is missing from
+ * the picture either way. That is the question this answers - the counts under the picture are
+ * rows drawn rather than rows the group has, and a hidden type changes which of those is true.
+ */
 export function filterActive(filter) {
   if (!filter) return false;
-  return ['accounts', 'regions', 'vpcs', 'subnets', 'clusters']
+  return ['accounts', 'regions', 'vpcs', 'subnets', 'clusters', 'hiddenTypes']
     .some((dimension) => (filter[dimension]?.length ?? 0) > 0);
 }
 
@@ -517,6 +524,8 @@ export function scene(policy, accountId, filter = null, enumerated = true) {
     // survive - which is the SAME quantity, because assess.py sets total to the number of rows it
     // kept. Both are floors when `truncated` says the enumeration hit its cap, and the picture
     // marks them the same way, so narrowing the view never changes how sure a number is.
+    // A type the reader switched off is off in both pictures. The checkboxes sit above the pair.
+    if ((filter?.hiddenTypes ?? []).includes(group?.resource_type)) continue;
     const kept = (group?.resources ?? []).filter((r) => keeps(filter, r));
     const total = narrowed ? kept.length : (Number(group?.total) || 0);
     if (!spec.services.has(group?.service)) {

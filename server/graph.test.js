@@ -758,3 +758,154 @@ test('a subnet is coloured from its own row, even when the policy reaches no rou
   assert.equal(both.tint, 'public');
   assert.equal(both.routeTable, 'rtb-real');
 });
+
+
+test('unticking a type takes its plates and its lines out, and says how many', () => {
+  const whole = sceneOf(ACCOUNT());
+  const hidden = sceneOf(ACCOUNT(), { hiddenTypes: ['ec2:route-table', 'ec2:network-acl'] });
+  const typesIn = (scene) => new Set(scene.nodes.map((n) => n.resourceType));
+  assert.ok(typesIn(whole).has('ec2:route-table'), 'the fixture has no route table to hide');
+  assert.ok(!typesIn(hidden).has('ec2:route-table'), 'a switched-off type is still drawn');
+  assert.ok(!typesIn(hidden).has('ec2:network-acl'));
+  // The lines to it go with it. A line whose other end is not on the picture is not a line.
+  const touches = (scene, type) => scene.edges.some((e) => [e.from, e.to]
+    .some((id) => scene.rows.find((r) => r.id === id)?.resourceType === type));
+  assert.ok(touches(whole, 'ec2:route-table'), 'the fixture draws no route-table line');
+  assert.ok(!touches(hidden, 'ec2:route-table'), 'a line survives the plate it was drawn to');
+  // Counted and said, so a smaller picture is never read as a smaller policy.
+  assert.equal(hidden.counts.hiddenRows, whole.rows.filter(
+    (r) => r.resourceType === 'ec2:route-table' || r.resourceType === 'ec2:network-acl').length);
+  assert.ok(hidden.foot.some((l) => l.text.includes('체크를 풀어 감춘 자원')));
+  assert.equal(hidden.narrowed, true, 'hiding a type does not mark the picture narrowed');
+  // The accounting still balances over what IS drawn.
+  const c = hidden.counts;
+  assert.equal(c.nodes + c.omittedNodes + c.containerRows + c.foldedRows, c.totalRows);
+});
+
+test('the checkbox list holds every type, hidden ones included, and marks the borders', () => {
+  // A type switched off has to stay in the list or nobody could switch it back on - which is why
+  // the picker reads the UNFILTERED scene. Pinned here so the scene keeps answering it.
+  const hidden = sceneOf(ACCOUNT(), { hiddenTypes: ['ec2:route-table'] });
+  assert.ok(hidden.types.some((t) => t.resourceType === 'ec2:route-table'),
+            'a hidden type left the list and can never come back');
+  const vpc = hidden.types.find((t) => t.resourceType === 'ec2:vpc');
+  const subnet = hidden.types.find((t) => t.resourceType === 'ec2:subnet');
+  assert.equal(vpc?.container, true, 'the VPC is offered as a plate');
+  assert.equal(subnet?.container, true, 'the subnet is offered as a plate');
+  assert.equal(hidden.types.find((t) => t.resourceType === 'ec2:instance')?.container, false);
+  // Named the way the plates are named, off the same table.
+  assert.equal(hidden.types.find((t) => t.resourceType === 'ec2:instance')?.label, '인스턴스');
+});
+
+test('a public subnet is drawn nearer the gateway than a private one in the same zone', () => {
+  // The internet gateway is on the VPC's top border, so ordering the subnets public-first puts the
+  // public ones at the top of the left column AND the top of the right - the arrangement AWS's own
+  // reference diagrams use, and the one a reader traces a path down.
+  //
+  // The ids are chosen so the ALPHABET disagrees: `subnet-a-private` sorts before `subnet-z-public`
+  // and the old order drew it first. A fixture whose two orders agree proves nothing.
+  const both = [
+    g('ec2:vpc', [row('vpc', 'vpc-1', { vpc_id: 'vpc-1' })]),
+    g('ec2:subnet', [
+      row('subnet', 'subnet-a-private', { vpc_id: 'vpc-1', subnet_id: 'subnet-a-private',
+                                          zone: 'us-east-1a' }),
+      row('subnet', 'subnet-z-public', { vpc_id: 'vpc-1', subnet_id: 'subnet-z-public',
+                                         zone: 'us-east-1a' }),
+    ]),
+    g('ec2:route-table', [
+      row('route-table', 'rtb-pub', { vpc_id: 'vpc-1', links: { subnet: ['subnet-z-public'] },
+                                      routes: [{ destination: '0.0.0.0/0', target: 'igw-1', state: 'active' }] }),
+      row('route-table', 'rtb-priv', { vpc_id: 'vpc-1', links: { subnet: ['subnet-a-private'] },
+                                       routes: [{ destination: '0.0.0.0/0', target: 'nat-1', state: 'active' }] }),
+    ]),
+    g('ec2:internet-gateway', [row('internet-gateway', 'igw-1', { vpc_id: 'vpc-1' })]),
+  ];
+  const scene = sceneOf(both);
+  const boxOf = (id) => scene.containers.find((c) => c.id === `subnet:${id}`);
+  const pub = boxOf('subnet-z-public');
+  const priv = boxOf('subnet-a-private');
+  assert.equal(pub.tint, 'public', 'the fixture\'s public subnet is not coloured public');
+  assert.equal(priv.tint, 'private', 'the fixture\'s private subnet is not coloured private');
+  // Same zone box, so this is an ordering and not a placement.
+  const az = scene.containers.find((c) => c.kind === 'az');
+  assert.ok(inside(pub, az) && inside(priv, az), 'the two are not in one zone');
+  assert.ok(pub.y < priv.y, 'the private subnet is drawn above the public one');
+  // And above the gateway's own side: the gateway straddles the VPC's top border, so "first" is
+  // "nearest it" rather than an arbitrary end of the column.
+  const igw = scene.nodes.find((n) => n.resourceType === 'ec2:internet-gateway');
+  assert.ok(igw.y < pub.y && pub.y < priv.y, 'the column does not run away from the gateway');
+});
+
+test('a subnet nothing can colour sits between the two', () => {
+  // Three ranks, not two. A subnet whose table this assessment does not hold is neither, and
+  // sorting it with the private ones would put an unanswered question under an answered one.
+  const three = [
+    g('ec2:vpc', [row('vpc', 'vpc-1', { vpc_id: 'vpc-1' })]),
+    g('ec2:subnet', [
+      row('subnet', 'subnet-a-private', { vpc_id: 'vpc-1', subnet_id: 'subnet-a-private', zone: 'z' }),
+      row('subnet', 'subnet-b-unknown', { vpc_id: 'vpc-1', subnet_id: 'subnet-b-unknown', zone: 'z' }),
+      row('subnet', 'subnet-c-public', { vpc_id: 'vpc-1', subnet_id: 'subnet-c-public', zone: 'z' }),
+    ]),
+    g('ec2:route-table', [
+      row('route-table', 'rtb-pub', { vpc_id: 'vpc-1', links: { subnet: ['subnet-c-public'] },
+                                      routes: [{ destination: '0.0.0.0/0', target: 'igw-1', state: 'active' }] }),
+      row('route-table', 'rtb-priv', { vpc_id: 'vpc-1', links: { subnet: ['subnet-a-private'] },
+                                       routes: [{ destination: '0.0.0.0/0', target: 'nat-1', state: 'active' }] }),
+    ]),
+  ];
+  const scene = sceneOf(three);
+  const y = (id) => scene.containers.find((c) => c.id === `subnet:${id}`).y;
+  const tint = (id) => scene.containers.find((c) => c.id === `subnet:${id}`).tint;
+  assert.equal(tint('subnet-b-unknown'), null, 'the fixture coloured the uncoloured one');
+  assert.ok(y('subnet-c-public') < y('subnet-b-unknown'), 'the public one is not first');
+  assert.ok(y('subnet-b-unknown') < y('subnet-a-private'), 'the uncoloured one is not in the middle');
+});
+
+
+test('the public band runs across every zone, above the private band', () => {
+  // The arrangement asked for: public subnets top-left AND top-right, private bottom-left and
+  // bottom-right. Each zone is one box and cannot be in two bands, so the bands are made by giving
+  // each rank a common top ACROSS the zones - which is the thing to pin, because ordering each
+  // zone's own column separately produces the same order and the wrong picture.
+  const wide = [
+    g('ec2:vpc', [row('vpc', 'vpc-1', { vpc_id: 'vpc-1' })]),
+    g('ec2:subnet', [
+      // Zone a: one public, one private. Zone b: one public, one private - but zone a's public
+      // subnet holds two instances and is therefore TALLER, which is what used to push zone b's
+      // private subnet up beside zone a's public one.
+      row('subnet', 'sn-a-pub', { vpc_id: 'vpc-1', subnet_id: 'sn-a-pub', zone: 'az-a' }),
+      row('subnet', 'sn-a-priv', { vpc_id: 'vpc-1', subnet_id: 'sn-a-priv', zone: 'az-a' }),
+      row('subnet', 'sn-b-pub', { vpc_id: 'vpc-1', subnet_id: 'sn-b-pub', zone: 'az-b' }),
+      row('subnet', 'sn-b-priv', { vpc_id: 'vpc-1', subnet_id: 'sn-b-priv', zone: 'az-b' }),
+    ]),
+    g('ec2:instance', ['i-1', 'i-2', 'i-3', 'i-4'].map((id) => row('instance', id,
+      { vpc_id: 'vpc-1', subnet_id: 'sn-a-pub', zone: 'az-a' }))),
+    g('ec2:route-table', [
+      row('route-table', 'rtb-pub', { vpc_id: 'vpc-1', links: { subnet: ['sn-a-pub', 'sn-b-pub'] },
+                                      routes: [{ destination: '0.0.0.0/0', target: 'igw-1', state: 'active' }] }),
+      row('route-table', 'rtb-priv', { vpc_id: 'vpc-1', links: { subnet: ['sn-a-priv', 'sn-b-priv'] },
+                                       routes: [{ destination: '0.0.0.0/0', target: 'nat-1', state: 'active' }] }),
+    ]),
+  ];
+  const scene = sceneOf(wide);
+  const box = (id) => scene.containers.find((c) => c.id === `subnet:${id}`);
+  const pubs = ['sn-a-pub', 'sn-b-pub'].map(box);
+  const privs = ['sn-a-priv', 'sn-b-priv'].map(box);
+  for (const b of [...pubs, ...privs]) assert.ok(b, 'a subnet of the fixture was not drawn');
+  assert.deepEqual(pubs.map((b) => b.tint), ['public', 'public']);
+  assert.deepEqual(privs.map((b) => b.tint), ['private', 'private']);
+  // One band each: both public subnets start at the same y, and so do both private ones.
+  assert.equal(pubs[0].y, pubs[1].y, 'the public subnets are not in one band');
+  assert.equal(privs[0].y, privs[1].y, 'the private subnets are not in one band');
+  // And the private band is BELOW the tallest public subnet, not merely below its own zone's.
+  const publicBottom = Math.max(...pubs.map((b) => b.y + b.h));
+  for (const b of privs) assert.ok(b.y >= publicBottom, `${b.id} rides up beside a public subnet`);
+  // Left and right, so the bands really are 상단 좌우 / 하단 좌우.
+  assert.notEqual(pubs[0].x, pubs[1].x, 'the two zones are stacked rather than side by side');
+  // The zone frames still hold their own subnets, which is the containment this could not trade.
+  for (const zone of scene.containers.filter((c) => c.kind === 'az')) {
+    const held = [...pubs, ...privs].filter((b) => inside(b, zone));
+    assert.equal(held.length, 2, `${zone.id} does not hold exactly its own two subnets`);
+    assert.equal(new Set(held.map((b) => b.id.split('-')[1])).size, 1, 'a zone holds another zone\'s subnet');
+  }
+});

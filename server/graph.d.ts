@@ -124,6 +124,17 @@ export interface GraphRow {
   folded: boolean;
 }
 
+/** One resource type in the picture, for the checkboxes above it. */
+export interface GraphType {
+  resourceType: string;
+  /** The Korean name where a spec has one, else the type itself. Same table the plates use. */
+  label: string;
+  total: number;
+  /** Drawn as the border round what is inside it rather than as a plate. Not offered as a box:
+   *  taking a border away is a different request from taking a plate away. */
+  container: boolean;
+}
+
 export interface RelationScene {
   width: number;
   height: number;
@@ -135,6 +146,9 @@ export interface RelationScene {
   rows: GraphRow[];
   omitted: { service: string; total: number }[];
   regions: string[];
+  /** Every type this policy reaches, hidden ones included - a reader who switched one off has to be
+   *  able to switch it back on, so the picker reads this off the UNFILTERED scene. */
+  types: GraphType[];
   counts: {
     nodes: number;
     edges: number;
@@ -152,6 +166,8 @@ export interface RelationScene {
     containerRows: number;
     /** Interfaces folded into a closed instance box. */
     foldedRows: number;
+    /** Rows a switched-off type took out of the picture. Not part of totalRows. */
+    hiddenRows: number;
   };
   kinds: number;
   measured: number;

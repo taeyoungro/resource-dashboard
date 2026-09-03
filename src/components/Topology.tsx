@@ -43,7 +43,7 @@ import {
   enumeratedFor, facets as facetsOf, scene as sceneOf, sceneSummary, specOf,
 } from "../../server/topology.js";
 import type {
-  EdgeKind, GraphContainer, GraphEdge, GraphNode, GraphOverflow, RelationScene,
+  EdgeKind, GraphContainer, GraphEdge, GraphNode, GraphOverflow, GraphType, RelationScene,
 } from "../../server/graph.js";
 import { G_ICON, KIND_LABEL, graphSummary, relationScene } from "../../server/graph.js";
 import type { FindingCard, ResourceFacts } from "../../server/resourceFacts.js";
@@ -816,6 +816,63 @@ function FacetPicker({ label, values, chosen, onChange }: {
  * speak for them, and folding them silently into "not in this VPC" would let an approver read a
  * denied optional permission as an empty VPC.
  */
+/**
+ * The type checkboxes: every type the policy reaches, all on, unticking hides.
+ *
+ * NOT a FacetPicker, and the difference is the grammar rather than the styling. A facet narrows TO
+ * what is ticked and collapses back to 전체 when everything is; this hides what is UNTICKED and
+ * 전체 is the state it starts in. They read the opposite way round because the questions are
+ * opposite: an account or a VPC is a place ("show me that one"), a resource type is a layer over
+ * the picture ("take that away"), and forty network interfaces drawn over the instances they belong
+ * to is the second question every time.
+ *
+ * Container types are not offered. A VPC and a subnet are the border round what is inside them, so
+ * unticking one would have to either leave the border (a box that does nothing) or take it away
+ * (and claim the instances inside are in no subnet). Said out loud below rather than left as a gap.
+ */
+function TypePicker({ types, hidden, onChange }: {
+  types: GraphType[];
+  hidden: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const offered = types.filter((t) => !t.container);
+  if (offered.length === 0) return null;
+  const toggle = (type: string) => onChange(
+    hidden.includes(type) ? hidden.filter((t) => t !== type) : [...hidden, type],
+  );
+  const off = offered.filter((t) => hidden.includes(t.resourceType));
+  return (
+    <div className="topology-types">
+      <span className="topology-facet-name">유형</span>
+      <div className="topology-type-list">
+        {offered.map((t) => (
+          <label key={t.resourceType}
+                 className={hidden.includes(t.resourceType) ? "topology-chip" : "topology-chip on"}
+                 title={t.resourceType}>
+            <input type="checkbox" checked={!hidden.includes(t.resourceType)}
+                   onChange={() => toggle(t.resourceType)} />
+            {t.label} <span className="muted">{t.total.toLocaleString()}</span>
+          </label>
+        ))}
+      </div>
+      <p className="muted small">
+        체크를 풀면 그 유형의 자원이 그림에서 빠진다 — 그 자원에 붙은 선도 함께 빠진다.{" "}
+        <strong>라우팅 테이블과 네트워크 ACL은 처음부터 꺼져 있다</strong>: 서브넷이 퍼블릭인지
+        프라이빗인지는 이름 옆 띠가 이미 말하므로, 표를 그리지 않아도 그 답은 화면에 있다. 표의
+        경로 전부를 보려면 켜서 판을 누른다.
+        {" "}<strong>VPC와 서브넷은 여기 없다</strong> — 그 둘은 판이 아니라 안에 있는 것을 두르는
+        테두리이고, 테두리를 지우는 것은 판을 지우는 것과 다른 요청이다.
+        {off.length > 0 && (
+          <>
+            {" "}지금 {off.length}종을 감췄다 ({off.map((t) => t.label).join(" · ")}).{" "}
+            <button type="button" className="linkish" onClick={() => onChange([])}>모두 켜기</button>
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function FilterBar({ facets, filter, onChange }: {
   facets: Facets;
   filter: SceneFilter;
@@ -954,7 +1011,21 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
   const cardBox = useRef<HTMLDialogElement>(null);
   const [openCard, setOpenCard] = useState<string | null>(null);
   const uid = useId();
-  const empty: SceneFilter = { accounts: [], regions: [], vpcs: [], subnets: [] };
+  /**
+   * The picture the button promises: no dimension narrowed, and two types switched off.
+   *
+   * 라우팅 테이블 and 네트워크 ACL start off because the question they used to be needed for is
+   * already answered elsewhere on the screen - the subnet's own label band names its table and the
+   * default route that made it public or private, so the table's plate and its association lines
+   * are a second copy of an answer the reader has. Switching them on is one click and shows the
+   * routes in full; leaving them on by default put twelve plates and their lines over the
+   * resources somebody opened the window to look at.
+   *
+   * A DEFAULT, not a decision, so the sentence under the picture says 「지금 그림에 있는 것은
+   * 일부다」 rather than 「고른 조건만 그렸다」 - nobody chose this one.
+   */
+  const empty: SceneFilter = { accounts: [], regions: [], vpcs: [], subnets: [],
+                               hiddenTypes: ["ec2:route-table", "ec2:network-acl"] };
   // 전체 on every dimension, which is the picture the button promises. Reset in onClose below, and
   // not merely by the initial value: this component never unmounts (the sweep poll re-renders it
   // with the same key), so a filter an approver set five minutes ago survived closing the window,
@@ -1229,6 +1300,11 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
             </p>
           )}
 
+          {/* Types first and places second: which LAYERS are on is the question a reader answers
+              once on opening, and which place they want is the one they answer repeatedly. Read
+              off the UNFILTERED scene so a type switched off is still in the list to switch on. */}
+          <TypePicker types={wholeGraph.types} hidden={filter.hiddenTypes ?? []}
+                      onChange={(next) => setFilter({ ...filter, hiddenTypes: next })} />
           <FilterBar facets={facets} filter={filter} onChange={setFilter} />
 
           {/* What the placement lookup did NOT answer, one sentence per reason, and only the
@@ -1240,11 +1316,16 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
           {/* What the filter took away, in the picture's own units. An approver who narrows and
               then reads a small number has to be able to tell "this policy reaches little" from
               "I am looking at part of it", and the picture alone cannot say which. */}
+          {/* 「고른 조건만」 was the old wording and it is wrong now that two types are off by
+              DEFAULT: nobody chose those. What the sentence has to say either way is that the
+              count under the picture is not the count of what the policy reaches. */}
           {graph.narrowed && (
             <p className="warn-inline">
-              고른 조건만 그렸다 — {subject} {(scene ?? graph).kinds}종{" "}
+              지금 그림에 있는 것은 일부다 — {subject} {(scene ?? graph).kinds}종{" "}
               {(scene ?? graph).measured.toLocaleString()}개.
-              조건 없이는 {summary.kinds}종 {summary.measured.toLocaleString()}개다.
+              좁히지 않으면 {summary.kinds}종 {summary.measured.toLocaleString()}개다.
+              {graph.counts.hiddenRows > 0
+                && ` 유형 체크를 풀어 감춘 것이 ${graph.counts.hiddenRows.toLocaleString()}개 있다.`}
               {(scene ?? graph).empty && " 고른 조건에 맞는 자원이 없어서 계정과 리전 테두리만 남았다."}
             </p>
           )}
@@ -1292,6 +1373,16 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   ACL·엔드포인트는 가운데 열에, 가용 영역은 그 좌우에 같은 수로 놓는다. 보안 그룹과
                   나머지는 그 위에 좌우로 번갈아 놓는다. 자리는 그리는 규칙이고, 소속은 테두리다.
                 </li>
+                {graph.containers.some((c) => c.kind === "subnet") && (
+                <li>
+                  <strong>서브넷의 줄</strong> — 퍼블릭 서브넷이 위, 색이 없는 것이 가운데,
+                  프라이빗이 아래다. 위쪽이 <strong>인터넷 게이트웨이와 가까운 쪽</strong>이고,
+                  가용 영역이 좌우로 놓이므로 퍼블릭은 상단 좌우에 프라이빗은 하단 좌우에 온다.
+                  줄은 가용 영역을 가로질러 맞춘다 — 한쪽 영역이 더 높아도 프라이빗 줄이 퍼블릭
+                  옆으로 올라오지 않는다. <strong>서브넷은 여전히 자기 가용 영역 안에 있다</strong>:
+                  줄은 그리는 규칙이고, 무엇인지는 이름 옆 띠가 말한다.
+                </li>
+                )}
                 {graph.nodes.some((n) => n.box) && (
                 <li>
                   <strong>인스턴스 상자</strong> — 누르면 붙은 네트워크 인터페이스가 안에 펼쳐지고, 다시

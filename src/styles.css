@@ -1701,6 +1701,40 @@ dialog.policy-dialog.finding-dialog { max-height: calc(100vh - 48px); overflow: 
 .panel-level-Permissions-management, .panel-level-Write { color: var(--danger); font-weight: 600; }
 .panel-level-Tagging { color: var(--warn); }
 
+/* The type checkboxes, above the filter bar. A grid rather than a wrapping row: with thirty types
+   a free wrap gives ragged columns nobody can scan down, and the count sits at a fixed offset so
+   the eye can compare them. Capped in height with its own scroll - an admin policy reaches enough
+   types to push the picture off the screen otherwise. */
+.topology-types {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: start;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.topology-type-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 2px 8px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+.topology-types > .muted.small { grid-column: 2; margin: 2px 0 0; }
+/* A button that reads as a link: it changes the picture rather than navigating, so it is a button,
+   but it sits inside a sentence and a chrome button there would break the line. */
+.linkish {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .panel-finding { padding: 6px 0; border-top: 1px solid var(--border); }
 .panel-finding:first-child { border-top: none; }
 /* The row is a button that opens the finding's own card, so it has to LOOK like a row and BEHAVE
