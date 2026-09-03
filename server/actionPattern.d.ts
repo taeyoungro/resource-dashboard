@@ -34,6 +34,14 @@ export declare function coversProtected(
   action: string, protectedActions: Iterable<string>,
 ): string[];
 
+/** The exemption this statement needs and cannot make concrete - no picked ARN carries an account. */
+export declare function unsubstitutableExemption(
+  reference: ImpactActionReference | null | undefined,
+  action: string,
+  picked: string[],
+  substitute: (pattern: string, picked: string[]) => string | null,
+): { action: string; pattern: string } | null;
+
 /** Where a wildcard allow_only statement's own exemption would keep the type it claims to scope. */
 export declare function swallowedByExemption(
   reference: ImpactActionReference | null | undefined,

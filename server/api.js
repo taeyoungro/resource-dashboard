@@ -25,7 +25,8 @@ import { nothingRestricted, planPrefixFromId, readImpact, readPlan, reclassify,
 import { controlPlane } from './controlPlane.js';
 import { condense, digestBytes } from './riskDigest.js';
 import { candidates as proposeCandidates } from './candidatePaths.js';
-import { coversProtected, swallowedByExemption } from './actionPattern.js';
+import { coversProtected, swallowedByExemption, unsubstitutableExemption }
+  from './actionPattern.js';
 import { creationExemption } from './inlinePreview.js';
 import { loadTemplates } from './templates.js';
 import { findings as ruleFindings, sections, summary } from './findings.js';
@@ -1559,6 +1560,22 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
           // refuses this decision; this refuses it while the person who chose it is still here.
           if (restriction.intent === 'allow_only') {
             for (const action of actions) {
+              // And the exemption that cannot be composed at all: ${Account} comes from the
+              // picked ARNs, and an s3 bucket ARN carries none. Substituted empty it matches
+              // nothing, so the exemption vanishes and the statement denies every call while
+              // reading as a scope - which is why the writer refuses this decision too.
+              const unmade = unsubstitutableExemption(
+                stored.document.action_reference, action, named, creationExemption,
+              );
+              if (unmade) {
+                throw new HttpError(
+                  400,
+                  `${action}이 덮는 ${unmade.action}은 ${unmade.pattern} 을 면제해야 하는데, `
+                  + '고른 자원 중 어느 것도 계정을 담고 있지 않아 그 패턴을 만들 수 없다. 빈 '
+                  + '계정으로 쓰면 아무것도 맞지 않아 문장이 모든 호출을 거부한다 — 계정을 담은 '
+                  + '자원을 함께 고르거나, 와일드카드 대신 동작을 지목한다.',
+                );
+              }
               const swallowed = swallowedByExemption(
                 stored.document.action_reference, action, named, creationExemption,
               );

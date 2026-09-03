@@ -10,7 +10,7 @@ import { test } from 'node:test';
 
 import {
   coveredNames, coversProtected, createdFormats, reachesInside, splitAction, swallowedByExemption,
-  wildcardMatch,
+  unsubstitutableExemption, wildcardMatch,
 } from './actionPattern.js';
 import { creationExemption } from './inlinePreview.js';
 
@@ -120,4 +120,22 @@ test('an exemption that keeps the type it claims to scope is reported', () => {
   assert.equal(swallowedByExemption(REFERENCE, 's3:Delete*',
                                     ['arn:aws:s3:::keep'], creationExemption), null);
   assert.equal(swallowedByExemption(REFERENCE, 'athena:*', [], creationExemption), null);
+});
+
+
+test('an exemption that cannot be made concrete is reported before the writer refuses it', () => {
+  // ${Account} comes from the picked ARNs and an s3 bucket ARN carries none, so the athena pattern
+  // cannot be composed from a bucket. Written with an empty account it matches nothing - the
+  // exemption disappears and the statement denies every call while reading as a scope.
+  const hit = unsubstitutableExemption(REFERENCE, 'athena:*', ['arn:aws:s3:::keep'],
+                                       creationExemption);
+  assert.equal(hit?.action, 'athena:CreateDataCatalog');
+  assert.equal(hit?.pattern, 'arn:${Partition}:athena:*:${Account}:datacatalog/*');
+  // With an ARN that carries one, it composes and there is nothing to report.
+  assert.equal(unsubstitutableExemption(
+    REFERENCE, 'athena:*', [`arn:aws:athena:us-east-1:${ACCOUNT}:workgroup/primary`],
+    creationExemption), null);
+  // s3's own bucket pattern needs no account at all, so a bucket pick is fine for it.
+  assert.equal(unsubstitutableExemption(REFERENCE, 's3:*', ['arn:aws:s3:::keep'],
+                                        creationExemption), null);
 });

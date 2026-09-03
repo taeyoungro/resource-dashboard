@@ -123,6 +123,31 @@ export function coversProtected(action, protectedActions) {
 }
 
 /**
+ * The first creation exemption this allow_only statement needs and CANNOT compose, or null.
+ *
+ * ${Account} is substituted from the picked ARNs, and some ARN shapes carry no account at all - an
+ * s3 bucket is arn:aws:s3:::name. A pattern whose type HAS an account, substituted with an empty
+ * one, matches nothing: the exemption silently disappears and the statement becomes the total deny
+ * it exists to prevent. The writer refuses the decision (restriction._validate); this is the same
+ * answer on the page, so a fold that would be refused is never offered.
+ */
+export function unsubstitutableExemption(reference, action, picked, substitute) {
+  const arns = [...(picked ?? [])].sort();
+  if (!arns.length) return null;
+  const created = reference?.created_formats ?? {};
+  const { service } = splitAction(action);
+  const block = created[service] ?? {};
+  for (const known of coveredNames(action, Object.keys(block))) {
+    for (const pattern of block[known] ?? []) {
+      if (substitute(pattern, arns) === null) {
+        return { action: `${service}:${known}`, pattern };
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * The (covered action, exemption pattern, picked ARN) where an allow_only statement's own exemption
  * would keep every resource of the type it claims to scope, or null.
  *

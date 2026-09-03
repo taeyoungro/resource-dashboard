@@ -20,7 +20,8 @@ import {
   DENIED, NOT_DENIED, UNKNOWN, evaluate, virtualResource,
 } from "../../server/virtualResource.js";
 import { serviceFold } from "../../server/serviceFold.js";
-import { createdFormats, reachesInside, swallowedByExemption } from "../../server/actionPattern.js";
+import { createdFormats, reachesInside, swallowedByExemption, unsubstitutableExemption }
+  from "../../server/actionPattern.js";
 import { anyAnswered, everyFinding } from "../../server/analysisFindings.js";
 import { containmentState } from "../../server/blockPath.js";
 import type { FindingsByScope } from "../../server/analysisFindings";
@@ -1488,7 +1489,9 @@ function RestrictionEditor({
     // datacatalog/* and every other catalog with it. Offering the fold there would hand somebody a
     // one-click way to turn a real restriction into one that restricts nothing.
     if (intent === "allow_only"
-        && swallowedByExemption(reference, folded.wildcard, choices[0].resources, creationExemption)) {
+        && (swallowedByExemption(reference, folded.wildcard, choices[0].resources, creationExemption)
+            || unsubstitutableExemption(reference, folded.wildcard, choices[0].resources,
+                                        creationExemption))) {
       return null;
     }
     return (
