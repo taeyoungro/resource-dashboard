@@ -50,6 +50,16 @@ export const G_FOOT_LINE = 16;
 export const G_FOOT_PAD = 8;
 
 /** Past these the picture stops adding and says so. Both are counts of what is DRAWN. */
+/**
+ * Types drawn as the BORDER round what is inside them rather than as a plate of their own.
+ *
+ * One name for it, because two readers need the same answer: placeOf, which puts a row in no slot
+ * because the row IS a slot, and the type checkboxes, which do not offer these - taking a border
+ * away is a different request from taking a plate away, and a picture whose subnet frames vanished
+ * while the instances stayed would be claiming those instances are in no subnet.
+ */
+export const CONTAINER_TYPES = new Set(['ec2:vpc', 'ec2:subnet']);
+
 export const NODE_BUDGET = 400;
 export const EDGE_BUDGET = 700;
 /** Instance cards per subnet before the subnet folds the rest into one plate. */
@@ -169,6 +179,24 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
    * not rows the assessment is missing.
    */
   const uncarried = new Map();
+  /**
+   * Types the reader has switched off, and what that cost.
+   *
+   * A DIFFERENT KIND OF FILTER from the four above it, and the grammar says so: those narrow to
+   * what is ticked, this hides what is unticked. The reason is what a reader wants from each. An
+   * account or a VPC is a place and the question is "show me that one"; a resource type is a
+   * LAYER, and forty network interfaces over the instances they belong to is a picture whose
+   * question is "take that away" - so every type starts on and unticking removes it.
+   *
+   * The container types are never here: a VPC and a subnet are drawn as the border round what is
+   * inside them, not as a plate, and taking a border away is a different request from taking a
+   * plate away. `types` below says which is which and the picker offers only the plates.
+   */
+  const hiddenTypes = new Set(filter?.hiddenTypes ?? []);
+  /** Every type this policy reaches, for the checkboxes - hidden ones included, or a reader could
+   *  not switch one back on. Counted before hiding, so the numbers do not move as they are used. */
+  const typeRows = new Map();
+  let hiddenRows = 0;
   for (const group of policy?.affected ?? []) {
     const type = group?.resource_type;
     if (!type) continue;
@@ -179,6 +207,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     }
     const kept = rows.filter((r) => keeps(filter, r));
     if (kept.length === 0) continue;
+    typeRows.set(type, (typeRows.get(type) ?? 0) + kept.length);
+    if (hiddenTypes.has(type)) { hiddenRows += kept.length; continue; }
     kinds += 1;
     measured += narrowed ? kept.length : (Number(group?.total) || 0);
     for (const r of kept) {
@@ -375,8 +405,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   const BAND_TYPES = new Set(['ec2:security-group', 'ec2:route-table', 'ec2:network-acl',
                               'ec2:vpc-endpoint', 'ec2:internet-gateway', 'ec2:vpc']);
   const placeOf = (n) => {
-    if (n.resourceType === 'ec2:vpc') return null;                 // the container itself
-    if (n.resourceType === 'ec2:subnet') return null;              // the container itself
+    if (CONTAINER_TYPES.has(n.resourceType)) return null;          // the container itself
     if (n.resourceType === 'ec2:internet-gateway') return n.vpc ? { edge: n.vpc } : { region: true };
     if (claimed.has(n.id)) return { card: true };
     if (n.subnet && subnetInfo.has(n.subnet)) return { subnet: n.subnet };
@@ -609,7 +638,32 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     // The zones, dealt into the halves: the first half takes the first half of them, rounded up.
     const split = halves.length === 2 ? Math.ceil(zoneIds.length / 2) : zoneIds.length;
     const zoneGroups = halves.length === 2 ? [zoneIds.slice(0, split), zoneIds.slice(split)] : [zoneIds];
-    let zonesBottom = zonesTop;
+    /**
+     * The subnets, in two passes: the frames first, then the subnets rank by rank ACROSS the zones.
+     *
+     * The second pass is what puts every public subnet in one band at the top of the VPC and every
+     * private one in a band below it - left column and right column together - rather than each
+     * zone ordering its own column and the two bands landing wherever the zones happen to be tall.
+     * The internet gateway straddles the VPC's top border, so the top band is the one nearest the
+     * thing that makes a subnet public, and a reader reads outward-facing down to inward-facing.
+     *
+     * EVERY SUBNET IS STILL INSIDE ITS OWN AVAILABILITY ZONE, which is the containment the legend
+     * asserts and the one thing this could not trade for the arrangement. A zone is one box and
+     * cannot be in two bands, so the bands are made by giving each rank a common top across the
+     * zones instead - the frames stay whole and the rows line up.
+     *
+     * Ordering is a DRAWING RULE and not a claim, the same as every other position in this picture:
+     * what a subnet IS stays the tint and the sentence on its label band, both read off the route
+     * table. A reader who follows the rule down the column and one who reads the bands get the same
+     * answer, which is the point of ordering by it at all.
+     */
+    const tintRank = (id) => {
+      const tint = tintOf(id, vpcId)?.tint ?? null;
+      // Three ranks, not two. A subnet whose table this assessment does not hold is neither, and
+      // sorting it with the private ones would put an unanswered question under an answered one.
+      return tint === 'public' ? 0 : tint === null ? 1 : 2;
+    };
+    const zoneBoxes = [];
     zoneGroups.forEach((group, half) => {
       if (group.length === 0) return;
       const [x0, x1] = halves[half];
@@ -621,10 +675,19 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
                      x: zx, y: zonesTop, w: zoneW, h: 0, stroke: null, dashed: zone === '?',
                      badge: null, measured: zone !== '?' };
         containers.push(az);
-        let sy = az.y + HEAD;
-        const subnetsHere = [...subnetInfo.entries()]
+        const here = [...subnetInfo.entries()]
           .filter(([, i]) => i.vpc === vpcId && (i.zone || '?') === zone).map(([id]) => id).sort();
-        for (const subnetId of subnetsHere) {
+        zoneBoxes.push({ az, ranks: [0, 1, 2].map((r) => here.filter((id) => tintRank(id) === r)) });
+      });
+    });
+
+    let rankTop = zonesTop + HEAD;
+    let placedSubnet = false;
+    for (const rank of [0, 1, 2]) {
+      let rankBottom = rankTop;
+      for (const { az, ranks } of zoneBoxes) {
+        let sy = rankTop;
+        for (const subnetId of ranks[rank]) {
           const info = subnetInfo.get(subnetId);
           const subnetRow = nodes.get(subnetId);
           // Public or private, and WHAT SAYS SO, on the label band. The line the association is
@@ -655,11 +718,21 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
           const contentH = flow(cards, sub.x + PAD, sub.y + HEAD, sub.w - 2 * PAD);
           sub.h = HEAD + contentH + PAD;
           sy += sub.h + ROW_GAP;
+          placedSubnet = true;
         }
-        az.h = (sy - ROW_GAP) - az.y + PAD;
-        zonesBottom = Math.max(zonesBottom, az.y + az.h);
-      });
-    });
+        rankBottom = Math.max(rankBottom, sy);
+      }
+      rankTop = rankBottom;
+    }
+
+    // One height for every zone in this VPC: the bands are common, so the frames are too - and a
+    // row of zone boxes ending at different heights would read as a difference between the zones.
+    let zonesBottom = zonesTop;
+    const zonesH = (placedSubnet ? rankTop - ROW_GAP : zonesTop + HEAD) - zonesTop + PAD;
+    for (const { az } of zoneBoxes) {
+      az.h = zonesH;
+      zonesBottom = Math.max(zonesBottom, az.y + az.h);
+    }
     bottom = Math.max(bottom, zonesBottom);
     vpc.h = bottom === top ? HEAD + PAD : bottom - vpc.y + PAD;
     y = vpc.y + vpc.h + ROW_GAP;
@@ -1181,6 +1254,10 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     foot.push(`그림 밖으로 나가는 연결 ${danglingTotal.toLocaleString()}개 — 상대 자원이 이 평가에 없다 `
       + '(정책이 닿지 않거나 목록이 잘렸다).');
   }
+  if (hiddenRows > 0) {
+    foot.push(`체크를 풀어 감춘 자원 ${hiddenRows.toLocaleString()}개 (유형 ${hiddenTypes.size}종) — `
+      + '위의 유형 상자에서 다시 켤 수 있다.');
+  }
   if (uncarried.size > 0) {
     const total = [...uncarried.values()].reduce((n, v) => n + v, 0);
     foot.push(`평가가 행을 담지 않은 자원 ${total.toLocaleString()}개 (서비스 ${uncarried.size}종) — `
@@ -1228,6 +1305,16 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     omitted: [...uncarried.entries()].map(([service, total]) => ({ service, total }))
       .sort((a, b) => b.total - a.total || a.service.localeCompare(b.service)),
     regions: regionList,
+    /**
+     * Every type this policy reaches, for the type checkboxes: what it is called, how many rows it
+     * has, and whether it is a border rather than a plate. Hidden types are IN this list - a reader
+     * who switched one off has to be able to switch it back on - so the picker reads it off the
+     * unfiltered scene and the counts do not move as the boxes are used.
+     */
+    types: [...typeRows.entries()]
+      .map(([type, total]) => ({ resourceType: type, label: TYPE_LABEL.get(type) ?? type, total,
+                                 container: CONTAINER_TYPES.has(type) }))
+      .sort((a, b) => a.label.localeCompare(b.label) || a.type.localeCompare(b.type)),
     counts: {
       nodes: placedNodes.length,
       edges: kept.length,
@@ -1246,6 +1333,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       containerRows: ids.filter((id) => placeOf(nodes.get(id)) === null).length,
       /** Interfaces inside a closed instance box: placed and counted, not drawn. */
       foldedRows: foldedNodes.length,
+      /** Rows a switched-off type took out of the picture. Not in totalRows - they are not rows of
+       *  this scene at all - so the accounting above still balances. */
+      hiddenRows,
     },
     kinds,
     measured,

@@ -1905,10 +1905,58 @@ test('a narrowed picture says what it left out', () => {
   // Defect it prevents: an approver narrowing to one region, reading a small number, and carrying
   // away "this policy reaches little". The picture alone cannot tell that from "I am looking at
   // part of it".
-  assert.ok(TOPOLOGY.includes('고른 조건만 그렸다'),
+  //
+  // The wording is neutral about WHO narrowed it, and that is deliberate now that two types are off
+  // by default: 「고른 조건만」 said the reader chose this, and for those two nobody did.
+  assert.ok(TOPOLOGY.includes('지금 그림에 있는 것은 일부다'),
             'a filtered picture does not say it is filtered');
-  assert.ok(TOPOLOGY.includes('조건 없이는'),
+  assert.ok(TOPOLOGY.includes('좁히지 않으면'),
             'a filtered picture does not say what the whole would be');
+  assert.ok(TOPOLOGY.includes('유형 체크를 풀어 감춘 것이'),
+            'a picture with a type switched off does not say how much that took away');
+});
+
+test('the type checkboxes hide a layer, and say what they are not offering', () => {
+  // The opposite grammar from the facets beside them, on purpose: a facet narrows TO what is
+  // ticked, this hides what is UNTICKED. An account is a place ("show me that one"); a resource
+  // type is a layer over the picture ("take that away"), and forty network interfaces drawn over
+  // the instances they belong to is the second question every time.
+  assert.ok(TOPOLOGY.includes('function TypePicker('), 'there are no type checkboxes');
+  assert.ok(TOPOLOGY.includes('checked={!hidden.includes(t.resourceType)}'),
+            'the boxes read the narrow-to way round, so unticking one shows only it');
+  // Read off the UNFILTERED scene, or a type switched off would leave the list and could never be
+  // switched back on.
+  assert.ok(TOPOLOGY.includes('<TypePicker types={wholeGraph.types}'),
+            'the checkbox list is read off the filtered scene');
+  // Two off by default: the subnet band already names its table and the default route that made it
+  // public or private, so the table's plate and lines are a second copy of an answer on screen.
+  assert.match(TOPOLOGY, /hiddenTypes: \["ec2:route-table", "ec2:network-acl"\]/,
+               'the route tables and ACLs are not switched off to begin with');
+  assert.ok(TOPOLOGY.includes('라우팅 테이블과 네트워크 ACL은 처음부터 꺼져 있다'),
+            'nothing says why two types start switched off');
+  // Container types are not offered - taking a border away is a different request, and a picture
+  // whose subnet frames vanished while the instances stayed would claim they are in no subnet.
+  assert.ok(TOPOLOGY.includes('types.filter((t) => !t.container)')
+            && TOPOLOGY.includes('VPC와 서브넷은 여기 없다'),
+            'the border types are offered as boxes, or their absence is unexplained');
+  const graph = read('../server/graph.js');
+  assert.ok(graph.includes('export const CONTAINER_TYPES')
+            && graph.includes('if (CONTAINER_TYPES.has(n.resourceType)) return null;'),
+            'placeOf and the checkbox list can disagree about what a border is');
+  for (const cls of ['.topology-types', '.topology-type-list', '.linkish']) {
+    assert.ok(CSS.includes(cls), `${cls} is rendered and has no rule`);
+  }
+});
+
+test('the legend explains the band the subnets are drawn in', () => {
+  // The layout itself is server-side and server/graph.test.js pins it against real coordinates -
+  // that the public subnets share one top across every zone, that the private band starts below
+  // the tallest public one, and that each zone frame still holds only its own subnets. What has to
+  // hold HERE is that the screen says the arrangement means something, because a reader who sees
+  // an order and is told nothing will invent a reason for it.
+  const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('topology-legend'));
+  assert.ok(legend.includes('인터넷 게이트웨이와 가까운 쪽'),
+            'the legend does not say what the top band of subnets is');
 });
 
 test('the closed-state summary describes the policy, not the filter', () => {

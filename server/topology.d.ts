@@ -234,6 +234,17 @@ export interface Facets {
 
 /** null or an empty list on a dimension means 전체. */
 export interface SceneFilter {
+  /**
+   * Resource types to HIDE, which is the opposite grammar from every dimension below it.
+   *
+   * The others narrow to what is listed; this removes what is listed. An account or a VPC is a
+   * place and the question a reader has about one is "show me that one"; a resource type is a
+   * LAYER, and forty network interfaces drawn over the instances they belong to is a picture whose
+   * question is "take that away". So every type starts on and unticking removes it.
+   *
+   * Empty still means 전체 - nothing hidden - which is the same reading as the rest.
+   */
+  hiddenTypes?: string[] | null;
   accounts?: string[] | null;
   regions?: string[] | null;
   vpcs?: string[] | null;
