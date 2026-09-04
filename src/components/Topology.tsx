@@ -330,21 +330,35 @@ function GraphNodeShape({ node, onToggle, onSelect, onRules, selected, mark }: {
    *  approver does not have to click thirty plates to find the one a rule fired on. */
   mark: string | null;
 }) {
-  // Every plate is a button: clicking it asks what this policy lets somebody do to this resource
-  // and what the two analyses found about it. An instance box answers that AND opens to show the
-  // interfaces it holds - one click, one subject, both halves of "tell me about this instance".
+  // TWO ACTS, and a plate answers a different question for each.
   //
-  // A security group is the same shape of act with a different second half: what a group ALLOWS is
-  // a table, not a set of plates, so the click opens that table over the picture. The panel opens
-  // underneath it either way, and closing the table leaves it there.
+  //   one click    THIS resource. What the policy lets somebody do to it and what the two
+  //                analyses found about it, in the panel beside the picture. Nothing moves.
+  //   double click WHAT IT HOLDS. An instance box opens to show its interfaces; a security group
+  //                opens the table of its rules. Both change the screen, and both are a second
+  //                question that follows the first rather than arriving with it.
+  //
+  // They were one act before, and the cost was that a reader could not ask the first question
+  // alone: clicking a group to see its actions put a modal over the picture, and clicking an
+  // instance to see its findings pushed the plates beside it aside. A double click is the ordinary
+  // way to say "and open it", and the first of its two clicks has already opened the panel - so
+  // the two acts compose rather than compete.
   const type = node.resourceType.replace(":", "-");
-  const press = () => {
+  const holdsSomething = (node.box && node.holds > 0) || node.ruleCount > 0;
+  const open = () => {
     if (node.box && node.holds > 0) onToggle(node.id);
     if (node.ruleCount > 0) onRules(node.arn);
-    onSelect(node.arn);
   };
+  // A double click fires onClick twice on the way, which is why selecting is the cheap half: it
+  // is idempotent and moves nothing, so the two clicks that precede the open are not felt.
   const keyed = (e: { key: string; preventDefault: () => void }) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); press(); }
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    // The keyboard has no double click. The same SEQUENCE stands in for it: the first Enter
+    // selects, and an Enter on the plate that is already selected opens what it holds - which is
+    // what the two clicks of a double click do, in the same order. The aria-label says so.
+    if (selected && holdsSomething) open();
+    else onSelect(node.arn);
   };
   const marked = mark ? ` graph-node-marked graph-node-${mark.toLowerCase()}` : "";
   const chosen = selected ? " graph-node-selected" : "";
@@ -357,8 +371,10 @@ function GraphNodeShape({ node, onToggle, onSelect, onRules, selected, mark }: {
         tabIndex={0}
         aria-expanded={openable ? node.open : undefined}
         aria-pressed={selected}
-        aria-label={`${node.title.split("\n")[0]}${openable ? ` — 네트워크 인터페이스 ${node.holds}개 ${node.open ? "접기" : "펼치기"}` : ""} — 상세 보기`}
-        onClick={press}
+        aria-label={`${node.title.split("\n")[0]} — 상세 보기${
+          openable ? `, 두 번 누르면 네트워크 인터페이스 ${node.holds}개 ${node.open ? "접기" : "펼치기"}` : ""}`}
+        onClick={() => onSelect(node.arn)}
+        onDoubleClick={open}
         onKeyDown={keyed}
       >
         <rect
@@ -388,9 +404,10 @@ function GraphNodeShape({ node, onToggle, onSelect, onRules, selected, mark }: {
       role="button"
       tabIndex={0}
       aria-pressed={selected}
-      aria-label={`${node.title.split("\n")[0]}${
-        node.ruleCount > 0 ? ` — 규칙 ${node.ruleCount}개 표로 보기` : ""} — 상세 보기`}
-      onClick={press}
+      aria-label={`${node.title.split("\n")[0]} — 상세 보기${
+        node.ruleCount > 0 ? `, 두 번 누르면 규칙 ${node.ruleCount}개 표로 보기` : ""}`}
+      onClick={() => onSelect(node.arn)}
+      onDoubleClick={open}
       onKeyDown={keyed}
     >
       {node.erase && (
@@ -1249,6 +1266,20 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
   const drawnKinds = (Object.keys(KIND_LABEL) as EdgeKind[])
     .filter((kind) => graph.edges.some((e) => e.kind === kind));
   /**
+   * What a double click opens IN THIS PICTURE, as the halves of one sentence.
+   *
+   * Off the plates rather than off the counts: a plate opens what it itself holds, so a scene of
+   * closed instance boxes with no interfaces recorded, or of groups whose rules this assessment
+   * never read, has nothing to promise and says nothing. Read from the drawn scene, so the
+   * sentence follows the type checkboxes - switch the instances off and it stops mentioning them.
+   */
+  const holders = [
+    graph.nodes.some((n) => n.box && n.holds > 0)
+      && "인스턴스는 상자가 펼쳐지며 안의 네트워크 인터페이스가 나온다.",
+    graph.nodes.some((n) => n.ruleCount > 0)
+      && "보안 그룹은 규칙 표가 그림 위에 뜬다.",
+  ].filter((x): x is string => typeof x === "string");
+  /**
    * The line beside the closed button, off the UNFILTERED scene.
    *
    * The type scene where there is one, because that is the picture the button opens on for those
@@ -1469,10 +1500,18 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
               </div>
               {!facts && (
                 <p className="muted small">
-                  자원 판을 누르면 <strong>이 정책이 그 자원에 허용하는 작업</strong>과{" "}
+                  자원 판을 <strong>한 번 누르면</strong> 그 자원 하나에 대해서만 —{" "}
+                  <strong>이 정책이 그 자원에 허용하는 작업</strong>과{" "}
                   <strong>정책 기반 분석·AI 분석이 그 자원에 대해 찾은 것</strong>이 옆에 열린다.
-                  {graph.counts.ruleRows > 0
-                    && ` 보안 그룹 판을 누르면 그 그룹의 규칙 표가 그림 위에 함께 열린다.`}
+                  {/* The second half only where there is something to open. Built from the kinds
+                      this picture actually has: a scene of buckets holds neither, and a sentence
+                      promising a fold that is not there is worse than no sentence. */}
+                  {holders.length > 0 && (
+                    <>
+                      {" "}<strong>두 번 누르면</strong> 그 자원이 품고 있는 것이 열린다 —{" "}
+                      {holders.join(" ")}
+                    </>
+                  )}
                   {found.length > 0 && marks.size > 0
                     && ` 발견이 지목한 자원 ${marks.size}개에는 판 모서리에 점을 찍었다.`}
                 </p>
@@ -1507,8 +1546,10 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                 )}
                 {graph.nodes.some((n) => n.box) && (
                 <li>
-                  <strong>인스턴스 상자</strong> — 누르면 붙은 네트워크 인터페이스가 안에 펼쳐지고, 다시
-                  누르면 접힌다. 접혀 있어도 아래 표에는 인터페이스가 「인스턴스 안」으로 있다.{" "}
+                  <strong>인스턴스 상자</strong> — <strong>두 번 누르면</strong> 붙은 네트워크
+                  인터페이스가 안에 펼쳐지고, 다시 두 번 누르면 접힌다. 한 번 누르는 것은 그
+                  인스턴스 하나의 상세를 여는 것이고 상자는 그대로다. 접혀 있어도 아래 표에는
+                  인터페이스가 「인스턴스 안」으로 있다.{" "}
                   보안 그룹 선은 인터페이스가 아니라 인스턴스 상자로 향한다 — 인스턴스의 그룹은 그
                   인터페이스의 그룹이고, 펼치든 접든 선은 같다. 인터페이스가 이 평가에 없으면 상자는
                   비어 있고 그렇다고 적는다. 볼륨은 상자 아래에 선으로 붙는다 — 부착이지 포함이 아니다.
@@ -1575,7 +1616,7 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                     지목한 것이고, 화살표는 <strong>허용된 방향</strong>을 가리킨다. 인바운드 규칙은
                     지목한 그룹에서 이쪽으로, 아웃바운드 규칙은 이쪽에서 저쪽으로. 주소가 아니라
                     그룹이 대상이므로 그 그룹을 단 자원이 어디에 있든 허용된다 — 규칙 값은 그룹
-                    판을 누르면 표로 열린다.
+                    판을 두 번 누르면 표로 열린다.
                   </li>
                 )}
                 <li>

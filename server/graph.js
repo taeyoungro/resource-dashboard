@@ -631,7 +631,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     const boxH = open ? HEAD + PAD + rows * NODE_H + (rows - 1) * NODE_GAP + PAD : NODE_H;
     // Short enough for a closed box's one line; the box's aria-label says it in full.
     const note = enis.length === 0 ? '인터페이스 · 평가에 없음'
-      : open ? null : `인터페이스 ${enis.length}개 · 펼치기`;
+      : open ? null : `인터페이스 ${enis.length}개 · 두 번 눌러 펼치기`;
     return {
       ids: [id, ...enis, ...vols],
       w: boxW,
@@ -1389,7 +1389,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   }
   if (ruleRows > 0) {
     foot.push(`보안 그룹 규칙 ${ruleRows.toLocaleString()}개는 판으로 그리지 않는다 — `
-      + '그룹 판을 누르면 표로 열린다.');
+      + '그룹 판을 두 번 누르면 표로 열린다.');
   }
   if (uncarried.size > 0) {
     const total = [...uncarried.values()].reduce((n, v) => n + v, 0);

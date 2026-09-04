@@ -2115,14 +2115,14 @@ test('every connection is dashed and orthogonal, and a derived one is dashed dif
   assert.ok(legend.includes('촘촘한 점선'), 'the legend does not name the derived dash');
 });
 
-test('an instance opens on click to show its interfaces, and the subnets are coloured by their tables', () => {
+test('an instance opens on a DOUBLE click to show its interfaces, and the subnets are coloured by their tables', () => {
   assert.ok(TOPOLOGY.includes('{ expanded }'), 'the picture is not told which boxes are open');
   // A box with no interfaces to show has no expanded state at all - aria-expanded on it would
   // promise a fold that is not there.
   assert.ok(TOPOLOGY.includes('aria-expanded={openable ? node.open : undefined}'),
             'the box does not say whether it is open');
-  assert.ok(TOPOLOGY.includes('onToggle(node.id)'), 'clicking a box toggles nothing');
-  assert.ok(TOPOLOGY.includes('e.key === "Enter" || e.key === " "'), 'a box cannot be opened from the keyboard');
+  assert.ok(TOPOLOGY.includes('onToggle(node.id)'), 'a box toggles nothing');
+  assert.ok(TOPOLOGY.includes('e.key !== "Enter" && e.key !== " "'), 'a box cannot be reached from the keyboard');
   assert.match(CSS, /\.graph-node-toggle\s*\{[^}]*cursor:\s*pointer/, 'an openable box does not look clickable');
   for (const cls of ['.graph-box-public', '.graph-box-private']) assert.ok(CSS.includes(cls), `${cls} is unstyled`);
   // The two fills are palette tokens, defined with the rest of the palette and not in the
@@ -2131,8 +2131,10 @@ test('an instance opens on click to show its interfaces, and the subnets are col
   assert.ok(/--subnet-public:\s*#[0-9a-f]{6}/.test(root) && /--subnet-private:\s*#[0-9a-f]{6}/.test(root),
             'the subnet colours are not tokens');
   const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('topology-legend'));
-  assert.ok(legend.includes('누르면 붙은 네트워크 인터페이스가 안에 펼쳐지고'),
-            'the legend does not say a box opens on click');
+  assert.ok(legend.includes('두 번 누르면</strong> 붙은 네트워크'),
+            'the legend does not say a box opens on a double click');
+  assert.ok(legend.includes('한 번 누르는 것은 그'),
+            'the legend does not say what ONE click does instead');
   assert.ok(legend.includes('퍼블릭') && legend.includes('프라이빗'), 'the legend does not explain the subnet colours');
   assert.ok(legend.includes('가운데 열에'), 'the legend does not say where the tables sit');
 });
@@ -2312,6 +2314,34 @@ test('an analysis that found nothing is not drawn as an analysis nobody ran', ()
             'nothing carries whether an analysis answered');
   assert.ok(PANEL.includes('findings: Finding[] | null'),
             'the report cannot say "not answered" apart from "found nothing"');
+});
+
+test('one click is the resource itself, a double click is what it holds', () => {
+  const shape = TOPOLOGY.slice(TOPOLOGY.indexOf('function GraphNodeShape'),
+                              TOPOLOGY.indexOf('function GraphEdgeShape'));
+  // One click selects and NOTHING else: no toggle, no popup. Both plate branches - the box and
+  // the plain plate - and the same handler on each.
+  assert.equal((shape.match(/onClick=\{\(\) => onSelect\(node\.arn\)\}/g) ?? []).length, 2,
+               'a click on a plate does more than open that one resource');
+  // The double click is where opening lives, and both kinds of holding are in it.
+  assert.equal((shape.match(/onDoubleClick=\{open\}/g) ?? []).length, 2,
+               'a plate has no double click');
+  assert.ok(/const open = \(\) => \{\s*if \(node\.box && node\.holds > 0\) onToggle\(node\.id\);\s*if \(node\.ruleCount > 0\) onRules\(node\.arn\);/
+            .test(shape), 'the double click does not open both an instance box and a group table');
+  // The keyboard has no double click, so the same sequence stands in for it: Enter selects, and
+  // Enter on the plate that is already selected opens what it holds.
+  assert.ok(shape.includes('if (selected && holdsSomething) open();'),
+            'a keyboard reader cannot open what a plate holds');
+  assert.ok(shape.includes('else onSelect(node.arn);'), 'Enter on an unselected plate does not select it');
+  // And every affordance the reader can see says which of the two it is.
+  assert.ok(shape.includes('두 번 누르면 네트워크 인터페이스') && shape.includes('두 번 누르면 규칙'),
+            'the plate labels do not say a double click opens what it holds');
+  const graph = readFileSync(new URL('./graph.js', import.meta.url), 'utf8');
+  assert.ok(graph.includes('두 번 눌러 펼치기'), 'the closed box still invites a single click');
+  assert.ok(graph.includes('그룹 판을 두 번 누르면 표로 열린다'),
+            'the foot line still invites a single click');
+  assert.ok(TOPOLOGY.includes('<strong>한 번 누르면</strong> 그 자원 하나에 대해서만'),
+            'the sentence under the picture does not tell the two acts apart');
 });
 
 test('a security group rule is a row of a popup table, never a plate', () => {
