@@ -8,6 +8,9 @@ export const GRAPH_W: number;
 export const NODE_W: number;
 export const NODE_H: number;
 export const NODE_GAP: number;
+/** The space above and below a plate, wider than the space beside it: every line leaves a bottom
+ *  edge and enters a top edge, so this is the gap the lines run in. */
+export const NODE_VGAP: number;
 export const PAD: number;
 export const HEAD: number;
 export const ROW_GAP: number;

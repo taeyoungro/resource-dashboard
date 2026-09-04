@@ -2344,6 +2344,9 @@ test('the lines of the chosen resource are drawn in the colour its plate is draw
   assert.ok(TOPOLOGY.includes('그 자원에 닿는 선이 판 테두리와 같은 색으로 바뀐다'),
             'the sentence under the picture does not say the lines change colour');
   const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('topology-legend'));
+  assert.ok(legend.includes('선이 붙는 자리'), 'the legend does not say where a line attaches');
+  assert.ok(legend.includes('위쪽 판의 아래 면에서 나와 아래쪽 판의 위 면으로 들어간다'),
+            'the legend does not state the facing-faces rule');
   assert.ok(legend.includes('고른 자원'), 'the legend does not explain the selection colour');
   assert.ok(legend.includes('그 동안은 선의 색이 종류를 말하지 않는다'),
             'the legend does not admit that the lit colour covers the kind colour');

@@ -50,10 +50,30 @@ export const NODE_H = 76;
  * rows are further apart. That is the trade the fixed anchors are worth.
  */
 export const NODE_GAP = 24;
+/**
+ * The space ABOVE and BELOW a plate, which is a different number from the space beside it.
+ *
+ * Every line leaves the bottom edge of the upper plate and enters the top edge of the lower one
+ * (sideAnchors), so the vertical gap is where ALL of them run and the horizontal gap is only what
+ * a line crosses on the way. Sharing one number made the picture pay for the corridors twice: wide
+ * enough to route in meant wide enough sideways too, and the plates drifted apart for nothing.
+ *
+ * 44 is four lanes at the five-pixel grid plus the router's own two-pixel margin either side, and
+ * then room for the lanes not to touch the plates they pass.
+ */
+export const NODE_VGAP = 44;
 export const PAD = 12;
 /** The label band of a container. */
 export const HEAD = 26;
-export const ROW_GAP = 12;
+/**
+ * Between one BAND and the next - the security groups over the zones, one subnet over another.
+ *
+ * The same argument as NODE_VGAP and very nearly the same number, because it is the same corridor:
+ * the band over the zones is where the group lines run down to the instances, and a line does not
+ * care that it is crossing a container border on the way. A little under NODE_VGAP because a
+ * container's own border and label band are already drawn in this space.
+ */
+export const ROW_GAP = 40;
 export const G_ICON = 28;
 /** How far from a CONTAINER's corner a line may meet its border: a line into a corner reads as a
  *  line into the frame next to it. Plates do not use it - they have two fixed anchors. */
@@ -554,7 +574,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     for (const card of cards) {
       if (cx + card.w > x0 + w && cx > x0) {
         cx = x0;
-        cy += rowH + NODE_GAP;
+        cy += rowH + NODE_VGAP;
         rowH = 0;
       }
       card.place(cx, cy);
@@ -628,25 +648,25 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       Math.floor((innerW - 2 * PAD + NODE_GAP) / (NODE_W + NODE_GAP))));
     const rows = Math.ceil(enis.length / cols);
     const boxW = open ? cols * NODE_W + (cols - 1) * NODE_GAP + 2 * PAD : NODE_W + 2 * PAD;
-    const boxH = open ? HEAD + PAD + rows * NODE_H + (rows - 1) * NODE_GAP + PAD : NODE_H;
+    const boxH = open ? HEAD + PAD + rows * NODE_H + (rows - 1) * NODE_VGAP + PAD : NODE_H;
     // Short enough for a closed box's one line; the box's aria-label says it in full.
     const note = enis.length === 0 ? '인터페이스 · 평가에 없음'
       : open ? null : `인터페이스 ${enis.length}개 · 두 번 눌러 펼치기`;
     return {
       ids: [id, ...enis, ...vols],
       w: boxW,
-      h: boxH + vols.length * (NODE_H + NODE_GAP),
+      h: boxH + vols.length * (NODE_H + NODE_VGAP),
       place: (x, yy) => {
         emit(id, x, yy, { ...extra, box: true, w: boxW, h: boxH, holds: enis.length, open, note });
         if (open) {
           enis.forEach((e, i) => emit(e, x + PAD + (i % cols) * (NODE_W + NODE_GAP),
-                                      yy + HEAD + PAD + Math.floor(i / cols) * (NODE_H + NODE_GAP)));
+                                      yy + HEAD + PAD + Math.floor(i / cols) * (NODE_H + NODE_VGAP)));
         } else {
           // Folded into the box: placed, in the sense that the budget and the table count it,
           // and not drawn.
           for (const e of enis) { foldedNodes.push({ id: e, in: id }); drawnNodes += 1; }
         }
-        vols.forEach((v, i) => emit(v, x, yy + boxH + NODE_GAP + i * (NODE_H + NODE_GAP)));
+        vols.forEach((v, i) => emit(v, x, yy + boxH + NODE_VGAP + i * (NODE_H + NODE_VGAP)));
       },
     };
   };
@@ -744,8 +764,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     if (centreW > 0) {
       const column = budgeted(centreIds.map((id) => cardFor(id, NODE_W)), vpc.id);
       let cy = top;
-      for (const card of column) { card.place(centreX + PAD, cy); cy += card.h + NODE_GAP; }
-      bottom = Math.max(bottom, cy - NODE_GAP);
+      for (const card of column) { card.place(centreX + PAD, cy); cy += card.h + NODE_VGAP; }
+      bottom = Math.max(bottom, cy - NODE_VGAP);
     }
     // The band, dealt into the halves in turn.
     const bandCards = budgeted(bandIds.map((id) => cardFor(id, halves[0][1] - halves[0][0])), vpc.id);
@@ -913,12 +933,32 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
    * of plates, then the next - so up and down is where the space between two plates is, and
    * NODE_GAP is wide enough to hold the corridors that space has to carry.
    */
-  const sideAnchors = (box) => {
+  const sideAnchors = (box, other = null) => {
     const mx = box.x + box.w / 2;
-    return [
-      { side: 'top', x: mx, y: box.y },
-      { side: 'bottom', x: mx, y: box.y + box.h },
-    ];
+    const top = { side: 'top', x: mx, y: box.y };
+    const bottom = { side: 'bottom', x: mx, y: box.y + box.h };
+    return facing(box, other, top, bottom);
+  };
+  /**
+   * OF THE TWO ANCHORS, THE ONE THAT FACES THE OTHER BOX.
+   *
+   * A plate ABOVE another is left by its bottom edge and a plate below is entered by its top, so a
+   * line between two rows runs straight down the space between them. Both anchors only where there
+   * is no upper and lower to speak of - two plates side by side in one row, which a line joins by
+   * going over the row or under it, whichever is cheaper.
+   *
+   * The rule is what stops a line going the long way round. Left to pick the cheaper of four
+   * combinations, the router would leave the TOP of a group, run above the whole band and come
+   * down the far side to reach an instance below it - shorter on that one line's own accounting,
+   * and a line the eye has to trace back to find out where it started.
+   *
+   * `other` is null where the caller has no second box, and then both anchors stand.
+   */
+  const facing = (box, other, top, bottom) => {
+    if (!other) return [top, bottom];
+    if (box.y + box.h <= other.y) return [bottom];
+    if (other.y + other.h <= box.y) return [top];
+    return [top, bottom];
   };
   /** A box grown by a margin, for counting the lines that graze a plate without crossing it. */
   const grown = (r, m) => ({ x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m });
@@ -1016,8 +1056,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     const others = plates.filter((r) => r !== a && r !== b
       && r.x < hi.x + reach && r.x + r.w > lo.x - reach && r.y < hi.y + reach && r.y + r.h > lo.y - reach);
     let best = null;
-    for (const p of sideAnchors(a)) {
-      for (const q of sideAnchors(b)) {
+    for (const p of sideAnchors(a, b)) {
+      for (const q of sideAnchors(b, a)) {
         const raw = pathFor(p, q, a, b);
         if (!raw) continue;
         const path = tidy(raw);
@@ -1107,15 +1147,19 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
    * eye follows from one to the next, and they are what the rule is for.
    */
   const plateSet = new Set(plates);
-  const ports = (box) => {
+  const ports = (box, other = null) => {
+    const free = (p) => p.cell >= 0 && p.cell < gridW * gridH && !hard[p.cell];
     const above = Math.floor((box.y - 3) / RES) * RES;
     const below = Math.ceil((box.y + box.h + 3) / RES) * RES;
     if (plateSet.has(box)) {
       const x = Math.round((box.x + box.w / 2) / RES) * RES;
-      return [
-        { end: { x, y: box.y }, cell: cellOf(x, above), dir: 0 },
-        { end: { x, y: box.y + box.h }, cell: cellOf(x, below), dir: 2 },
-      ].filter((p) => p.cell >= 0 && p.cell < gridW * gridH && !hard[p.cell]);
+      const top = { end: { x, y: box.y }, cell: cellOf(x, above), dir: 0 };
+      const bottom = { end: { x, y: box.y + box.h }, cell: cellOf(x, below), dir: 2 };
+      // The facing face, and BOTH when the facing one is walled in - a plate whose neighbour sits
+      // against the only edge the rule allows would otherwise have no port at all, and the line
+      // would fall through to the shape router rather than being drawn well the other way up.
+      const wanted = facing(box, other, top, bottom).filter(free);
+      return wanted.length ? wanted : [top, bottom].filter(free);
     }
     const out = [];
     const before = Math.floor((box.x - 3) / RES) * RES;
@@ -1132,7 +1176,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       out.push({ end: { x: box.x, y }, cell: cellOf(before, y), dir: 3 });
       out.push({ end: { x: box.x + box.w, y }, cell: cellOf(after, y), dir: 1 });
     }
-    return out.filter((p) => p.cell >= 0 && p.cell < gridW * gridH && !hard[p.cell]);
+    return out.filter(free);
   };
   const DX = [0, 1, 0, -1];
   const DY = [-1, 0, 1, 0];
@@ -1179,8 +1223,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     return top;
   };
   const gridRoute = (a, b, wide = false) => {
-    const starts = ports(a);
-    const goals = ports(b);
+    const starts = ports(a, b);
+    const goals = ports(b, a);
     if (starts.length === 0 || goals.length === 0) return null;
     // The search stays in a window around the two boxes: nearly every line is local, and a search
     // over the whole grid for each of seven hundred lines is seconds, not milliseconds. The pair
