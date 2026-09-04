@@ -1685,6 +1685,16 @@ dialog.policy-dialog.rules-dialog {
 /* The ring on each end of a line, in the line's colour: where the line really stops, whatever it
    passes under on the way. */
 .graph-edge-end { fill: var(--bg); stroke-dasharray: none; }
+/* A LINE OF THE CHOSEN RESOURCE, in the selection colour - the same --accent that draws the border
+   of the plate that was clicked, so the plate and everything it is joined to read as one thing.
+   After every kind above, on purpose: these selectors weigh the same, so the later one wins and
+   the lit colour covers the kind's.
+   Heavier as well as bluer, because --accent is already the interface line's colour: without the
+   width a lit security-group line would read as an interface line, and the legend maps colour to
+   kind. The width is what says "this one is lit" rather than "this one is an interface". The dash
+   is untouched, so a derived line stays finely dashed while it is lit. */
+.graph-edge-lit { stroke: var(--accent); stroke-width: 2.5; }
+.graph-lit-marker { fill: var(--accent); }
 .graph-legend-item { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; white-space: nowrap; }
 .graph-legend-swatch { display: inline-block; vertical-align: middle; }
 
