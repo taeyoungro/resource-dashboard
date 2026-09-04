@@ -473,16 +473,23 @@ function GraphOverflowShape({ plate }: { plate: GraphOverflow }) {
  */
 const DIRECTED_EDGES = new Set(["route", "chain"]);
 
-function GraphEdgeShape({ edge, uid }: { edge: GraphEdge; uid: string }) {
-  const kind = `graph-edge graph-edge-${edge.kind}`;
+function GraphEdgeShape({ edge, uid, lit }: { edge: GraphEdge; uid: string;
+  /** One end of this line is the resource the reader clicked. It is drawn in the selection colour
+   *  - the same blue as that plate's border - so "what is this joined to" is answered by looking
+   *  rather than by tracing. */
+  lit: boolean }) {
+  const kind = `graph-edge graph-edge-${edge.kind}${lit ? " graph-edge-lit" : ""}`;
   const cls = `${kind}${edge.implicit ? " graph-edge-implicit" : ""}`;
   const directed = DIRECTED_EDGES.has(edge.kind);
+  // A marker takes its colour from where it is DEFINED, so a lit line needs a lit head or the
+  // arrow stays the kind's colour while the line it sits on is blue.
+  const head = lit ? "la" : (edge.kind === "chain" ? "ca" : "ga");
   return (
     <g>
       <polyline
         className={cls}
         points={edge.points.map((p) => `${p.x},${p.y}`).join(" ")}
-        markerEnd={directed ? `url(#${uid}-${edge.kind === "chain" ? "ca" : "ga"})` : undefined}
+        markerEnd={directed ? `url(#${uid}-${head})` : undefined}
       >
         <title>{edge.title}</title>
       </polyline>
@@ -505,6 +512,14 @@ function GraphFigure({ scene, name, title, uid, onToggle, onSelect, onRules, sel
                        onToggle: (id: string) => void; onSelect: (arn: string) => void;
                        onRules: (arn: string) => void;
                        selected: string | null; marks: Map<string, string> }) {
+  // The lines are keyed by NODE ID and the selection is an ARN, so the chosen plate says which id
+  // its lines carry. Null when nothing is chosen, and then no line is lit - and null is also what
+  // a chosen resource the budget left out of the picture gives, which is the honest answer: there
+  // is no plate to light lines from.
+  const litId = scene.nodes.find((n) => n.arn === selected)?.id ?? null;
+  const isLit = (e: GraphEdge) => litId !== null && (e.from === litId || e.to === litId);
+  // Lit lines last, so they are painted over the lines they cross rather than under them.
+  const edges = [...scene.edges].sort((a, b) => Number(isLit(a)) - Number(isLit(b)));
   return (
     // Fills the window's width (.graph-svg) and never shrinks below its own: the min-width is the
     // scene's width, so a narrow window scrolls the figure rather than making the labels smaller.
@@ -535,11 +550,17 @@ function GraphFigure({ scene, name, title, uid, onToggle, onSelect, onRules, sel
                 markerWidth="5" markerHeight="5" orient="auto">
           <path className="graph-chain-marker" d="M 0 0 L 8 4 L 0 8 z" />
         </marker>
+        {/* And the lit head, for a directed line that ends at the chosen resource. One head for
+            both directed kinds: a lit line is the selection colour whatever kind it is. */}
+        <marker id={`${uid}-la`} viewBox="0 0 8 8" refX="8" refY="4"
+                markerWidth="5" markerHeight="5" orient="auto">
+          <path className="graph-lit-marker" d="M 0 0 L 8 4 L 0 8 z" />
+        </marker>
       </defs>
       <rect className="topo-ground" x={0} y={0} width={scene.width} height={scene.height} />
       {scene.containers.map((c) => <GraphContainerShape key={c.id} box={c} />)}
-      {scene.edges.map((e) => (
-        <GraphEdgeShape key={`${e.kind}|${e.from}|${e.to}`} edge={e} uid={uid} />
+      {edges.map((e) => (
+        <GraphEdgeShape key={`${e.kind}|${e.from}|${e.to}`} edge={e} uid={uid} lit={isLit(e)} />
       ))}
       {scene.containers.map((c) => <GraphContainerLabel key={c.id} box={c} />)}
       {scene.overflow.map((o) => <GraphOverflowShape key={o.container} plate={o} />)}
@@ -1502,7 +1523,9 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                 <p className="muted small">
                   자원 판을 <strong>한 번 누르면</strong> 그 자원 하나에 대해서만 —{" "}
                   <strong>이 정책이 그 자원에 허용하는 작업</strong>과{" "}
-                  <strong>정책 기반 분석·AI 분석이 그 자원에 대해 찾은 것</strong>이 옆에 열린다.
+                  <strong>정책 기반 분석·AI 분석이 그 자원에 대해 찾은 것</strong>이 옆에 열리고,
+                  {" "}<strong>그 자원에 닿는 선이 판 테두리와 같은 색으로 바뀐다</strong> — 무엇과
+                  이어져 있는지 선을 따라가지 않고 본다.
                   {/* The second half only where there is something to open. Built from the kinds
                       this picture actually has: a scene of buckets holds neither, and a sentence
                       promising a fold that is not there is worse than no sentence. */}
@@ -1623,6 +1646,12 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   <strong>민감 자원</strong> — 자원 판의 <strong>빨간 테두리</strong>와 아래 표의{" "}
                   <code>민감</code> 칸이 같은 것을 말한다. 보안 그룹 선의 색은 종류의 색이고 민감도와
                   무관하다.
+                </li>
+                <li>
+                  <strong>고른 자원</strong> — 한 번 누른 판은 테두리가 <strong>파랑</strong>이 되고,
+                  그 판에 닿는 선도 같은 파랑에 조금 굵게 그려진다. 위의 종류별 색을 덮어쓰는 것이니
+                  그 동안은 선의 색이 종류를 말하지 않는다 — 굵기가 「고른 것」이라는 표시다. 점선의
+                  촘촘함은 그대로라, 도출한 연결은 고른 뒤에도 도출한 연결로 보인다.
                 </li>
                 {(graph.overflow.length > 0 || graph.counts.droppedEdgeTotal > 0) && (
                   <li>

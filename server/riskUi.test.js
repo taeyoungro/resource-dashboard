@@ -2316,6 +2316,39 @@ test('an analysis that found nothing is not drawn as an analysis nobody ran', ()
             'the report cannot say "not answered" apart from "found nothing"');
 });
 
+test('the lines of the chosen resource are drawn in the colour its plate is drawn in', () => {
+  // The selection colour is ONE token, so the plate's border and its lines cannot drift apart.
+  assert.match(CSS, /\.graph-node-selected \.graph-plate \{[^}]*stroke:\s*var\(--accent\)/,
+               'the chosen plate is not drawn in --accent');
+  assert.match(CSS, /\.graph-edge-lit \{[^}]*stroke:\s*var\(--accent\)/,
+               'a line of the chosen resource is not drawn in --accent');
+  // After every kind rule, or the kind's colour would win: same weight, later wins.
+  assert.ok(CSS.indexOf('.graph-edge-lit') > CSS.lastIndexOf('.graph-edge-chain {'),
+            'the lit colour is declared before a kind colour that would override it');
+  // --accent is ALSO the interface line's colour, so the width is what tells the two apart.
+  assert.match(CSS, /\.graph-edge-interface \{[^}]*var\(--accent\)/);
+  assert.match(CSS, /\.graph-edge-lit \{[^}]*stroke-width/,
+               'a lit line is only recoloured, so it reads as an interface line');
+  // The selection is an ARN and a line names node ids, so the plate is what joins the two.
+  assert.ok(TOPOLOGY.includes('const litId = scene.nodes.find((n) => n.arn === selected)?.id ?? null;'),
+            'the picture cannot tell which lines belong to the chosen resource');
+  assert.ok(TOPOLOGY.includes('litId !== null && (e.from === litId || e.to === litId)'),
+            'a line is lit by something other than having the chosen resource at one end');
+  assert.ok(TOPOLOGY.includes('lit={isLit(e)}'), 'the lit state does not reach the line');
+  assert.ok(TOPOLOGY.includes('Number(isLit(a)) - Number(isLit(b))'),
+            'lit lines are not painted over the lines they cross');
+  // A directed line needs its own head, because a marker takes the colour of where it is defined.
+  assert.ok(TOPOLOGY.includes('const head = lit ? "la"'), 'a lit arrow keeps the kind colour');
+  assert.match(CSS, /\.graph-lit-marker \{[^}]*fill:\s*var\(--accent\)/, 'the lit arrowhead has no colour');
+  // And the reader is told, in both places that explain what a click does.
+  assert.ok(TOPOLOGY.includes('그 자원에 닿는 선이 판 테두리와 같은 색으로 바뀐다'),
+            'the sentence under the picture does not say the lines change colour');
+  const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('topology-legend'));
+  assert.ok(legend.includes('고른 자원'), 'the legend does not explain the selection colour');
+  assert.ok(legend.includes('그 동안은 선의 색이 종류를 말하지 않는다'),
+            'the legend does not admit that the lit colour covers the kind colour');
+});
+
 test('one click is the resource itself, a double click is what it holds', () => {
   const shape = TOPOLOGY.slice(TOPOLOGY.indexOf('function GraphNodeShape'),
                               TOPOLOGY.indexOf('function GraphEdgeShape'));
