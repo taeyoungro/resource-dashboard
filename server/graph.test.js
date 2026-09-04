@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  CARDS_PER_SUBNET, EDGE_BUDGET, GRAPH_CAPTION, GRAPH_W, NODE_BUDGET, RELATIONS,
+  CARDS_PER_SUBNET, EDGE_BUDGET, GRAPH_CAPTION, GRAPH_W, NODE_BUDGET, NODE_GAP, RELATIONS,
   graphSummary, idOf, relationScene, ruleSentence, ruleText, shortId, shortName,
 } from './graph.js';
 
@@ -576,8 +576,13 @@ test('a line leaves by the side facing its other end and never runs under the pl
   const igw = edge('rtb-main', 'igw-1');
   assert.equal(igw.points.length, 2, 'the route to the gateway bends');
   for (const id of ['rtb-priv', 'acl-default']) assert.ok(!runsUnder(igw, id), `the route runs under ${id}`);
-  // Adjacent plates are joined straight, and every line's ends are its first and last points.
-  assert.equal(edge('nat-1', 'eni-nat').points.length, 2);
+  // Two plates SIDE BY SIDE are no longer joined straight across: a line leaves through the middle
+  // of a horizontal edge and nothing else, so it goes over the row or under it - out, along the
+  // corridor, back in. Three pieces, four points.
+  const beside = edge('nat-1', 'eni-nat');
+  assert.equal(beside.points.length, 4);
+  assert.equal(beside.points[0].x, beside.points[1].x, 'the line does not leave straight up or down');
+  // Every line's ends are its first and last points.
   for (const e of scene.edges) {
     assert.ok(e.points.length >= 2, `${e.from} -> ${e.to} has ${e.points.length} points`);
     // Orthogonal: every piece is horizontal or vertical, none is empty, none doubles back.
@@ -598,6 +603,54 @@ test('a line leaves by the side facing its other end and never runs under the pl
   }
   // The table row carries the type's Korean name beside the type.
   assert.ok(scene.rows.every((r) => typeof r.typeLabel === 'string' && r.typeLabel.length > 0));
+});
+
+test('a line touches a PLATE at one of two points: the middle of its top edge or of its bottom edge', () => {
+  // The whole of the anchoring rule, over every line of two busy scenes. Before this a line met
+  // its plate wherever the router found cheapest - anywhere along any of the four sides - and
+  // twenty lines met twenty plates at twenty places, which is what made the picture a tangle.
+  //
+  // CONTAINERS are not in it, on purpose: a subnet frame is the border round what is inside it,
+  // five hundred pixels wide, and half the lines that reach it start inside it. One point on such
+  // a frame sends a line the width of it to enter where it already was.
+  for (const affected of [ACCOUNT(), BIG(40)]) {
+    const scene = sceneOf(affected, null, true, OPEN);
+    const plates = new Map(scene.nodes.map((n) => [n.id, n]));
+    let checked = 0;
+    for (const e of scene.edges) {
+      for (const [id, pt, at] of [[e.from, e.points[0], 0],
+                                  [e.to, e.points[e.points.length - 1], e.points.length - 1]]) {
+        const b = plates.get(id);
+        if (!b) continue;                       // a container end, which keeps its spread
+        checked += 1;
+        // On a horizontal edge, top or bottom - never on a side.
+        assert.ok(pt.y === b.y || pt.y === b.y + b.h,
+                  `${e.from} -> ${e.to} touches ${id} at y ${pt.y}, not on its top or bottom edge`);
+        // At its middle. Within half a grid cell: the anchor is snapped to the router's grid so
+        // that the first piece of the line is exactly vertical.
+        assert.ok(Math.abs(pt.x - (b.x + b.w / 2)) <= 2.5,
+                  `${e.from} -> ${e.to} touches ${id} at x ${pt.x}, not the middle of ${b.x + b.w / 2}`);
+        // And so the piece at that end is vertical: straight out, straight in.
+        const next = e.points[at === 0 ? 1 : at - 1];
+        assert.equal(pt.x, next.x, `${e.from} -> ${e.to} does not leave ${id} straight up or down`);
+      }
+    }
+    assert.ok(checked > 10, `only ${checked} plate ends were checked`);
+  }
+});
+
+test('the gap between two plates is wide enough to hold the corridors the lines run in', () => {
+  // Every line runs over, under or between plates now, so the gap is a corridor and not a margin.
+  // Four lanes at the router's five-pixel grid, after the two-pixel margin it keeps round a plate.
+  assert.ok(NODE_GAP - 4 >= 4 * 5, `NODE_GAP ${NODE_GAP} leaves ${NODE_GAP - 4} for the lines`);
+  const scene = sceneOf(ACCOUNT(), null, true, OPEN);
+  // And the layout really uses it: two plates in one row stand NODE_GAP apart, not less.
+  const row = scene.nodes.filter((n) => !n.box && n.y === scene.nodes.find((m) => m.id === 'rtb-main')?.y)
+    .sort((a, b) => a.x - b.x);
+  for (let i = 1; i < row.length; i += 1) {
+    assert.ok(row[i].x - (row[i - 1].x + row[i - 1].w) >= NODE_GAP,
+              `${row[i - 1].id} and ${row[i].id} are closer than NODE_GAP`);
+  }
 });
 
 test('the picture is symmetric about the middle: the gateway on top, the tables in a column, the zones either side', () => {
