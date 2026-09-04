@@ -35,7 +35,7 @@
 // picture measured differs.
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import type { ImpactCoverage, ImpactPolicy } from "../types";
+import type { ImpactCoverage, ImpactPolicy, SecurityGroupRule } from "../types";
 import type {
   Facets, Frame, Link, Scene, SceneFilter, Slot, TopologySpec,
 } from "../../server/topology.js";
@@ -319,10 +319,12 @@ function GraphContainerLabel({ box }: { box: GraphContainer }) {
  * type that has none leave the same plate. A type with no glyph prints its Korean name where the
  * glyph would be, so a plate is never a bare id.
  */
-function GraphNodeShape({ node, onToggle, onSelect, selected, mark }: {
+function GraphNodeShape({ node, onToggle, onSelect, onRules, selected, mark }: {
   node: GraphNode;
   onToggle: (id: string) => void;
   onSelect: (arn: string) => void;
+  /** Open the rules table over the picture, for a security group that has one. */
+  onRules: (arn: string) => void;
   selected: boolean;
   /** The worst grade of a finding that NAMES this resource, or null. Drawn as a corner mark so an
    *  approver does not have to click thirty plates to find the one a rule fired on. */
@@ -331,9 +333,14 @@ function GraphNodeShape({ node, onToggle, onSelect, selected, mark }: {
   // Every plate is a button: clicking it asks what this policy lets somebody do to this resource
   // and what the two analyses found about it. An instance box answers that AND opens to show the
   // interfaces it holds - one click, one subject, both halves of "tell me about this instance".
+  //
+  // A security group is the same shape of act with a different second half: what a group ALLOWS is
+  // a table, not a set of plates, so the click opens that table over the picture. The panel opens
+  // underneath it either way, and closing the table leaves it there.
   const type = node.resourceType.replace(":", "-");
   const press = () => {
     if (node.box && node.holds > 0) onToggle(node.id);
+    if (node.ruleCount > 0) onRules(node.arn);
     onSelect(node.arn);
   };
   const keyed = (e: { key: string; preventDefault: () => void }) => {
@@ -381,7 +388,8 @@ function GraphNodeShape({ node, onToggle, onSelect, selected, mark }: {
       role="button"
       tabIndex={0}
       aria-pressed={selected}
-      aria-label={`${node.title.split("\n")[0]} — 상세 보기`}
+      aria-label={`${node.title.split("\n")[0]}${
+        node.ruleCount > 0 ? ` — 규칙 ${node.ruleCount}개 표로 보기` : ""} — 상세 보기`}
       onClick={press}
       onKeyDown={keyed}
     >
@@ -475,9 +483,10 @@ function GraphEdgeShape({ edge, uid }: { edge: GraphEdge; uid: string }) {
  * line never runs across a plate or a label; the foot last. The <desc> is graphSummary(), which
  * has its own unit test.
  */
-function GraphFigure({ scene, name, title, uid, onToggle, onSelect, selected, marks }:
+function GraphFigure({ scene, name, title, uid, onToggle, onSelect, onRules, selected, marks }:
                      { scene: RelationScene; name: string; title: string; uid: string;
                        onToggle: (id: string) => void; onSelect: (arn: string) => void;
+                       onRules: (arn: string) => void;
                        selected: string | null; marks: Map<string, string> }) {
   return (
     // Fills the window's width (.graph-svg) and never shrinks below its own: the min-width is the
@@ -520,16 +529,62 @@ function GraphFigure({ scene, name, title, uid, onToggle, onSelect, selected, ma
       {/* Boxes before plates, so an interface is painted over the instance frame that holds it. */}
       {scene.nodes.filter((n) => n.box).map((n) => (
         <GraphNodeShape key={n.id} node={n} onToggle={onToggle} onSelect={onSelect}
+                        onRules={onRules}
                         selected={n.arn === selected} mark={marks.get(n.arn) ?? null} />
       ))}
       {scene.nodes.filter((n) => !n.box).map((n) => (
         <GraphNodeShape key={n.id} node={n} onToggle={onToggle} onSelect={onSelect}
+                        onRules={onRules}
                         selected={n.arn === selected} mark={marks.get(n.arn) ?? null} />
       ))}
       {scene.foot.map((line) => (
         <text className="topo-foot" key={line.text} x={8} y={line.y}>{line.text}</text>
       ))}
     </svg>
+  );
+}
+
+/* ---- what a security group allows ------------------------------------------------------------
+ * A TABLE and not a set of plates, which is the whole reason it is here. A rule has four values -
+ * direction, protocol, ports, target - and four values per row is what a table is for; drawing one
+ * plate per rule put those four values into two lines of a tile and then needed a line back to the
+ * group to say whose rule it was. Eleven tiles for two groups, and the groups lost among them.
+ *
+ * Over the picture rather than beside it, because the reader asked one question and the answer is
+ * wide: the panel column has room for a list, not for four columns and a target long enough to
+ * paste. The picture stays underneath and the panel stays open behind it. */
+
+/** What a security group allows, one rule per row. */
+function RulesTable({ rules }: { rules: SecurityGroupRule[] }) {
+  return (
+    <table className="panel-routes rules-table">
+      <thead><tr><th>방향</th><th>프로토콜·포트</th><th>대상</th></tr></thead>
+      <tbody>
+        {rules.map((r, i) => {
+          // The chain: a target that is another GROUP is a relation and not an address, and the
+          // picture draws it as an arrow between the two groups.
+          const chain = r.target_kind === "security_group";
+          // Anywhere at all, v4 or v6. The row is marked because this is the value an approver
+          // opened the table to find.
+          const open = r.target === "0.0.0.0/0" || r.target === "::/0";
+          return (
+            // The index is in the key because two rules of one group CAN agree on all four values
+            // - AWS keys them by rule id, not by content - and a duplicate key would drop a row
+            // that is really there.
+            <tr key={`${r.direction}|${r.protocol}|${r.from_port}|${r.target}|${i}`}
+                className={open ? "panel-route-default" : undefined}>
+              <td>{r.direction === "egress" ? "아웃바운드" : "인바운드"}</td>
+              <td>{ruleText(r)}</td>
+              <td>
+                <code>{r.target}</code>
+                {chain && <span className="muted"> 보안 그룹</span>}
+                {open && <span className="sensitive"> 모든 주소</span>}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
@@ -596,12 +651,14 @@ function PanelFinding({ card, onOpen }: { card: FindingCard; onOpen: () => void 
  * the actions from the assessment's own group, the findings from the two analyses, and the three
  * counts that say which findings reach this resource and which only reach its type.
  */
-function ResourcePanel({ facts, ran, onClose, onOpenFinding }: {
+function ResourcePanel({ facts, ran, onClose, onOpenFinding, onOpenRules }: {
   facts: ResourceFacts;
   ran: boolean;
   onClose: () => void;
   /** Open one finding's own card over the picture, by its id. */
   onOpenFinding: (id: string) => void;
+  /** Open this resource's rules table over the picture. Only a security group has one. */
+  onOpenRules: () => void;
 }) {
   const { named, typed, elsewhere } = facts.findings;
   return (
@@ -658,14 +715,10 @@ function ResourcePanel({ facts, ran, onClose, onOpenFinding }: {
         </>
       )}
 
-      {/* What a security group ALLOWS - on the group and on a rule row alike. For these two types
-          the rules ARE what the reader came to check: an approver looking at a group is asking
-          "what may reach what carries this", and the answer is the protocol, the ports and the
-          target, with the direction. A target that is another GROUP is the chain, and it is
-          marked as one because it is a relation and not an address - the picture draws it as a
-          line with an arrow. */}
-      {(facts.resourceType === "ec2:security-group"
-        || facts.resourceType === "ec2:security-group-rule") && (
+      {/* What a security group ALLOWS is not in the panel: it is the table the popup holds, and
+          this is the way back into it. Clicking the plate opened both, so the button is for the
+          reader who closed the table and wants it again without hunting for the plate. */}
+      {facts.resourceType === "ec2:security-group" && (
         <>
           <h6>규칙 {facts.rules.length}개</h6>
           {facts.rules.length === 0 ? (
@@ -674,34 +727,12 @@ function ResourcePanel({ facts, ran, onClose, onOpenFinding }: {
               평가이거나, 규칙이 하나도 없는 그룹이다. 다시 조회하면 갈린다.
             </p>
           ) : (
-            <table className="panel-routes">
-              <thead><tr><th>방향</th><th>프로토콜·포트</th><th>대상</th></tr></thead>
-              <tbody>
-                {facts.rules.map((r) => {
-                  const text = ruleText(r);
-                  const chain = r.target_kind === "security_group";
-                  const open = r.target === "0.0.0.0/0" || r.target === "::/0";
-                  return (
-                    <tr key={`${r.direction}|${r.protocol}|${r.from_port}|${r.target}`}
-                        className={open ? "panel-route-default" : undefined}>
-                      <td>{r.direction === "egress" ? "아웃바운드" : "인바운드"}</td>
-                      <td>{text?.head}</td>
-                      <td>
-                        <code>{r.target}</code>
-                        {chain && <span className="muted"> 보안 그룹</span>}
-                        {open && <span className="sensitive"> 모든 주소</span>}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <p className="small">
+              <button type="button" className="panel-rules-open" onClick={onOpenRules}>
+                규칙 {facts.rules.length}개 표로 보기
+              </button>
+            </p>
           )}
-          <p className="muted small">
-            대상이 <strong>보안 그룹</strong>이면 주소가 아니라 <strong>체인</strong>이다 — 그
-            그룹을 단 자원이 어디에 있든 허용된다. 구성도에서는 화살표가 트래픽이 가는 쪽을
-            가리킨다.
-          </p>
         </>
       )}
 
@@ -1073,6 +1104,9 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
   /** The finding whose own card is open over the picture, by id. Null is the picture alone. */
   const cardBox = useRef<HTMLDialogElement>(null);
   const [openCard, setOpenCard] = useState<string | null>(null);
+  /** The security group whose rules table is open over the picture, by ARN. */
+  const rulesBox = useRef<HTMLDialogElement>(null);
+  const [openRules, setOpenRules] = useState<string | null>(null);
   const uid = useId();
   /**
    * The picture the button promises: no dimension narrowed, and two types switched off.
@@ -1153,6 +1187,25 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
     () => (chosen ? resourceFacts(policy, reference ?? null, found, chosen) : null),
     [policy, reference, found, chosen],
   );
+  /**
+   * The group the rules table is about, and its rules.
+   *
+   * Its OWN facts and not `facts` above: the two states move separately on purpose. A reader who
+   * closes the table keeps the panel, and one who clicks another plate while the table is open
+   * gets that plate's panel - so the table must go on saying which group it is a table of.
+   */
+  const rulesOf = useMemo(
+    () => (openRules ? resourceFacts(policy, reference ?? null, found, openRules) : null),
+    [policy, reference, found, openRules],
+  );
+  // Same shape as the finding card below: the element follows the state, because showModal() on a
+  // node React has not rendered does nothing and ESC has to put the state back.
+  useEffect(() => {
+    const box = rulesBox.current;
+    if (!box) return;
+    if (rulesOf && !box.open) box.showModal();
+    if (!rulesOf && box.open) box.close();
+  }, [rulesOf]);
   // Which picture the window shows. Null is "not chosen", and the document then decides: an
   // assessment that recorded a placement or a link opens on the relationship picture, an older
   // one that recorded neither opens on the type picture, because a graph of unconnected plates in
@@ -1299,8 +1352,8 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                 이 그림은 자원 하나를 판 하나로 그리고,{" "}
                 <strong>조회기가 자원마다 읽은 연결</strong>을 선으로 잇는다 — 인스턴스에 붙은
                 네트워크 인터페이스·볼륨·보안 그룹·AMI, 서브넷에 붙은 라우팅 테이블과 네트워크 ACL과
-                엔드포인트, 라우팅 테이블의 경로가 가리키는 게이트웨이, 보안 그룹 규칙과 그 규칙이
-                속한 그룹. 테두리는{" "}
+                엔드포인트, 라우팅 테이블의 경로가 가리키는 게이트웨이, 한 보안 그룹이 규칙으로
+                지목한 다른 보안 그룹. 테두리는{" "}
                 <strong>자원이 자기 자리라고 답한 VPC·가용 영역·서브넷</strong>이다.{" "}
                 선이 없다고 연결이 없다는 뜻은 아니다 — 조회기는 위의 연결만 읽고, 상대가 이 평가에
                 없는 연결은 그림 밖으로 나간 것으로 센다.{" "}
@@ -1404,19 +1457,22 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
               <div className="graph-with-panel">
                 <div className="topology-figure" tabIndex={0} role="group" aria-label="자원 연결 관계도">
                   <GraphFigure scene={graph} name={name} title={spec?.words.title ?? ""} uid={uid}
-                               onToggle={toggle} onSelect={setChosen} selected={chosen}
-                               marks={marks} />
+                               onToggle={toggle} onSelect={setChosen} onRules={setOpenRules}
+                               selected={chosen} marks={marks} />
                 </div>
                 {facts && (
                   <ResourcePanel facts={facts} ran={analysed}
                                  onClose={() => setChosen(null)}
-                                 onOpenFinding={setOpenCard} />
+                                 onOpenFinding={setOpenCard}
+                                 onOpenRules={() => setOpenRules(facts.arn)} />
                 )}
               </div>
               {!facts && (
                 <p className="muted small">
                   자원 판을 누르면 <strong>이 정책이 그 자원에 허용하는 작업</strong>과{" "}
                   <strong>정책 기반 분석·AI 분석이 그 자원에 대해 찾은 것</strong>이 옆에 열린다.
+                  {graph.counts.ruleRows > 0
+                    && ` 보안 그룹 판을 누르면 그 그룹의 규칙 표가 그림 위에 함께 열린다.`}
                   {found.length > 0 && marks.size > 0
                     && ` 발견이 지목한 자원 ${marks.size}개에는 판 모서리에 점을 찍었다.`}
                 </p>
@@ -1518,8 +1574,8 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                     <strong>보안 그룹 사이의 화살표</strong> — 한쪽 그룹의 규칙이 상대 그룹을
                     지목한 것이고, 화살표는 <strong>허용된 방향</strong>을 가리킨다. 인바운드 규칙은
                     지목한 그룹에서 이쪽으로, 아웃바운드 규칙은 이쪽에서 저쪽으로. 주소가 아니라
-                    그룹이 대상이므로 그 그룹을 단 자원이 어디에 있든 허용된다 — 규칙 값은 판을
-                    누르면 옆에 표로 나온다.
+                    그룹이 대상이므로 그 그룹을 단 자원이 어디에 있든 허용된다 — 규칙 값은 그룹
+                    판을 누르면 표로 열린다.
                   </li>
                 )}
                 <li>
@@ -1709,6 +1765,50 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
               )}
               <div className="row">
                 <button type="button" onClick={() => cardBox.current?.close()}>닫기</button>
+              </div>
+            </div>
+          </dialog>
+
+          {/* The rules table, over the picture. Same three ways out as the card - ESC, the button,
+              a click outside - and the same onClose putting the state back, or the next click on
+              the same group would open nothing. */}
+          <dialog ref={rulesBox} className="policy-dialog rules-dialog"
+                  aria-label={rulesOf ? `${rulesOf.id} 규칙` : "보안 그룹 규칙"}
+                  onClose={() => setOpenRules(null)}
+                  onClick={(e) => {
+                    const box = rulesBox.current;
+                    if (!box || e.target !== box) return;
+                    const r = box.getBoundingClientRect();
+                    const inside = e.clientX >= r.left && e.clientX <= r.right
+                      && e.clientY >= r.top && e.clientY <= r.bottom;
+                    if (!inside) box.close();
+                  }}>
+            <div className="policy-dialog-body">
+              {rulesOf && (
+                <>
+                  <h4>
+                    보안 그룹 규칙 {rulesOf.rules.length}개{" "}
+                    <code>{rulesOf.id}</code>
+                    {rulesOf.name && <span className="muted"> — {rulesOf.name}</span>}
+                  </h4>
+                  {rulesOf.rules.length === 0 ? (
+                    <p className="muted small">
+                      이 평가에는 이 그룹의 규칙이 없다 — 조회기가 규칙을 기록하기 전에 만들어진
+                      평가이거나, 규칙이 하나도 없는 그룹이다. 다시 조회하면 갈린다.
+                    </p>
+                  ) : (
+                    <RulesTable rules={rulesOf.rules} />
+                  )}
+                  <p className="muted small">
+                    대상이 <strong>보안 그룹</strong>이면 주소가 아니라 <strong>체인</strong>이다 —
+                    그 그룹을 단 자원이 어디에 있든 허용된다. 그림에서는 그룹과 그룹 사이의
+                    화살표가 그 체인이고, 화살표는 트래픽이 허용된 쪽을 가리킨다. 규칙 자체는
+                    그림에 판으로 그리지 않는다 — 값이 넷이라 표가 맞다.
+                  </p>
+                </>
+              )}
+              <div className="row">
+                <button type="button" onClick={() => rulesBox.current?.close()}>닫기</button>
               </div>
             </div>
           </dialog>

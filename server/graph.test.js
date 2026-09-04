@@ -942,20 +942,26 @@ const SG_ACCOUNT = () => [
   ]),
 ];
 
-test('a rule plate says what it allows, not what it is called', () => {
+test('a rule gets no plate; the group says how many it has and the foot says where they are', () => {
   const scene = sceneOf(SG_ACCOUNT());
-  const plate = scene.nodes.find((n) => n.id === 'sgr-0in');
-  assert.ok(plate, 'the rule was not drawn');
-  // The two lines a reader came for: the protocol and ports, then the direction and the target.
-  // Its id names nothing and it has no Name tag, so both lines would otherwise be wasted.
-  assert.equal(plate.label, 'tcp 443');
-  assert.equal(plate.sub, '← 0.0.0.0/0');
-  assert.match(plate.title, /인바운드 tcp 443 ← 0\.0\.0\.0\/0/);
-  // And it is joined to the group it belongs to, which is what makes it a rule OF something.
-  const toGroup = scene.edges.filter(
-    (e) => [e.from, e.to].sort().join() === ['sg-web', 'sgr-0in'].sort().join());
-  assert.equal(toGroup.length, 1);
-  assert.equal(toGroup[0].kind, 'security');
+  // The rule is NOT on the canvas. Not as a plate, not folded into one, not as a line to the
+  // group it belongs to - a rule is what a group allows, and the table the group opens says it.
+  assert.equal(scene.nodes.find((n) => n.id === 'sgr-0in'), undefined);
+  assert.equal(scene.edges.filter((e) => [e.from, e.to].includes('sgr-0in')).length, 0);
+  assert.equal(scene.rows.find((r) => r.id === 'sgr-0in'), undefined);
+  // Counted, and the picture says so rather than dropping it in silence.
+  assert.equal(scene.counts.ruleRows, 1);
+  assert.ok(scene.foot.some((f) => /보안 그룹 규칙 1개는 판으로 그리지 않는다/.test(f.text)),
+            'the foot line does not say where the rules went');
+  // Nor is it offered in the type picker: there is no plate to switch off.
+  assert.equal(scene.types.find((t) => t.resourceType === 'ec2:security-group-rule'), undefined);
+  // The GROUP's plate is what carries the rules now: how many, and a click opens the table.
+  const web = scene.nodes.find((n) => n.id === 'sg-web');
+  assert.equal(web.label, 'sg-web');
+  assert.equal(web.sub, `규칙 ${WEB_RULES.length}개`);
+  assert.equal(web.ruleCount, WEB_RULES.length);
+  // Every other plate has none, so nothing else opens a table.
+  assert.equal(scene.nodes.filter((n) => n.ruleCount > 0).length, 2);
 });
 
 test('the chain between two groups is one line per direction, pointing the way traffic goes', () => {
@@ -973,11 +979,16 @@ test('the chain between two groups is one line per direction, pointing the way t
 
 test('a rule reading is null where there is no rule, and never a protocol named -1', () => {
   assert.equal(ruleText(null), null);
-  assert.equal(ruleText({}).head, '모든 프로토콜');
-  assert.equal(ruleText({ protocol: 'tcp', from_port: 80, to_port: 443 }).head, 'tcp 80-443');
-  assert.equal(ruleText({ protocol: 'tcp' }).head, 'tcp 전체 포트');
-  assert.equal(ruleText({ direction: 'egress', target: 'sg-0db' }).tail, '→ sg-0db');
+  // One cell of the table: the protocol and its ports, and nothing about direction or target -
+  // those are columns of their own, and printing them here would print each twice.
+  assert.equal(ruleText({}), '모든 프로토콜');
+  assert.equal(ruleText({ protocol: 'tcp', from_port: 80, to_port: 443 }), 'tcp 80-443');
+  assert.equal(ruleText({ protocol: 'tcp' }), 'tcp 전체 포트');
+  assert.equal(ruleText({ direction: 'egress', target: 'sg-0db' }), '모든 프로토콜');
   assert.equal(ruleSentence({ direction: 'ingress', protocol: 'tcp', from_port: 22, to_port: 22,
                               target_kind: 'cidr', target: '10.0.0.0/8' }),
                '인바운드 tcp 22 ← 10.0.0.0/8');
+  assert.equal(ruleSentence({ direction: 'egress', protocol: '-1',
+                              target_kind: 'security_group', target: 'sg-0db' }),
+               '아웃바운드 모든 프로토콜 → sg-0db (보안 그룹)');
 });

@@ -60,6 +60,21 @@ export const G_FOOT_PAD = 8;
  */
 export const CONTAINER_TYPES = new Set(['ec2:vpc', 'ec2:subnet']);
 
+/**
+ * Types another plate carries, so they get no plate of their own.
+ *
+ * A security group RULE is not a thing in the picture: it is what a group ALLOWS. A plate each put
+ * the group's whole document on the canvas - eleven tiles for two groups in the first account this
+ * was drawn for, every one of them with a line back to the group it belongs to, and the group
+ * plates buried among them. The rules are still read and still shown: they are the table that
+ * opens when the GROUP is clicked, where direction, protocol, ports and target are four columns
+ * instead of two lines of a tile.
+ *
+ * Different from CONTAINER_TYPES, which ARE drawn - as the border round what is inside them. These
+ * are drawn nowhere, so the scene counts them (counts.ruleRows) and a foot line says where to look.
+ */
+export const CARRIED_TYPES = new Set(['ec2:security-group-rule']);
+
 export const NODE_BUDGET = 400;
 export const EDGE_BUDGET = 700;
 /** Instance cards per subnet before the subnet folds the rest into one plate. */
@@ -96,12 +111,13 @@ export const RELATIONS = {
   // `flip` on allows_from because the link is recorded on the group that ADMITS the traffic and
   // the arrow points the way the traffic goes: the referenced group is where it starts. A separate
   // word from `reverse` above, which is a note about how the LABEL reads and moves no line.
+  //
+  // The rule row's own `referenced_group` is the same fact seen from the rule, and it is not here:
+  // a rule row is never drawn (CARRIED_TYPES), so nothing walks its links and there is no relation
+  // for the picture to know. The chain is read off the GROUP rows, which is where it belongs -
+  // the line joins two groups either way.
   allows_from: { kind: 'chain', label: '이 그룹으로 허용', flip: true },
   allows_to: { kind: 'chain', label: '이 그룹에서 허용' },
-  // A RULE row's own reference to another group. Not drawn: the same fact is already a line
-  // between the two GROUPS (above), with the direction the rule gave it, and the rule plate's own
-  // label names the group it points at. Registered so the target does not count as dangling.
-  referenced_group: { kind: 'chain', label: '규칙이 지목한 보안 그룹', onRuleRow: true },
 };
 
 /** The order edges are dropped in when the budget is hit: least load-bearing first. */
@@ -133,22 +149,21 @@ function nameOf(r) {
 }
 
 /**
- * What a security group rule ALLOWS, as the two lines a plate holds.
+ * WHAT a security group rule opens: its protocol and its ports, as one cell of a table.
  *
- * `{ head, tail }`: the protocol and ports on the first line, and the direction and target on the
- * second. That split is the point of the plate - an approver reading a group is asking two
- * questions, "what may come in" and "from where", and a single line answers neither at a glance.
+ *   tcp 443 from anywhere      ->  'tcp 443'
+ *   every protocol to sg-0db   ->  '모든 프로토콜'
+ *   tcp with no ports given    ->  'tcp 전체 포트'
  *
- *   ingress tcp 443 from 0.0.0.0/0   ->  { head: 'tcp 443',  tail: '← 0.0.0.0/0' }
- *   egress every protocol to sg-0db  ->  { head: '모든 프로토콜', tail: '→ sg-0db' }
+ * The direction and the target are NOT in it. They were, while a rule was a plate and the tile had
+ * two lines to fill; a rule is now a ROW of the table a group opens, and there the direction and
+ * the target are columns of their own - repeating them here would print each twice.
  *
- * The ARROW is the direction and not decoration: ← is traffic coming IN to whatever carries the
- * group, → is traffic going out. '-1' is AWS's spelling of "every protocol" and must never be
- * printed as a protocol named -1; a rule with no ports is every port of that protocol, which for
- * tcp and udp is worth saying and for icmp or "every protocol" is not (they have none).
+ * '-1' is AWS's spelling of "every protocol" and must never be printed as a protocol named -1; a
+ * rule with no ports is every port of that protocol, which for tcp and udp is worth saying and for
+ * icmp or "every protocol" is not (they have none).
  *
- * Null when the row carries no rule - every type but ec2:security-group-rule, and any assessment
- * made before the querier read them.
+ * Null when there is no rule to read.
  */
 export function ruleText(rule) {
   if (!rule || typeof rule !== 'object') return null;
@@ -156,18 +171,16 @@ export function ruleText(rule) {
   const from = Number.isInteger(rule.from_port) ? rule.from_port : null;
   const to = Number.isInteger(rule.to_port) ? rule.to_port : null;
   const ports = from === null ? '' : (from === to ? `${from}` : `${from}-${to}`);
-  const every = protocol === '-1';
-  const head = every
-    ? '모든 프로토콜'
-    : (ports ? `${protocol} ${ports}` : `${protocol} 전체 포트`);
-  const target = typeof rule.target === 'string' ? rule.target : '';
-  const arrow = rule.direction === 'egress' ? '→' : '←';
-  return { head, tail: target ? `${arrow} ${shortId(target)}` : arrow };
+  if (protocol === '-1') return '모든 프로토콜';
+  return ports ? `${protocol} ${ports}` : `${protocol} 전체 포트`;
 }
 
 /**
- * One rule as a whole sentence, for a hover title and the resource panel - where there is room for
- * the target in full and no reason to shorten an address range to something a reader cannot paste.
+ * One rule as a whole sentence, for the group plate's hover title - where there is room for the
+ * target in full and no reason to shorten an address range to something a reader cannot paste.
+ *
+ * The ARROW is the direction and not decoration: ← is traffic coming IN to whatever carries the
+ * group, → is traffic going out.
  *
  *   '인바운드 tcp 443 ← 0.0.0.0/0'      '아웃바운드 모든 프로토콜 → sg-0db (보안 그룹)'
  */
@@ -178,7 +191,7 @@ export function ruleSentence(rule) {
   const arrow = rule.direction === 'egress' ? '→' : '←';
   const kind = rule.target_kind === 'security_group' ? ' (보안 그룹)'
     : rule.target_kind === 'prefix_list' ? ' (접두사 목록)' : '';
-  return `${way} ${text.head} ${arrow} ${rule.target ?? ''}${kind}`.trim();
+  return `${way} ${text} ${arrow} ${rule.target ?? ''}${kind}`.trim();
 }
 
 /** `i-0123456789abcdef0` -> `i-01234…def0`. Whole ids up to 15 characters are kept. */
@@ -264,6 +277,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
    *  not switch one back on. Counted before hiding, so the numbers do not move as they are used. */
   const typeRows = new Map();
   let hiddenRows = 0;
+  /** Rows CARRIED_TYPES took off the canvas: the security group rules, which the group's own
+   *  table holds. Not hidden and not dropped - a foot line says where they went. */
+  let ruleRows = 0;
   for (const group of policy?.affected ?? []) {
     const type = group?.resource_type;
     if (!type) continue;
@@ -274,6 +290,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     }
     const kept = rows.filter((r) => keeps(filter, r));
     if (kept.length === 0) continue;
+    // The rules belong to a group and the group's table has them. Before typeRows on purpose: the
+    // picker offers what can be switched off, and a type with no plate has nothing to switch.
+    if (CARRIED_TYPES.has(type)) { ruleRows += kept.length; continue; }
     typeRows.set(type, (typeRows.get(type) ?? 0) + kept.length);
     if (hiddenTypes.has(type)) { hiddenRows += kept.length; continue; }
     kinds += 1;
@@ -308,10 +327,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
         zone: zoneOf(r),
         sensitive: !!r.sensitive,
         links,
-        // What this one rule allows, for the plate's two lines. Absent on every other type.
-        rule: r?.rule && typeof r.rule === 'object' ? r.rule : null,
-        // And on a GROUP row, what all of its rules allow - read by the resource panel, which has
-        // room for the list a plate has no room for.
+        // On a security group row, everything that group allows. The picture draws none of it -
+        // the plate says how many there are and the table a click opens says what they are - but
+        // the hover title lists them, so a reader passing over a group reads it without a click.
         rules: Array.isArray(r?.rules) ? r.rules : [],
       });
       if (!byType.has(type)) byType.set(type, []);
@@ -474,7 +492,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   for (const [, set] of eniOf) for (const e of set) claimed.add(e);
   for (const [v] of attachedTo) claimed.add(v);
 
-  const BAND_TYPES = new Set(['ec2:security-group', 'ec2:security-group-rule', 'ec2:route-table',
+  const BAND_TYPES = new Set(['ec2:security-group', 'ec2:route-table',
                               'ec2:network-acl', 'ec2:vpc-endpoint', 'ec2:internet-gateway',
                               'ec2:vpc']);
   const placeOf = (n) => {
@@ -539,19 +557,21 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     const n = nodes.get(id);
     placedNodes.push({
       id, resourceType: n.resourceType, typeLabel: n.typeLabel, icon: n.icon,
-      label: ruleText(n.rule)?.head ?? (n.name ? shortName(n.name) : shortId(id)),
+      label: n.name ? shortName(n.name) : shortId(id),
       // The zone is worth a line only where nothing around the node says it - the region band. A
       // volume drawn beside its instance is in that instance's zone, and the subnet frame says so.
       //
-      // A RULE says what it allows instead, on both lines: its id names nothing a reader wants and
-      // its Name tag does not exist, while "tcp 443" over "← 0.0.0.0/0" is the whole content of
-      // the resource.
-      sub: ruleText(n.rule)?.tail
-        ?? (n.name ? shortId(id) : (extra.zoneSub && n.zone ? n.zone : n.typeLabel)),
+      // A GROUP says HOW MANY RULES it has instead, because that is the line that makes the plate
+      // worth clicking: the rules are not on the canvas any more (CARRIED_TYPES) and a group whose
+      // plate said only 「보안 그룹」 would not tell a reader there is anything behind it. The id
+      // it displaces is on the first line already for a group with no Name tag, and in the hover
+      // title for one with.
+      sub: (n.resourceType === 'ec2:security-group' && n.rules.length > 0)
+        ? `규칙 ${n.rules.length}개`
+        : (n.name ? shortId(id) : (extra.zoneSub && n.zone ? n.zone : n.typeLabel)),
       x, y: yy, w: extra.w ?? NODE_W, h: extra.h ?? NODE_H, sensitive: n.sensitive, arn: n.arn,
       title: `${n.typeLabel} ${id}${n.name ? ` (${n.name})` : ''}` + (n.zone ? ` · ${n.zone}` : '')
-        + (n.rule ? `\n${ruleSentence(n.rule)}` : '')
-        + (n.rules?.length ? `\n${n.rules.map(ruleSentence).join('\n')}` : '')
+        + (n.rules.length ? `\n${n.rules.map(ruleSentence).join('\n')}` : '')
         + `\n${n.arn}`,
       erase: !!extra.erase,
       // A box rather than a plate: an instance, drawn as a frame with its interfaces inside when
@@ -560,6 +580,10 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       holds: extra.holds ?? 0,
       open: !!extra.open,
       note: extra.note ?? null,
+      /** How many rules the table behind this plate has. Zero on every type but a security group,
+       *  and on a group read before the querier recorded rules - the plate is then an ordinary
+       *  plate and clicking it opens no table, which is the truth about that assessment. */
+      ruleCount: n.resourceType === 'ec2:security-group' ? n.rules.length : 0,
     });
     drawnNodes += 1;
   };
@@ -641,7 +665,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   // Order inside a VPC band: security groups, route tables, ACLs, endpoints, the rest.
   // Rules directly after the groups they belong to, so the line from a rule to its group is
   // short and the two read as one thing.
-  const BAND_ORDER = ['ec2:security-group', 'ec2:security-group-rule', 'ec2:route-table',
+  const BAND_ORDER = ['ec2:security-group', 'ec2:route-table',
                       'ec2:network-acl', 'ec2:vpc-endpoint'];
   for (const [, members] of bandMembers) {
     members.sort((a, b) => {
@@ -1259,9 +1283,6 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
           addEdge('security', boxedIn.get(n.id), target, relation);
           continue;
         }
-        // The rule row's own reference is not drawn - see RELATIONS.referenced_group - but the
-        // target is real, so it is not counted as dangling either.
-        if (rel.onRuleRow) continue;
         // A flipped relation points the other way: the link is recorded on the group that ADMITS
         // the traffic, and the arrow follows the traffic.
         if (drawn.has(target)) {
@@ -1349,6 +1370,10 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     foot.push(`체크를 풀어 감춘 자원 ${hiddenRows.toLocaleString()}개 (유형 ${hiddenTypes.size}종) — `
       + '위의 유형 상자에서 다시 켤 수 있다.');
   }
+  if (ruleRows > 0) {
+    foot.push(`보안 그룹 규칙 ${ruleRows.toLocaleString()}개는 판으로 그리지 않는다 — `
+      + '그룹 판을 누르면 표로 열린다.');
+  }
   if (uncarried.size > 0) {
     const total = [...uncarried.values()].reduce((n, v) => n + v, 0);
     foot.push(`평가가 행을 담지 않은 자원 ${total.toLocaleString()}개 (서비스 ${uncarried.size}종) — `
@@ -1427,6 +1452,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       /** Rows a switched-off type took out of the picture. Not in totalRows - they are not rows of
        *  this scene at all - so the accounting above still balances. */
       hiddenRows,
+      /** Security group rules, which no plate draws and the group's own table holds. Not in
+       *  totalRows either, and for the same reason: the accounting above is about plates. */
+      ruleRows,
     },
     kinds,
     measured,
