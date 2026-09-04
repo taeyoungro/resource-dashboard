@@ -1485,6 +1485,24 @@ dialog.policy-dialog.topology-dialog { overflow: hidden; }
    rather than the picture's, and scrolls inside itself when the card is long. */
 dialog.policy-dialog.finding-dialog { max-height: calc(100vh - 48px); overflow: auto; }
 .finding-dialog .finding { margin: 0 0 8px; }
+/* What a security group allows, opened from the group's plate. Narrower than the picture on
+   purpose - it is three columns and the reader goes straight back to what is underneath - and it
+   scrolls inside itself, because a group with sixty rules must not push its own 닫기 off-screen. */
+dialog.policy-dialog.rules-dialog {
+  width: min(560px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+/* Bigger than the panel's copy: this table IS the window, so the values are read at the size the
+   rest of a dialog is read at rather than at the panel's compressed 11px. */
+.rules-dialog .rules-table { font-size: 12px; }
+.rules-dialog .rules-table th, .rules-dialog .rules-table td { padding: 5px 8px; }
+/* The way back into the table for a reader who closed it. A link and not a button-shaped thing:
+   it opens something already on the screen's terms, like the finding rows above it. */
+.panel-rules-open {
+  background: none; border: 0; padding: 0;
+  color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer;
+}
 .topology-scroll { overflow: auto; flex: 1 1 auto; min-height: 0; }
 /* Focused by showModal() so a screen reader reaches the caveats before the filter controls. It is
    not an interactive target, so it takes no focus ring. */

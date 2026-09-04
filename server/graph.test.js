@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  CARDS_PER_SUBNET, EDGE_BUDGET, GRAPH_CAPTION, GRAPH_W, NODE_BUDGET, RELATIONS,
+  CARDS_PER_SUBNET, EDGE_BUDGET, GRAPH_CAPTION, GRAPH_W, NODE_BUDGET, NODE_GAP, RELATIONS,
   graphSummary, idOf, relationScene, ruleSentence, ruleText, shortId, shortName,
 } from './graph.js';
 
@@ -576,8 +576,13 @@ test('a line leaves by the side facing its other end and never runs under the pl
   const igw = edge('rtb-main', 'igw-1');
   assert.equal(igw.points.length, 2, 'the route to the gateway bends');
   for (const id of ['rtb-priv', 'acl-default']) assert.ok(!runsUnder(igw, id), `the route runs under ${id}`);
-  // Adjacent plates are joined straight, and every line's ends are its first and last points.
-  assert.equal(edge('nat-1', 'eni-nat').points.length, 2);
+  // Two plates SIDE BY SIDE are no longer joined straight across: a line leaves through the middle
+  // of a horizontal edge and nothing else, so it goes over the row or under it - out, along the
+  // corridor, back in. Three pieces, four points.
+  const beside = edge('nat-1', 'eni-nat');
+  assert.equal(beside.points.length, 4);
+  assert.equal(beside.points[0].x, beside.points[1].x, 'the line does not leave straight up or down');
+  // Every line's ends are its first and last points.
   for (const e of scene.edges) {
     assert.ok(e.points.length >= 2, `${e.from} -> ${e.to} has ${e.points.length} points`);
     // Orthogonal: every piece is horizontal or vertical, none is empty, none doubles back.
@@ -598,6 +603,54 @@ test('a line leaves by the side facing its other end and never runs under the pl
   }
   // The table row carries the type's Korean name beside the type.
   assert.ok(scene.rows.every((r) => typeof r.typeLabel === 'string' && r.typeLabel.length > 0));
+});
+
+test('a line touches a PLATE at one of two points: the middle of its top edge or of its bottom edge', () => {
+  // The whole of the anchoring rule, over every line of two busy scenes. Before this a line met
+  // its plate wherever the router found cheapest - anywhere along any of the four sides - and
+  // twenty lines met twenty plates at twenty places, which is what made the picture a tangle.
+  //
+  // CONTAINERS are not in it, on purpose: a subnet frame is the border round what is inside it,
+  // five hundred pixels wide, and half the lines that reach it start inside it. One point on such
+  // a frame sends a line the width of it to enter where it already was.
+  for (const affected of [ACCOUNT(), BIG(40)]) {
+    const scene = sceneOf(affected, null, true, OPEN);
+    const plates = new Map(scene.nodes.map((n) => [n.id, n]));
+    let checked = 0;
+    for (const e of scene.edges) {
+      for (const [id, pt, at] of [[e.from, e.points[0], 0],
+                                  [e.to, e.points[e.points.length - 1], e.points.length - 1]]) {
+        const b = plates.get(id);
+        if (!b) continue;                       // a container end, which keeps its spread
+        checked += 1;
+        // On a horizontal edge, top or bottom - never on a side.
+        assert.ok(pt.y === b.y || pt.y === b.y + b.h,
+                  `${e.from} -> ${e.to} touches ${id} at y ${pt.y}, not on its top or bottom edge`);
+        // At its middle. Within half a grid cell: the anchor is snapped to the router's grid so
+        // that the first piece of the line is exactly vertical.
+        assert.ok(Math.abs(pt.x - (b.x + b.w / 2)) <= 2.5,
+                  `${e.from} -> ${e.to} touches ${id} at x ${pt.x}, not the middle of ${b.x + b.w / 2}`);
+        // And so the piece at that end is vertical: straight out, straight in.
+        const next = e.points[at === 0 ? 1 : at - 1];
+        assert.equal(pt.x, next.x, `${e.from} -> ${e.to} does not leave ${id} straight up or down`);
+      }
+    }
+    assert.ok(checked > 10, `only ${checked} plate ends were checked`);
+  }
+});
+
+test('the gap between two plates is wide enough to hold the corridors the lines run in', () => {
+  // Every line runs over, under or between plates now, so the gap is a corridor and not a margin.
+  // Four lanes at the router's five-pixel grid, after the two-pixel margin it keeps round a plate.
+  assert.ok(NODE_GAP - 4 >= 4 * 5, `NODE_GAP ${NODE_GAP} leaves ${NODE_GAP - 4} for the lines`);
+  const scene = sceneOf(ACCOUNT(), null, true, OPEN);
+  // And the layout really uses it: two plates in one row stand NODE_GAP apart, not less.
+  const row = scene.nodes.filter((n) => !n.box && n.y === scene.nodes.find((m) => m.id === 'rtb-main')?.y)
+    .sort((a, b) => a.x - b.x);
+  for (let i = 1; i < row.length; i += 1) {
+    assert.ok(row[i].x - (row[i - 1].x + row[i - 1].w) >= NODE_GAP,
+              `${row[i - 1].id} and ${row[i].id} are closer than NODE_GAP`);
+  }
 });
 
 test('the picture is symmetric about the middle: the gateway on top, the tables in a column, the zones either side', () => {
@@ -942,20 +995,26 @@ const SG_ACCOUNT = () => [
   ]),
 ];
 
-test('a rule plate says what it allows, not what it is called', () => {
+test('a rule gets no plate; the group says how many it has and the foot says where they are', () => {
   const scene = sceneOf(SG_ACCOUNT());
-  const plate = scene.nodes.find((n) => n.id === 'sgr-0in');
-  assert.ok(plate, 'the rule was not drawn');
-  // The two lines a reader came for: the protocol and ports, then the direction and the target.
-  // Its id names nothing and it has no Name tag, so both lines would otherwise be wasted.
-  assert.equal(plate.label, 'tcp 443');
-  assert.equal(plate.sub, '← 0.0.0.0/0');
-  assert.match(plate.title, /인바운드 tcp 443 ← 0\.0\.0\.0\/0/);
-  // And it is joined to the group it belongs to, which is what makes it a rule OF something.
-  const toGroup = scene.edges.filter(
-    (e) => [e.from, e.to].sort().join() === ['sg-web', 'sgr-0in'].sort().join());
-  assert.equal(toGroup.length, 1);
-  assert.equal(toGroup[0].kind, 'security');
+  // The rule is NOT on the canvas. Not as a plate, not folded into one, not as a line to the
+  // group it belongs to - a rule is what a group allows, and the table the group opens says it.
+  assert.equal(scene.nodes.find((n) => n.id === 'sgr-0in'), undefined);
+  assert.equal(scene.edges.filter((e) => [e.from, e.to].includes('sgr-0in')).length, 0);
+  assert.equal(scene.rows.find((r) => r.id === 'sgr-0in'), undefined);
+  // Counted, and the picture says so rather than dropping it in silence.
+  assert.equal(scene.counts.ruleRows, 1);
+  assert.ok(scene.foot.some((f) => /보안 그룹 규칙 1개는 판으로 그리지 않는다/.test(f.text)),
+            'the foot line does not say where the rules went');
+  // Nor is it offered in the type picker: there is no plate to switch off.
+  assert.equal(scene.types.find((t) => t.resourceType === 'ec2:security-group-rule'), undefined);
+  // The GROUP's plate is what carries the rules now: how many, and a click opens the table.
+  const web = scene.nodes.find((n) => n.id === 'sg-web');
+  assert.equal(web.label, 'sg-web');
+  assert.equal(web.sub, `규칙 ${WEB_RULES.length}개`);
+  assert.equal(web.ruleCount, WEB_RULES.length);
+  // Every other plate has none, so nothing else opens a table.
+  assert.equal(scene.nodes.filter((n) => n.ruleCount > 0).length, 2);
 });
 
 test('the chain between two groups is one line per direction, pointing the way traffic goes', () => {
@@ -973,11 +1032,16 @@ test('the chain between two groups is one line per direction, pointing the way t
 
 test('a rule reading is null where there is no rule, and never a protocol named -1', () => {
   assert.equal(ruleText(null), null);
-  assert.equal(ruleText({}).head, '모든 프로토콜');
-  assert.equal(ruleText({ protocol: 'tcp', from_port: 80, to_port: 443 }).head, 'tcp 80-443');
-  assert.equal(ruleText({ protocol: 'tcp' }).head, 'tcp 전체 포트');
-  assert.equal(ruleText({ direction: 'egress', target: 'sg-0db' }).tail, '→ sg-0db');
+  // One cell of the table: the protocol and its ports, and nothing about direction or target -
+  // those are columns of their own, and printing them here would print each twice.
+  assert.equal(ruleText({}), '모든 프로토콜');
+  assert.equal(ruleText({ protocol: 'tcp', from_port: 80, to_port: 443 }), 'tcp 80-443');
+  assert.equal(ruleText({ protocol: 'tcp' }), 'tcp 전체 포트');
+  assert.equal(ruleText({ direction: 'egress', target: 'sg-0db' }), '모든 프로토콜');
   assert.equal(ruleSentence({ direction: 'ingress', protocol: 'tcp', from_port: 22, to_port: 22,
                               target_kind: 'cidr', target: '10.0.0.0/8' }),
                '인바운드 tcp 22 ← 10.0.0.0/8');
+  assert.equal(ruleSentence({ direction: 'egress', protocol: '-1',
+                              target_kind: 'security_group', target: 'sg-0db' }),
+               '아웃바운드 모든 프로토콜 → sg-0db (보안 그룹)');
 });

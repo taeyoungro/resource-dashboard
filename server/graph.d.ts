@@ -27,9 +27,6 @@ export const RELATIONS: Record<string, { kind: EdgeKind; label: string; reverse?
                                           *  recorded the link - a group admits traffic FROM
                                           *  another, and the arrow follows the traffic. */
                                          flip?: true;
-                                         /** Recorded on a rule row and not drawn: the same fact is
-                                          *  already a line between the two groups. */
-                                         onRuleRow?: true;
                                           implicit?: true; vpcFlag?: true }>;
 export const KIND_LABEL: Record<EdgeKind, string>;
 
@@ -91,6 +88,9 @@ export interface GraphNode {
   /** One sentence inside a closed or empty box: how many interfaces it folds and that a click
    *  opens it, or that the interfaces are not in this assessment. */
   note: string | null;
+  /** How many rules the table behind this plate holds. Non-zero only on a security group whose
+   *  assessment recorded them; a click on such a plate opens that table. */
+  ruleCount: number;
 }
 
 /** A plate standing for what the budget left out of one container. */
@@ -176,6 +176,9 @@ export interface RelationScene {
     foldedRows: number;
     /** Rows a switched-off type took out of the picture. Not part of totalRows. */
     hiddenRows: number;
+    /** Security group rules, which no plate draws and the group's own table holds. Not part of
+     *  totalRows - that accounting is about plates. */
+    ruleRows: number;
   };
   kinds: number;
   measured: number;
@@ -199,9 +202,9 @@ export function relationScene(
 ): RelationScene | null;
 export function graphSummary(scene: RelationScene | null): string;
 
-/** What a security group rule allows, as the two lines a plate holds: `{ head, tail }`. Null when
- *  the row carries no rule. */
-export declare function ruleText(rule: unknown): { head: string; tail: string } | null;
+/** The protocol and ports a security group rule opens - one cell of the rules table. Null when
+ *  there is no rule to read. */
+export declare function ruleText(rule: unknown): string | null;
 
-/** One rule as a whole sentence, for a hover title and the resource panel. */
+/** One rule as a whole sentence, for the group plate's hover title. */
 export declare function ruleSentence(rule: unknown): string;

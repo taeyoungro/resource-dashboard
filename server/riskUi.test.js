@@ -2314,6 +2314,40 @@ test('an analysis that found nothing is not drawn as an analysis nobody ran', ()
             'the report cannot say "not answered" apart from "found nothing"');
 });
 
+test('a security group rule is a row of a popup table, never a plate', () => {
+  // The picture's half: no plate, no band slot, and the scene counts what it took off the canvas.
+  const graph = readFileSync(new URL('./graph.js', import.meta.url), 'utf8');
+  assert.ok(graph.includes("export const CARRIED_TYPES = new Set(['ec2:security-group-rule']);"),
+            'the rule type is not named as one another plate carries');
+  assert.ok(graph.includes('if (CARRIED_TYPES.has(type)) { ruleRows += kept.length; continue; }'),
+            'rule rows still become plates');
+  assert.ok(!/BAND_TYPES = new Set\(\[[^\]]*security-group-rule/.test(graph)
+            && !/BAND_ORDER = \[[^\]]*security-group-rule/.test(graph),
+            'the rule type still has a slot in the band');
+  assert.ok(graph.includes('보안 그룹 규칙 ${ruleRows.toLocaleString()}개는 판으로 그리지 않는다'),
+            'the picture does not say where the rules went');
+  // The group's plate is what leads to them: a count on the tile, a table on the click.
+  assert.ok(graph.includes("`규칙 ${n.rules.length}개`"),
+            'the group plate does not say how many rules it has');
+  assert.ok(TOPOLOGY.includes('if (node.ruleCount > 0) onRules(node.arn);'),
+            'clicking a security group does not open its rules');
+  // The popup's half: a dialog of its own, a table, and the three ways out every dialog here has.
+  assert.ok(TOPOLOGY.includes('function RulesTable'), 'the rules are not a table');
+  assert.ok(TOPOLOGY.includes('rules-dialog'), 'the rules table is not in a popup');
+  assert.match(CSS, /dialog\.policy-dialog\.rules-dialog\b/, 'the rules popup is unstyled');
+  assert.ok(TOPOLOGY.includes('onClose={() => setOpenRules(null)}'),
+            'closing the rules popup does not put the state back, so it opens once');
+  assert.ok(TOPOLOGY.includes('<th>방향</th><th>프로토콜·포트</th><th>대상</th>'),
+            'the rules table does not answer direction, protocol and target as columns');
+  // The panel keeps the way back in, and does NOT keep a second copy of the table.
+  assert.ok(TOPOLOGY.includes('규칙 {facts.rules.length}개 표로 보기'),
+            'a reader who closed the table has no way back to it');
+  assert.ok(!TOPOLOGY.includes('facts.rules.map('),
+            'the panel draws the rules a second time');
+  assert.ok(!TOPOLOGY.includes('facts.resourceType === "ec2:security-group-rule"'),
+            'the panel still has a branch for a resource type the picture does not draw');
+});
+
 test('the public/private rule the legend states is the default route, and the panel shows the routes', () => {
   const legend = TOPOLOGY.slice(TOPOLOGY.indexOf('topology-legend'));
   assert.ok(legend.includes('기본 경로(0.0.0.0/0 · ::/0)'),

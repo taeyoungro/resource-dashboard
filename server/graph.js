@@ -35,14 +35,28 @@ import { resourceIconPath } from './serviceIcons.js';
 export const GRAPH_W = 1400;
 export const NODE_W = 116;
 export const NODE_H = 76;
-export const NODE_GAP = 10;
+/**
+ * The space between two plates, and the space every line has to run in.
+ *
+ * It was 10, which was a margin: enough that two plates do not touch. It is a CORRIDOR now. Every
+ * line leaves and enters a plate through the middle of a horizontal edge (sideAnchors), so a line
+ * between two plates in one row goes over the row or under it, and a line between two rows passes
+ * between two plates of the row in between - and both of those need somewhere to run. At 10 the
+ * free band was six pixels after the router's own two-pixel margin round each plate, which is one
+ * lane at the five-pixel grid, so the second line of any pair had to cross the first. At 24 it is
+ * twenty, which is four.
+ *
+ * The price is a wider and taller picture for the same resources - fewer plates fit a row, and the
+ * rows are further apart. That is the trade the fixed anchors are worth.
+ */
+export const NODE_GAP = 24;
 export const PAD = 12;
 /** The label band of a container. */
 export const HEAD = 26;
 export const ROW_GAP = 12;
 export const G_ICON = 28;
-/** How far from a plate's corner a line may leave it: a line into a corner reads as a line into
- *  the neighbour. */
+/** How far from a CONTAINER's corner a line may meet its border: a line into a corner reads as a
+ *  line into the frame next to it. Plates do not use it - they have two fixed anchors. */
 export const ANCHOR_INSET = 10;
 /** How close a line may pass to a plate it does not end at before it counts as grazing it. */
 export const GRAZE = 6;
@@ -59,6 +73,21 @@ export const G_FOOT_PAD = 8;
  * while the instances stayed would be claiming those instances are in no subnet.
  */
 export const CONTAINER_TYPES = new Set(['ec2:vpc', 'ec2:subnet']);
+
+/**
+ * Types another plate carries, so they get no plate of their own.
+ *
+ * A security group RULE is not a thing in the picture: it is what a group ALLOWS. A plate each put
+ * the group's whole document on the canvas - eleven tiles for two groups in the first account this
+ * was drawn for, every one of them with a line back to the group it belongs to, and the group
+ * plates buried among them. The rules are still read and still shown: they are the table that
+ * opens when the GROUP is clicked, where direction, protocol, ports and target are four columns
+ * instead of two lines of a tile.
+ *
+ * Different from CONTAINER_TYPES, which ARE drawn - as the border round what is inside them. These
+ * are drawn nowhere, so the scene counts them (counts.ruleRows) and a foot line says where to look.
+ */
+export const CARRIED_TYPES = new Set(['ec2:security-group-rule']);
 
 export const NODE_BUDGET = 400;
 export const EDGE_BUDGET = 700;
@@ -96,12 +125,13 @@ export const RELATIONS = {
   // `flip` on allows_from because the link is recorded on the group that ADMITS the traffic and
   // the arrow points the way the traffic goes: the referenced group is where it starts. A separate
   // word from `reverse` above, which is a note about how the LABEL reads and moves no line.
+  //
+  // The rule row's own `referenced_group` is the same fact seen from the rule, and it is not here:
+  // a rule row is never drawn (CARRIED_TYPES), so nothing walks its links and there is no relation
+  // for the picture to know. The chain is read off the GROUP rows, which is where it belongs -
+  // the line joins two groups either way.
   allows_from: { kind: 'chain', label: '이 그룹으로 허용', flip: true },
   allows_to: { kind: 'chain', label: '이 그룹에서 허용' },
-  // A RULE row's own reference to another group. Not drawn: the same fact is already a line
-  // between the two GROUPS (above), with the direction the rule gave it, and the rule plate's own
-  // label names the group it points at. Registered so the target does not count as dangling.
-  referenced_group: { kind: 'chain', label: '규칙이 지목한 보안 그룹', onRuleRow: true },
 };
 
 /** The order edges are dropped in when the budget is hit: least load-bearing first. */
@@ -133,22 +163,21 @@ function nameOf(r) {
 }
 
 /**
- * What a security group rule ALLOWS, as the two lines a plate holds.
+ * WHAT a security group rule opens: its protocol and its ports, as one cell of a table.
  *
- * `{ head, tail }`: the protocol and ports on the first line, and the direction and target on the
- * second. That split is the point of the plate - an approver reading a group is asking two
- * questions, "what may come in" and "from where", and a single line answers neither at a glance.
+ *   tcp 443 from anywhere      ->  'tcp 443'
+ *   every protocol to sg-0db   ->  '모든 프로토콜'
+ *   tcp with no ports given    ->  'tcp 전체 포트'
  *
- *   ingress tcp 443 from 0.0.0.0/0   ->  { head: 'tcp 443',  tail: '← 0.0.0.0/0' }
- *   egress every protocol to sg-0db  ->  { head: '모든 프로토콜', tail: '→ sg-0db' }
+ * The direction and the target are NOT in it. They were, while a rule was a plate and the tile had
+ * two lines to fill; a rule is now a ROW of the table a group opens, and there the direction and
+ * the target are columns of their own - repeating them here would print each twice.
  *
- * The ARROW is the direction and not decoration: ← is traffic coming IN to whatever carries the
- * group, → is traffic going out. '-1' is AWS's spelling of "every protocol" and must never be
- * printed as a protocol named -1; a rule with no ports is every port of that protocol, which for
- * tcp and udp is worth saying and for icmp or "every protocol" is not (they have none).
+ * '-1' is AWS's spelling of "every protocol" and must never be printed as a protocol named -1; a
+ * rule with no ports is every port of that protocol, which for tcp and udp is worth saying and for
+ * icmp or "every protocol" is not (they have none).
  *
- * Null when the row carries no rule - every type but ec2:security-group-rule, and any assessment
- * made before the querier read them.
+ * Null when there is no rule to read.
  */
 export function ruleText(rule) {
   if (!rule || typeof rule !== 'object') return null;
@@ -156,18 +185,16 @@ export function ruleText(rule) {
   const from = Number.isInteger(rule.from_port) ? rule.from_port : null;
   const to = Number.isInteger(rule.to_port) ? rule.to_port : null;
   const ports = from === null ? '' : (from === to ? `${from}` : `${from}-${to}`);
-  const every = protocol === '-1';
-  const head = every
-    ? '모든 프로토콜'
-    : (ports ? `${protocol} ${ports}` : `${protocol} 전체 포트`);
-  const target = typeof rule.target === 'string' ? rule.target : '';
-  const arrow = rule.direction === 'egress' ? '→' : '←';
-  return { head, tail: target ? `${arrow} ${shortId(target)}` : arrow };
+  if (protocol === '-1') return '모든 프로토콜';
+  return ports ? `${protocol} ${ports}` : `${protocol} 전체 포트`;
 }
 
 /**
- * One rule as a whole sentence, for a hover title and the resource panel - where there is room for
- * the target in full and no reason to shorten an address range to something a reader cannot paste.
+ * One rule as a whole sentence, for the group plate's hover title - where there is room for the
+ * target in full and no reason to shorten an address range to something a reader cannot paste.
+ *
+ * The ARROW is the direction and not decoration: ← is traffic coming IN to whatever carries the
+ * group, → is traffic going out.
  *
  *   '인바운드 tcp 443 ← 0.0.0.0/0'      '아웃바운드 모든 프로토콜 → sg-0db (보안 그룹)'
  */
@@ -178,7 +205,7 @@ export function ruleSentence(rule) {
   const arrow = rule.direction === 'egress' ? '→' : '←';
   const kind = rule.target_kind === 'security_group' ? ' (보안 그룹)'
     : rule.target_kind === 'prefix_list' ? ' (접두사 목록)' : '';
-  return `${way} ${text.head} ${arrow} ${rule.target ?? ''}${kind}`.trim();
+  return `${way} ${text} ${arrow} ${rule.target ?? ''}${kind}`.trim();
 }
 
 /** `i-0123456789abcdef0` -> `i-01234…def0`. Whole ids up to 15 characters are kept. */
@@ -264,6 +291,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
    *  not switch one back on. Counted before hiding, so the numbers do not move as they are used. */
   const typeRows = new Map();
   let hiddenRows = 0;
+  /** Rows CARRIED_TYPES took off the canvas: the security group rules, which the group's own
+   *  table holds. Not hidden and not dropped - a foot line says where they went. */
+  let ruleRows = 0;
   for (const group of policy?.affected ?? []) {
     const type = group?.resource_type;
     if (!type) continue;
@@ -274,6 +304,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     }
     const kept = rows.filter((r) => keeps(filter, r));
     if (kept.length === 0) continue;
+    // The rules belong to a group and the group's table has them. Before typeRows on purpose: the
+    // picker offers what can be switched off, and a type with no plate has nothing to switch.
+    if (CARRIED_TYPES.has(type)) { ruleRows += kept.length; continue; }
     typeRows.set(type, (typeRows.get(type) ?? 0) + kept.length);
     if (hiddenTypes.has(type)) { hiddenRows += kept.length; continue; }
     kinds += 1;
@@ -308,10 +341,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
         zone: zoneOf(r),
         sensitive: !!r.sensitive,
         links,
-        // What this one rule allows, for the plate's two lines. Absent on every other type.
-        rule: r?.rule && typeof r.rule === 'object' ? r.rule : null,
-        // And on a GROUP row, what all of its rules allow - read by the resource panel, which has
-        // room for the list a plate has no room for.
+        // On a security group row, everything that group allows. The picture draws none of it -
+        // the plate says how many there are and the table a click opens says what they are - but
+        // the hover title lists them, so a reader passing over a group reads it without a click.
         rules: Array.isArray(r?.rules) ? r.rules : [],
       });
       if (!byType.has(type)) byType.set(type, []);
@@ -474,7 +506,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   for (const [, set] of eniOf) for (const e of set) claimed.add(e);
   for (const [v] of attachedTo) claimed.add(v);
 
-  const BAND_TYPES = new Set(['ec2:security-group', 'ec2:security-group-rule', 'ec2:route-table',
+  const BAND_TYPES = new Set(['ec2:security-group', 'ec2:route-table',
                               'ec2:network-acl', 'ec2:vpc-endpoint', 'ec2:internet-gateway',
                               'ec2:vpc']);
   const placeOf = (n) => {
@@ -539,19 +571,21 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     const n = nodes.get(id);
     placedNodes.push({
       id, resourceType: n.resourceType, typeLabel: n.typeLabel, icon: n.icon,
-      label: ruleText(n.rule)?.head ?? (n.name ? shortName(n.name) : shortId(id)),
+      label: n.name ? shortName(n.name) : shortId(id),
       // The zone is worth a line only where nothing around the node says it - the region band. A
       // volume drawn beside its instance is in that instance's zone, and the subnet frame says so.
       //
-      // A RULE says what it allows instead, on both lines: its id names nothing a reader wants and
-      // its Name tag does not exist, while "tcp 443" over "← 0.0.0.0/0" is the whole content of
-      // the resource.
-      sub: ruleText(n.rule)?.tail
-        ?? (n.name ? shortId(id) : (extra.zoneSub && n.zone ? n.zone : n.typeLabel)),
+      // A GROUP says HOW MANY RULES it has instead, because that is the line that makes the plate
+      // worth clicking: the rules are not on the canvas any more (CARRIED_TYPES) and a group whose
+      // plate said only 「보안 그룹」 would not tell a reader there is anything behind it. The id
+      // it displaces is on the first line already for a group with no Name tag, and in the hover
+      // title for one with.
+      sub: (n.resourceType === 'ec2:security-group' && n.rules.length > 0)
+        ? `규칙 ${n.rules.length}개`
+        : (n.name ? shortId(id) : (extra.zoneSub && n.zone ? n.zone : n.typeLabel)),
       x, y: yy, w: extra.w ?? NODE_W, h: extra.h ?? NODE_H, sensitive: n.sensitive, arn: n.arn,
       title: `${n.typeLabel} ${id}${n.name ? ` (${n.name})` : ''}` + (n.zone ? ` · ${n.zone}` : '')
-        + (n.rule ? `\n${ruleSentence(n.rule)}` : '')
-        + (n.rules?.length ? `\n${n.rules.map(ruleSentence).join('\n')}` : '')
+        + (n.rules.length ? `\n${n.rules.map(ruleSentence).join('\n')}` : '')
         + `\n${n.arn}`,
       erase: !!extra.erase,
       // A box rather than a plate: an instance, drawn as a frame with its interfaces inside when
@@ -560,6 +594,10 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       holds: extra.holds ?? 0,
       open: !!extra.open,
       note: extra.note ?? null,
+      /** How many rules the table behind this plate has. Zero on every type but a security group,
+       *  and on a group read before the querier recorded rules - the plate is then an ordinary
+       *  plate and clicking it opens no table, which is the truth about that assessment. */
+      ruleCount: n.resourceType === 'ec2:security-group' ? n.rules.length : 0,
     });
     drawnNodes += 1;
   };
@@ -641,7 +679,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   // Order inside a VPC band: security groups, route tables, ACLs, endpoints, the rest.
   // Rules directly after the groups they belong to, so the line from a rule to its group is
   // short and the two read as one thing.
-  const BAND_ORDER = ['ec2:security-group', 'ec2:security-group-rule', 'ec2:route-table',
+  const BAND_ORDER = ['ec2:security-group', 'ec2:route-table',
                       'ec2:network-acl', 'ec2:vpc-endpoint'];
   for (const [, members] of bandMembers) {
     members.sort((a, b) => {
@@ -846,7 +884,6 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   const dangling = {};                                  // relation -> count
   const bump = (o, k) => { o[k] = (o[k] ?? 0) + 1; };
   const centre = (b) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   /** Whether the segment p-q passes through box r. The box is shrunk by one pixel, so a line
    *  running along a border, or starting on one, is not "through". Liang-Barsky. */
   const crosses = (p, q, r) => {
@@ -861,25 +898,31 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     }
     return t0 < t1;
   };
-  /** The places a line may leave a box: on each side, the point nearest the other end and the
-   *  side's middle, each tagged with its side. Two per side because a line to a far box reads
-   *  better leaving from the middle than out of a corner. */
-  const sideAnchors = (box, toward) => {
-    const ax = clamp(toward.x, box.x + ANCHOR_INSET, box.x + box.w - ANCHOR_INSET);
-    const ay = clamp(toward.y, box.y + ANCHOR_INSET, box.y + box.h - ANCHOR_INSET);
+  /**
+   * THE TWO PLACES A LINE MAY TOUCH A BOX: the middle of its top edge and the middle of its bottom
+   * edge. Nothing else - not the sides, not a point chosen for where the other end is.
+   *
+   * It used to be eight, two per side, each shape scored and the cheapest kept. Every line then
+   * met its plate wherever it happened to be cheapest, so twenty lines met twenty plates at twenty
+   * different places and none of them shared a lane; the picture read as a tangle rather than as a
+   * set of connections. Two fixed points is the opposite trade: some lines are longer, every one
+   * of them leaves and arrives where the eye already expects it, and lines heading the same way
+   * stack into one corridor instead of crossing each other to reach a nearer edge.
+   *
+   * The horizontal faces are the ones that carry it because the picture is laid in ROWS - a band
+   * of plates, then the next - so up and down is where the space between two plates is, and
+   * NODE_GAP is wide enough to hold the corridors that space has to carry.
+   */
+  const sideAnchors = (box) => {
     const mx = box.x + box.w / 2;
-    const my = box.y + box.h / 2;
     return [
-      { side: 'top', x: ax, y: box.y }, { side: 'top', x: mx, y: box.y },
-      { side: 'bottom', x: ax, y: box.y + box.h }, { side: 'bottom', x: mx, y: box.y + box.h },
-      { side: 'left', x: box.x, y: ay }, { side: 'left', x: box.x, y: my },
-      { side: 'right', x: box.x + box.w, y: ay }, { side: 'right', x: box.x + box.w, y: my },
+      { side: 'top', x: mx, y: box.y },
+      { side: 'bottom', x: mx, y: box.y + box.h },
     ];
   };
   /** A box grown by a margin, for counting the lines that graze a plate without crossing it. */
   const grown = (r, m) => ({ x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m });
   const plates = [...placedNodes, ...overflow];
-  const vertical = (side) => side === 'top' || side === 'bottom';
   /**
    * The free band nearest the middle of [lo, hi] on one axis - clear of plates, of container
    * borders and of the label band under a container's top border - among those whose extent on
@@ -924,40 +967,22 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     return pick ? pick.at : mid;
   };
   /**
-   * One orthogonal shape per pair of sides. Two vertical sides make a ㄷ through a corridor
-   * between them - or above both tops, or below both bottoms, when they face the same way. Two
-   * horizontal sides make the same shape lying down. A vertical and a horizontal side make a ㄱ.
-   * Null when the pair cannot be joined that way without going back through a box.
+   * The ㄷ that joins two of those anchors, through a free corridor.
+   *
+   * One shape, because only one pair of faces is left: out of one horizontal edge, along a
+   * corridor, into the other. Facing each other, the corridor is the space between them; facing
+   * the same way, it is NODE_GAP above both tops or below both bottoms. Null when there is no room
+   * for it, and the caller then has one shape fewer to score.
    */
   const pathFor = (p, q, a, b) => {
-    if (vertical(p.side) && vertical(q.side)) {
-      let lo; let hi;
-      if (p.side === 'top' && q.side === 'bottom') { lo = q.y; hi = p.y; }
-      else if (p.side === 'bottom' && q.side === 'top') { lo = p.y; hi = q.y; }
-      else if (p.side === 'top') { hi = Math.min(p.y, q.y); lo = hi - NODE_GAP; }
-      else { lo = Math.max(p.y, q.y); hi = lo + NODE_GAP; }
-      if (hi <= lo) return null;
-      const cy = corridor('y', lo, hi, [Math.min(p.x, q.x), Math.max(p.x, q.x)], a, b);
-      return [p, { x: p.x, y: cy }, { x: q.x, y: cy }, q];
-    }
-    if (!vertical(p.side) && !vertical(q.side)) {
-      let lo; let hi;
-      if (p.side === 'left' && q.side === 'right') { lo = q.x; hi = p.x; }
-      else if (p.side === 'right' && q.side === 'left') { lo = p.x; hi = q.x; }
-      else if (p.side === 'left') { hi = Math.min(p.x, q.x); lo = hi - NODE_GAP; }
-      else { lo = Math.max(p.x, q.x); hi = lo + NODE_GAP; }
-      if (hi <= lo) return null;
-      const cx = corridor('x', lo, hi, [Math.min(p.y, q.y), Math.max(p.y, q.y)], a, b);
-      return [p, { x: cx, y: p.y }, { x: cx, y: q.y }, q];
-    }
-    if (vertical(p.side)) {
-      const outward = p.side === 'top' ? q.y < p.y : q.y > p.y;
-      const inward = q.side === 'left' ? p.x < q.x : p.x > q.x;
-      return outward && inward ? [p, { x: p.x, y: q.y }, q] : null;
-    }
-    const outward = p.side === 'left' ? q.x < p.x : q.x > p.x;
-    const inward = q.side === 'top' ? p.y < q.y : p.y > q.y;
-    return outward && inward ? [p, { x: q.x, y: p.y }, q] : null;
+    let lo; let hi;
+    if (p.side === 'top' && q.side === 'bottom') { lo = q.y; hi = p.y; }
+    else if (p.side === 'bottom' && q.side === 'top') { lo = p.y; hi = q.y; }
+    else if (p.side === 'top') { hi = Math.min(p.y, q.y); lo = hi - NODE_GAP; }
+    else { lo = Math.max(p.y, q.y); hi = lo + NODE_GAP; }
+    if (hi <= lo) return null;
+    const cy = corridor('y', lo, hi, [Math.min(p.x, q.x), Math.max(p.x, q.x)], a, b);
+    return [p, { x: p.x, y: cy }, { x: q.x, y: cy }, q];
   };
   /** Drop repeated points and the middle of three in a line, so a ㄷ whose ends align is a line. */
   const tidy = (pts) => {
@@ -991,8 +1016,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     const others = plates.filter((r) => r !== a && r !== b
       && r.x < hi.x + reach && r.x + r.w > lo.x - reach && r.y < hi.y + reach && r.y + r.h > lo.y - reach);
     let best = null;
-    for (const p of sideAnchors(a, cb)) {
-      for (const q of sideAnchors(b, ca)) {
+    for (const p of sideAnchors(a)) {
+      for (const q of sideAnchors(b)) {
         const raw = pathFor(p, q, a, b);
         if (!raw) continue;
         const path = tidy(raw);
@@ -1061,34 +1086,51 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     paint(c.x + c.w - 2, c.y, c.x + c.w + 2, c.y + c.h, (i) => { soft[i] += BORDER; });
   }
   const cellOf = (x, y) => Math.round(y / RES) * gridW + Math.round(x / RES);
-  /** The cells a line may leave a box from: just outside each side, at every grid column or row
-   *  along it inside the corner inset, each with its end point on the border. Every position
-   *  rather than one, so two lines to one plate land at two places on it and the router picks
-   *  the pair of ports that costs least - which is what spreads lines into lanes. */
+  /**
+   * The cells a line may leave a box from.
+   *
+   * A PLATE has TWO: straight up out of the middle of its top edge, and straight down out of the
+   * middle of its bottom edge - the same two points sideAnchors states, as the grid router sees
+   * them. It used to be every grid column and row along all four sides, with the router keeping
+   * whichever pair cost least; that is what spread lines into lanes, and it is what made the
+   * picture a tangle. The lanes are still there - they are the corridors in the gap between two
+   * rows, chosen by the traffic cost below - rather than a different point on a plate per line.
+   *
+   * The x is SNAPPED to the grid, not the exact half of the width: the cell path runs on multiples
+   * of RES, so an end point a pixel off that grid would put a visible slant on the join. At RES 5
+   * the anchor is within two and a half pixels of the middle of a 116-wide plate.
+   *
+   * A CONTAINER keeps the spread, because it is not that kind of rectangle. It is the border round
+   * what is inside it - a subnet frame is five hundred pixels wide - and half the lines that reach
+   * it start INSIDE it, so one point on its edge would send a line the width of the frame to enter
+   * where it already was, or out through the border and back in. The plates are the icon tiles the
+   * eye follows from one to the next, and they are what the rule is for.
+   */
+  const plateSet = new Set(plates);
   const ports = (box) => {
-    const out = [];
     const above = Math.floor((box.y - 3) / RES) * RES;
     const below = Math.ceil((box.y + box.h + 3) / RES) * RES;
+    if (plateSet.has(box)) {
+      const x = Math.round((box.x + box.w / 2) / RES) * RES;
+      return [
+        { end: { x, y: box.y }, cell: cellOf(x, above), dir: 0 },
+        { end: { x, y: box.y + box.h }, cell: cellOf(x, below), dir: 2 },
+      ].filter((p) => p.cell >= 0 && p.cell < gridW * gridH && !hard[p.cell]);
+    }
+    const out = [];
     const before = Math.floor((box.x - 3) / RES) * RES;
     const after = Math.ceil((box.x + box.w + 3) / RES) * RES;
     const x0 = Math.ceil((box.x + ANCHOR_INSET) / RES) * RES;
     const x1 = Math.floor((box.x + box.w - ANCHOR_INSET) / RES) * RES;
     const y0 = Math.ceil((box.y + ANCHOR_INSET) / RES) * RES;
     const y1 = Math.floor((box.y + box.h - ANCHOR_INSET) / RES) * RES;
-    // A whisper of cost grows with the distance from the side's middle, so of two equal ways the
-    // one through the middle wins and a symmetric picture gets symmetric lines.
-    const mx = box.x + box.w / 2; const my = box.y + box.h / 2;
-    // Every cell along a plate's side; every fourth along a container's, which is wide.
-    const step = box.w > 2 * NODE_W ? 4 * RES : RES;
-    for (let x = x0; x <= x1; x += step) {
-      const bias = 0.01 * Math.abs(x - mx) / RES;
-      out.push({ end: { x, y: box.y }, cell: cellOf(x, above), dir: 0, bias });
-      out.push({ end: { x, y: box.y + box.h }, cell: cellOf(x, below), dir: 2, bias });
+    for (let x = x0; x <= x1; x += 4 * RES) {
+      out.push({ end: { x, y: box.y }, cell: cellOf(x, above), dir: 0 });
+      out.push({ end: { x, y: box.y + box.h }, cell: cellOf(x, below), dir: 2 });
     }
-    for (let y = y0; y <= y1; y += step) {
-      const bias = 0.01 * Math.abs(y - my) / RES;
-      out.push({ end: { x: box.x, y }, cell: cellOf(before, y), dir: 3, bias });
-      out.push({ end: { x: box.x + box.w, y }, cell: cellOf(after, y), dir: 1, bias });
+    for (let y = y0; y <= y1; y += 4 * RES) {
+      out.push({ end: { x: box.x, y }, cell: cellOf(before, y), dir: 3 });
+      out.push({ end: { x: box.x + box.w, y }, cell: cellOf(after, y), dir: 1 });
     }
     return out.filter((p) => p.cell >= 0 && p.cell < gridW * gridH && !hard[p.cell]);
   };
@@ -1181,8 +1223,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     heapN = 0;
     starts.forEach((s, i) => {
       const st = s.cell * 4 + s.dir;
-      stamp[st] = open; gScore[st] = s.bias; from[st] = -1 - i;
-      hpush(s.bias + GREED * h(s.cell, s.dir), st);
+      stamp[st] = open; gScore[st] = 0; from[st] = -1 - i;
+      hpush(GREED * h(s.cell, s.dir), st);
     });
     while (heapN > 0) {
       const st = hpop();
@@ -1208,8 +1250,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
         const ncell = ny * gridW + nx;
         if (hard[ncell] && !goalAt.has(ncell)) continue;
         const ns = ncell * 4 + d;
-        const cost = gScore[st] + STEP + soft[ncell] + traffic[ncell] * LANE + (d !== dir ? TURN : 0)
-          + (goalAt.get(ncell)?.bias ?? 0);
+        const cost = gScore[st] + STEP + soft[ncell] + traffic[ncell] * LANE + (d !== dir ? TURN : 0);
         if (stamp[ns] >= open && gScore[ns] <= cost) continue;
         stamp[ns] = open; gScore[ns] = cost; from[ns] = st;
         hpush(cost + GREED * h(ncell, d), ns);
@@ -1259,9 +1300,6 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
           addEdge('security', boxedIn.get(n.id), target, relation);
           continue;
         }
-        // The rule row's own reference is not drawn - see RELATIONS.referenced_group - but the
-        // target is real, so it is not counted as dangling either.
-        if (rel.onRuleRow) continue;
         // A flipped relation points the other way: the link is recorded on the group that ADMITS
         // the traffic, and the arrow follows the traffic.
         if (drawn.has(target)) {
@@ -1349,6 +1387,10 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     foot.push(`체크를 풀어 감춘 자원 ${hiddenRows.toLocaleString()}개 (유형 ${hiddenTypes.size}종) — `
       + '위의 유형 상자에서 다시 켤 수 있다.');
   }
+  if (ruleRows > 0) {
+    foot.push(`보안 그룹 규칙 ${ruleRows.toLocaleString()}개는 판으로 그리지 않는다 — `
+      + '그룹 판을 누르면 표로 열린다.');
+  }
   if (uncarried.size > 0) {
     const total = [...uncarried.values()].reduce((n, v) => n + v, 0);
     foot.push(`평가가 행을 담지 않은 자원 ${total.toLocaleString()}개 (서비스 ${uncarried.size}종) — `
@@ -1427,6 +1469,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       /** Rows a switched-off type took out of the picture. Not in totalRows - they are not rows of
        *  this scene at all - so the accounting above still balances. */
       hiddenRows,
+      /** Security group rules, which no plate draws and the group's own table holds. Not in
+       *  totalRows either, and for the same reason: the accounting above is about plates. */
+      ruleRows,
     },
     kinds,
     measured,
