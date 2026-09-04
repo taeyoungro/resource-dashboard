@@ -13,7 +13,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  CARDS_PER_SUBNET, EDGE_BUDGET, GRAPH_CAPTION, GRAPH_W, NODE_BUDGET, NODE_GAP, RELATIONS,
+  CARDS_PER_SUBNET, EDGE_BUDGET, GRAPH_CAPTION, GRAPH_W, NODE_BUDGET, NODE_GAP, NODE_VGAP,
+  RELATIONS, ROW_GAP,
   graphSummary, idOf, relationScene, ruleSentence, ruleText, shortId, shortName,
 } from './graph.js';
 
@@ -639,17 +640,53 @@ test('a line touches a PLATE at one of two points: the middle of its top edge or
   }
 });
 
-test('the gap between two plates is wide enough to hold the corridors the lines run in', () => {
-  // Every line runs over, under or between plates now, so the gap is a corridor and not a margin.
+test('the space above and below a plate is wider than the space beside it, and holds the lines', () => {
+  // Every line leaves a bottom edge and enters a top edge, so the VERTICAL gap is where all of
+  // them run and the horizontal gap is only what they cross. The two are different numbers for
+  // that reason, and the vertical one is the larger.
+  assert.ok(NODE_VGAP > NODE_GAP, `NODE_VGAP ${NODE_VGAP} is not wider than NODE_GAP ${NODE_GAP}`);
   // Four lanes at the router's five-pixel grid, after the two-pixel margin it keeps round a plate.
-  assert.ok(NODE_GAP - 4 >= 4 * 5, `NODE_GAP ${NODE_GAP} leaves ${NODE_GAP - 4} for the lines`);
+  assert.ok(NODE_VGAP - 4 >= 4 * 5, `NODE_VGAP ${NODE_VGAP} leaves ${NODE_VGAP - 4} for the lines`);
+  // A band over the next carries the same corridors across a container border, so it is the same
+  // order of number - the zones under the security groups is where the group lines run.
+  assert.ok(ROW_GAP >= NODE_VGAP - 8, `ROW_GAP ${ROW_GAP} is much tighter than NODE_VGAP ${NODE_VGAP}`);
   const scene = sceneOf(ACCOUNT(), null, true, OPEN);
-  // And the layout really uses it: two plates in one row stand NODE_GAP apart, not less.
-  const row = scene.nodes.filter((n) => !n.box && n.y === scene.nodes.find((m) => m.id === 'rtb-main')?.y)
-    .sort((a, b) => a.x - b.x);
+  // And the layout really uses both: side by side is NODE_GAP, one over the other is NODE_VGAP.
+  const at = (id) => scene.nodes.find((n) => n.id === id);
+  const row = scene.nodes.filter((n) => !n.box && n.y === at('rtb-main')?.y).sort((a, b) => a.x - b.x);
   for (let i = 1; i < row.length; i += 1) {
     assert.ok(row[i].x - (row[i - 1].x + row[i - 1].w) >= NODE_GAP,
               `${row[i - 1].id} and ${row[i].id} are closer than NODE_GAP`);
+  }
+  // The centre column, stacked: the tables one under the other.
+  assert.equal(at('rtb-priv').y - (at('rtb-main').y + at('rtb-main').h), NODE_VGAP);
+  // And a volume under the instance it is attached to.
+  assert.equal(at('vol-1').y - (at('i-0aaa111').y + at('i-0aaa111').h), NODE_VGAP);
+});
+
+test('a line leaves the bottom of the upper plate and enters the top of the lower one', () => {
+  // The rule that stops a line going the long way round. Left to pick the cheapest of four
+  // combinations the router would leave the TOP of a security group, run above the whole band and
+  // come down the far side to reach an instance below it - and the eye has to trace that line
+  // back to find out where it started.
+  for (const affected of [ACCOUNT(), BIG(40)]) {
+    const scene = sceneOf(affected, null, true, OPEN);
+    const plates = new Map(scene.nodes.map((n) => [n.id, n]));
+    const face = (box, pt) => (pt.y === box.y ? 'top' : pt.y === box.y + box.h ? 'bottom' : '?');
+    let checked = 0;
+    for (const e of scene.edges) {
+      const a = plates.get(e.from); const b = plates.get(e.to);
+      if (!a || !b) continue;                    // a container end keeps its spread of ports
+      // Only where there IS an upper and a lower. Two plates side by side in one row have
+      // neither, and a line joins them over the row or under it, whichever is cheaper.
+      const want = a.y + a.h <= b.y ? ['bottom', 'top']
+        : b.y + b.h <= a.y ? ['top', 'bottom'] : null;
+      if (!want) continue;
+      checked += 1;
+      assert.deepEqual([face(a, e.points[0]), face(b, e.points[e.points.length - 1])], want,
+                       `${e.from} -> ${e.to} does not join the two faces that look at each other`);
+    }
+    assert.ok(checked > 5, `only ${checked} upper-to-lower lines were checked`);
   }
 });
 

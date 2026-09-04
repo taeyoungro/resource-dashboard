@@ -1648,6 +1648,13 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   무관하다.
                 </li>
                 <li>
+                  <strong>선이 붙는 자리</strong> — 선은 판의 <strong>위 면 가운데</strong>와{" "}
+                  <strong>아래 면 가운데</strong>, 그 두 점에만 붙는다. 위아래로 놓인 두 판을 이을
+                  때는 <strong>위쪽 판의 아래 면에서 나와 아래쪽 판의 위 면으로 들어간다</strong> —
+                  선이 위로 돌아 올라갔다 내려오는 일이 없으므로, 어느 판에서 나온 선인지 눈으로
+                  따라가지 않아도 안다. 나란히 놓인 두 판은 위아래가 없으니 줄 위나 아래로 돈다.
+                </li>
+                <li>
                   <strong>고른 자원</strong> — 한 번 누른 판은 테두리가 <strong>파랑</strong>이 되고,
                   그 판에 닿는 선도 같은 파랑에 조금 굵게 그려진다. 위의 종류별 색을 덮어쓰는 것이니
                   그 동안은 선의 색이 종류를 말하지 않는다 — 굵기가 「고른 것」이라는 표시다. 점선의
