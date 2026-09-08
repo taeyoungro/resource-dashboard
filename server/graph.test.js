@@ -202,8 +202,14 @@ test('a volume is drawn beside the instance it is attached to, and the unattache
   const vol1 = by.get('vol-1');
   const i1 = by.get('i-0aaa111');
   assert.ok(inside(vol1, by.get('subnet:subnet-a1')), 'the attached volume is not beside its instance');
-  assert.equal(vol1.x, i1.x, 'the volume is not in its instance\'s column');
+  // CENTRED under the box, not flush with it: the box is PAD wider than a plate on each side, and
+  // a line leaves through the middle of a face - so two middles that do not agree are a bend.
+  assert.equal(vol1.x + vol1.w / 2, i1.x + i1.w / 2, 'the volume is not centred under its instance');
   assert.ok(vol1.y > i1.y, 'the volume is not below its instance');
+  // And the line between them is one straight piece because of it.
+  const drop = scene.edges.find((e) => [e.from, e.to].sort().join() === ['i-0aaa111', 'vol-1'].sort().join())
+    ?? assert.fail('the volume is not joined to its instance');
+  assert.equal(drop.points.length, 2, 'the line from an instance to its own volume bends');
   const spare = by.get('vol-spare');
   assert.ok(!scene.containers.some((c) => c.kind === 'vpc' && inside(spare, c)),
             'an unattached volume was drawn inside a VPC');
@@ -810,6 +816,34 @@ test('a band plate sits over the things it is joined to, not in the order its id
   for (let i = 1; i < band.length; i += 1) {
     assert.ok(want(band[i].id) >= want(band[i - 1].id) - 0.5,
               `${band[i - 1].id} then ${band[i].id}: the band is not in the order its lines ask for`);
+  }
+});
+
+test('the icons in one row sit on one line, and a plate under another shares its middle', () => {
+  // Both halves of "line the middles up", and the reason is the same for both: a line leaves and
+  // enters through the middle of a face, so two middles that disagree are a bend in a line that
+  // has nothing to turn for.
+  for (const opt of [OPEN, {}]) {
+    const scene = sceneOf(ACCOUNT(), null, true, opt);
+    // ACROSS a row: every plate that starts at the same y has the same vertical middle. An open
+    // instance box is taller than the plate beside it, and the plate is dropped to meet it.
+    const rows = new Map();
+    for (const n of scene.nodes) {
+      if (!rows.has(n.y)) rows.set(n.y, []);
+      rows.get(n.y).push(n);
+    }
+    for (const [y, group] of rows) {
+      const middles = new Set(group.map((n) => n.y + n.h / 2));
+      assert.equal(middles.size, 1,
+                   `the row at y=${y} has ${middles.size} vertical middles: ${group.map((n) => `${n.id}(h${n.h})`).join(' ')}`);
+    }
+    // DOWN a column: a volume under the box it is attached to. The box is PAD wider than a plate
+    // on each side, so flush-left was 12 off the middle.
+    const by = boxes(scene);
+    for (const [vol, host] of [['vol-1', 'i-0aaa111'], ['vol-2', 'i-0bbb222'], ['vol-3', 'i-0bbb222']]) {
+      assert.equal(by.get(vol).x + by.get(vol).w / 2, by.get(host).x + by.get(host).w / 2,
+                   `${vol} is not centred under ${host}`);
+    }
   }
 });
 
