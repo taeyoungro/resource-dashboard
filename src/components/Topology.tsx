@@ -1556,6 +1556,9 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   <strong>자리</strong> — 인터넷 게이트웨이는 VPC 위쪽 가운데에, 라우팅 테이블·네트워크
                   ACL·엔드포인트는 가운데 열에, 가용 영역은 그 좌우에 같은 수로 놓는다. 보안 그룹과
                   나머지는 그 위에 좌우로 번갈아 놓는다. 자리는 그리는 규칙이고, 소속은 테두리다.
+                  그 띠 안에서 <strong>어느 판이 어느 칸에 갈지는 선이 정한다</strong> — 각 판은
+                  자기 선이 닿는 것들의 가운데를 원하고, 그 순서대로 칸에 넣는다. 선이 없는 판은
+                  있던 자리를 지킨다. 왼쪽에 있다고 먼저 만들어졌다는 뜻이 아니다.
                 </li>
                 {graph.containers.some((c) => c.kind === "subnet") && (
                 <li>

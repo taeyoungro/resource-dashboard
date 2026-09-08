@@ -2137,6 +2137,8 @@ test('an instance opens on a DOUBLE click to show its interfaces, and the subnet
             'the legend does not say what ONE click does instead');
   assert.ok(legend.includes('퍼블릭') && legend.includes('프라이빗'), 'the legend does not explain the subnet colours');
   assert.ok(legend.includes('가운데 열에'), 'the legend does not say where the tables sit');
+  assert.ok(legend.includes('어느 판이 어느 칸에 갈지는 선이 정한다'),
+            'the legend does not say the band is ordered by where its lines go');
 });
 
 // ---- the resource panel: the diagram joined to the two analyses --------------------------------

@@ -523,7 +523,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     }
   }
   const claimed = new Set();         // ids drawn inside an instance card
-  for (const [, set] of eniOf) for (const e of set) claimed.add(e);
+  const heldBy = new Map();          // interface id -> the instance whose box holds it
+  for (const [i, set] of eniOf) for (const e of set) { claimed.add(e); heldBy.set(e, i); }
   for (const [v] of attachedTo) claimed.add(v);
 
   const BAND_TYPES = new Set(['ec2:security-group', 'ec2:route-table',
@@ -543,6 +544,15 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   const placedNodes = [];
   const overflow = [];               // { container, count } for what the budget left out
   let drawnNodes = 0;
+  /**
+   * Cards budgeted but not yet drawn - the band's, while the zones under it are being laid.
+   *
+   * The band is measured before the zones and PLACED after them (see placeBand), so between the
+   * two the budget would think the band's plates were free and let the zones take their room.
+   * Holding the count here keeps the accounting exactly what it was when the band was placed
+   * where it was measured.
+   */
+  let reserved = 0;
   const budgetLeft = () => drawnNodes < NODE_BUDGET;
 
   const innerW = GRAPH_W - 2;
@@ -691,6 +701,26 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     else regionMembers.push(id);
   }
 
+  /**
+   * Every id joined to every id, both ways.
+   *
+   * Read off the same links the lines are built from, so a plate is ordered by the lines it will
+   * actually get and not by a second idea of what is connected. Used by placeBand below, and
+   * nowhere else - the edges themselves are built from the links again, with all the folding and
+   * the container resolution that this does not need.
+   */
+  const linked = new Map();
+  const join = (p, q) => {
+    if (!linked.has(p)) linked.set(p, new Set());
+    linked.get(p).add(q);
+  };
+  for (const [id, n] of nodes) {
+    for (const [relation, targets] of Object.entries(n.links)) {
+      if (!RELATIONS[relation] || !Array.isArray(targets)) continue;
+      for (const t of targets) { join(id, t); join(t, id); }
+    }
+  }
+
   // Order inside a subnet: instances first (they are the hubs), then everything else, each by id.
   const isInstance = (id) => (nodes.get(id).resourceType === 'ec2:instance' ? 0 : 1);
   for (const [, members] of subnetMembers) {
@@ -714,13 +744,72 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     const out = [];
     let dropped = 0;
     for (const card of cards) {
-      if (out.length < cap && drawnNodes + tally(out) + card.ids.length <= NODE_BUDGET) out.push(card);
+      if (out.length < cap && drawnNodes + reserved + tally(out) + card.ids.length <= NODE_BUDGET) out.push(card);
       else dropped += Math.max(1, card.ids.length);
     }
     if (dropped > 0) out.push(overflowCard(containerId, dropped));
     return out;
   };
   const tally = (cards) => cards.reduce((n, c) => n + c.ids.length, 0);
+
+  /**
+   * PUT EACH BAND CARD IN THE SLOT NEAREST THE THINGS IT IS JOINED TO.
+   *
+   * The band's slots are fixed - so many across, then wrap - but WHICH card goes in which is free,
+   * and the picture pays for that choice in line length. Three security groups sat in id order
+   * over a subnet whose instances sat in theirs, so the leftmost group's line crossed the whole
+   * VPC to reach an instance on the right while the rightmost group's line crossed back the other
+   * way. The two lines were as long as the band is wide, and they crossed.
+   *
+   * So each card asks where its lines END - the mean centre x of everything it joins that is
+   * already on the canvas - and the cards are dealt into the slots in that order. Sorted cards
+   * into sorted slots is the best possible answer for one row on one axis: any pair out of order
+   * can be swapped for a shorter total, so the ordered assignment is a minimum of the sum of
+   * |slot - want|. It is not a minimum of the ROUTED length, which bends round plates, but it is
+   * the same quantity to within the bends.
+   *
+   * Only cards of the SAME WIDTH swap. The sequence of widths is then the one the measuring pass
+   * wrapped, so the band is exactly as tall as the zones were placed to expect.
+   *
+   * A card with no line keeps its place: it sorts by the slot it already had, so it neither sinks
+   * to one end nor pushes a card that does have lines out of the slot it asked for.
+   */
+  const placeBand = (cards, slots) => {
+    const at = new Map();
+    for (const n of placedNodes) at.set(n.id, n.x + n.w / 2);
+    for (const c of containers) at.set(c.id, c.x + c.w / 2);
+    const want = cards.map((card) => {
+      // The ENDS OF THE LINES this card will get, which is not the same list as its links: an
+      // interface inside an instance box is not a line of its own - the group line goes to the
+      // box - so it counts as the box, and a card joined to an instance by three of its
+      // interfaces counts that instance once. Getting this wrong is not a small error: it moves
+      // a card to the average of places no line goes.
+      const ends = new Set();
+      for (const id of card.ids) {
+        for (const other of linked.get(id) ?? []) ends.add(heldBy.get(other) ?? other);
+      }
+      let sum = 0; let count = 0;
+      for (const other of ends) {
+        // A neighbour that is drawn, or the subnet frame when the link names a subnet. One that is
+        // neither - a target the budget left out of the picture - is not counted: a guess at where
+        // the missing one would have been is worse than a smaller average.
+        const x = at.get(other) ?? at.get(`subnet:${other}`);
+        if (typeof x === 'number') { sum += x; count += 1; }
+      }
+      return count > 0 ? sum / count : null;
+    });
+    const byWidth = new Map();
+    cards.forEach((card, i) => {
+      if (!slots[i]) return;
+      if (!byWidth.has(card.w)) byWidth.set(card.w, []);
+      byWidth.get(card.w).push(i);
+    });
+    for (const [, group] of byWidth) {
+      const free = group.map((i) => slots[i]).sort((p, q) => p.y - q.y || p.x - q.x);
+      const order = [...group].sort((p, q) => (want[p] ?? slots[p].x) - (want[q] ?? slots[q].x) || p - q);
+      order.forEach((i, k) => cards[i].place(free[k].x, free[k].y));
+    }
+  };
 
   // VPCs, in id order, stacked down the region. Inside each, the shape of the reference picture:
   // the internet gateway on the top border in the middle; the route tables, network ACLs and
@@ -767,11 +856,23 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       for (const card of column) { card.place(centreX + PAD, cy); cy += card.h + NODE_VGAP; }
       bottom = Math.max(bottom, cy - NODE_VGAP);
     }
-    // The band, dealt into the halves in turn.
+    // The band, dealt into the halves in turn - MEASURED here and PLACED after the zones.
+    //
+    // Which card goes in which slot depends on where its lines end, and its lines end in the
+    // subnets below, which are not laid yet. So this pass only finds the slots: every card is
+    // given a place() that records where it would go and draws nothing. placeBand deals the cards
+    // into those slots once the zones can be asked where they put things.
     const bandCards = budgeted(bandIds.map((id) => cardFor(id, halves[0][1] - halves[0][0])), vpc.id);
+    reserved += tally(bandCards);
+    const slots = new Array(bandCards.length);
     let bandBottom = top;
     halves.forEach(([x0, x1], half) => {
-      const mine = bandCards.filter((_, i) => i % halves.length === half);
+      const mine = [];
+      bandCards.forEach((card, i) => {
+        if (i % halves.length !== half) return;
+        mine.push({ ids: card.ids, w: card.w, h: card.h,
+                    place: (x, yy) => { slots[i] = { x, y: yy }; } });
+      });
       const h = flow(mine, x0, top, x1 - x0);
       if (h > 0) bandBottom = Math.max(bandBottom, top + h);
     });
@@ -874,6 +975,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       az.h = zonesH;
       zonesBottom = Math.max(zonesBottom, az.y + az.h);
     }
+    // The zones know where everything under the band is now, so the band can be dealt out.
+    reserved -= tally(bandCards);
+    placeBand(bandCards, slots);
     bottom = Math.max(bottom, zonesBottom);
     vpc.h = bottom === top ? HEAD + PAD : bottom - vpc.y + PAD;
     y = vpc.y + vpc.h + ROW_GAP;
