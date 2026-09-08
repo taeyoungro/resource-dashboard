@@ -606,6 +606,39 @@ test('a line leaves by the side facing its other end and never runs under the pl
   assert.ok(scene.rows.every((r) => typeof r.typeLabel === 'string' && r.typeLabel.length > 0));
 });
 
+test('a line goes straight out of a plate before it may turn', () => {
+  // The first corner is clear of the plate, so three lines off one edge are three legs and then
+  // three corners, not three corners stacked on the edge itself.
+  //
+  // The bound is STUB, and it is stated as "not immediately" rather than as the router's own
+  // arithmetic: the stub shortens where the box on that side is close enough that half the space
+  // between them is less, and re-deriving that here would be the test asserting the code twice.
+  const first = ACCOUNT();
+  for (const affected of [first, BIG(40)]) {
+    const scene = sceneOf(affected, null, true, OPEN);
+    const plates = new Map(scene.nodes.map((n) => [n.id, n]));
+    let checked = 0; let shortest = Infinity;
+    for (const e of scene.edges) {
+      for (const [id, pts] of [[e.from, e.points], [e.to, [...e.points].reverse()]]) {
+        if (!plates.has(id)) continue;
+        checked += 1;
+        const [p0, p1] = pts;
+        assert.equal(p0.x, p1.x, `${e.from} -> ${e.to} does not leave ${id} straight`);
+        const leg = Math.abs(p1.y - p0.y);
+        shortest = Math.min(shortest, leg);
+        assert.ok(leg >= 10, `${e.from} -> ${e.to} turns ${leg}px off ${id}, on the edge itself`);
+      }
+    }
+    assert.ok(checked > 10, `only ${checked} plate ends were checked`);
+    // And not merely above the floor: where the picture has room, every leg is a WHOLE stub. The
+    // operator's account has it; BIG packs forty instances into one subnet and some of its plates
+    // are close enough that half the space between them is the shorter number.
+    if (affected === first) {
+      assert.ok(shortest >= 15, `the shortest leg is ${shortest}px, under a whole stub`);
+    }
+  }
+});
+
 test('a line touches a PLATE at one of two points: the middle of its top edge or of its bottom edge', () => {
   // The whole of the anchoring rule, over every line of two busy scenes. Before this a line met
   // its plate wherever the router found cheapest - anywhere along any of the four sides - and
@@ -719,11 +752,15 @@ test('lines of one kind out of one plate run as one trunk until they part; other
             `the two ACL lines share only ${trunk(a2.points, b1.points)}px out of the port`);
   // Two lines of DIFFERENT kinds out of the NAT gateway's top - its interface and the route to it
   // - do not: a line is its colour, and two colours on one stretch would show one and hide the
-  // other. They share the port and nothing past it.
+  // other. They share the STUB and nothing past it, which is geometry rather than bundling: one
+  // anchor per face means every line off that face leaves through the same point, and the leg
+  // from the border to the first cell the router may turn at is common to all of them.
   const iface = edge('nat-1', 'eni-nat');
   const route = edge('rtb-priv', 'nat-1');
-  assert.ok(trunk(iface.points, [...route.points].reverse()) <= 5,
-            'an interface line and a route line run on top of each other');
+  const both = trunk(iface.points, [...route.points].reverse());
+  assert.ok(both <= 20, `an interface line and a route line run together for ${both}px, past the stub`);
+  assert.ok(trunk(a2.points, b1.points) > 10 * both,
+            'the shared-kind trunk is no longer than the stub every line shares anyway');
   // And the lanes still hold for lines that share nothing: no other line lies along the
   // horizontal stretch of the nearer ACL line - every other line that meets that row crosses it
   // at a single x, not along it.
