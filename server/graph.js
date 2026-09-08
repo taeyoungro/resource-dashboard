@@ -1261,6 +1261,24 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   const gridH = Math.ceil((cloud.y + cloud.h) / RES) + 2;
   const hard = new Uint8Array(gridW * gridH);
   const soft = new Uint8Array(gridW * gridH);
+  /**
+   * Extra for running ALONG a container's edge, charged by the direction of the step.
+   *
+   * A border and the label band under a top edge are things a line CROSSES, and crossing one is
+   * free: the labels are painted over the lines with a halo, so a line that cuts a label reads as
+   * passing under the text, which is what it is doing. What must cost is running along one - a
+   * line that follows a border for two hundred pixels is read as the border, and one that runs
+   * the length of a label band erases the label.
+   *
+   * The old cost was the same in every direction, so crossing a 26-pixel label band cost five
+   * cells of it: enough that a line would go round a whole availability zone rather than through
+   * its title, and the corner it made doing that was read as a turn the connection meant.
+   *
+   * alongH is charged on a sideways step, alongV on an up-or-down one. A horizontal edge - the
+   * label band, the bottom border - is run along sideways; a vertical one, up and down.
+   */
+  const alongH = new Uint8Array(gridW * gridH);
+  const alongV = new Uint8Array(gridW * gridH);
   const traffic = new Uint8Array(gridW * gridH);
   /** For every cell a line runs along, each such line as (end, end, kind) - flat triples, so that
    *  "does a line through here share an end and a kind with mine" is a loop and not an
@@ -1278,10 +1296,10 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     paint(r.x - 2 - RES, r.y - 2 - RES, r.x + r.w + 2 + RES, r.y + r.h + 2 + RES, (i) => { soft[i] += NEAR; });
   }
   for (const c of containers) {
-    paint(c.x, c.y, c.x + c.w, c.y + HEAD, (i) => { soft[i] += LABEL; });
-    paint(c.x, c.y + c.h - 2, c.x + c.w, c.y + c.h + 2, (i) => { soft[i] += BORDER; });
-    paint(c.x - 2, c.y, c.x + 2, c.y + c.h, (i) => { soft[i] += BORDER; });
-    paint(c.x + c.w - 2, c.y, c.x + c.w + 2, c.y + c.h, (i) => { soft[i] += BORDER; });
+    paint(c.x, c.y, c.x + c.w, c.y + HEAD, (i) => { alongH[i] += LABEL; });
+    paint(c.x, c.y + c.h - 2, c.x + c.w, c.y + c.h + 2, (i) => { alongH[i] += BORDER; });
+    paint(c.x - 2, c.y, c.x + 2, c.y + c.h, (i) => { alongV[i] += BORDER; });
+    paint(c.x + c.w - 2, c.y, c.x + c.w + 2, c.y + c.h, (i) => { alongV[i] += BORDER; });
   }
   const cellOf = (x, y) => Math.round(y / RES) * gridW + Math.round(x / RES);
   /**
@@ -1502,7 +1520,10 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
             else foreign += 1;
           }
         }
-        const cost = gScore[st] + STEP + soft[ncell] + foreign * LANE - (shared ? BUNDLE : 0)
+        // A sideways step pays for running along a horizontal edge, an up-or-down one for running
+        // along a vertical edge. Crossing either is free - see alongH.
+        const along = (d === 1 || d === 3) ? alongH[ncell] : alongV[ncell];
+        const cost = gScore[st] + STEP + soft[ncell] + along + foreign * LANE - (shared ? BUNDLE : 0)
           + (d !== dir ? TURN : 0);
         if (stamp[ns] >= open && gScore[ns] <= cost) continue;
         stamp[ns] = open; gScore[ns] = cost; from[ns] = st;
