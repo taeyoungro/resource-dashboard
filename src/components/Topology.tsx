@@ -1649,7 +1649,9 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                 </li>
                 <li>
                   <strong>선이 붙는 자리</strong> — 선은 판의 <strong>위 면 가운데</strong>와{" "}
-                  <strong>아래 면 가운데</strong>, 그 두 점에만 붙는다. 위아래로 놓인 두 판을 이을
+                  <strong>아래 면 가운데</strong>, 그 두 점에만 붙는다. 붙은 자리에서 <strong>한
+                  마디 곧게 나온 뒤</strong>에 꺾이므로, 모서리가 판에 붙어 있지 않고 어느 선의
+                  모서리인지 구별된다. 위아래로 놓인 두 판을 이을
                   때는 <strong>위쪽 판의 아래 면에서 나와 아래쪽 판의 위 면으로 들어간다</strong> —
                   선이 위로 돌아 올라갔다 내려오는 일이 없으므로, 어느 판에서 나온 선인지 눈으로
                   따라가지 않아도 안다. 나란히 놓인 두 판은 위아래가 없으니 줄 위나 아래로 돈다.

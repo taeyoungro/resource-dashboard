@@ -2347,6 +2347,8 @@ test('the lines of the chosen resource are drawn in the colour its plate is draw
   assert.ok(legend.includes('선이 붙는 자리'), 'the legend does not say where a line attaches');
   assert.ok(legend.includes('위쪽 판의 아래 면에서 나와 아래쪽 판의 위 면으로 들어간다'),
             'the legend does not state the facing-faces rule');
+  assert.ok(legend.includes('한\n                  마디 곧게 나온 뒤</strong>에 꺾이므로'),
+            'the legend does not say a line goes straight out before it turns');
   assert.ok(legend.includes('한 줄로 겹쳐</strong> 그린다'),
             'the legend does not say lines of one kind out of one plate share a trunk');
   assert.ok(legend.includes('종류가 다른 선은 색이 다르므로 겹치지 않는다'),

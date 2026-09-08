@@ -1173,14 +1173,49 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
    * eye follows from one to the next, and they are what the rule is for.
    */
   const plateSet = new Set(plates);
+  /**
+   * HOW FAR A LINE GOES STRAIGHT OUT BEFORE IT MAY TURN.
+   *
+   * The router's first cell is where its first turn can be, so a port hard against the border let
+   * a line leave a plate and bend the same instant - three lines out of one edge became three
+   * corners stacked on that edge, and which corner belonged to which line was a guess. Putting
+   * the first cell a stub away makes the leg from the border to it straight by construction: the
+   * line drops clear of the plate, and only then goes looking for its corridor.
+   *
+   * A multiple of RES, so the stub's end lands on the grid the cell path runs on.
+   */
+  const STUB = 15;
   const ports = (box, other = null) => {
     const free = (p) => p.cell >= 0 && p.cell < gridW * gridH && !hard[p.cell];
     const above = Math.floor((box.y - 3) / RES) * RES;
     const below = Math.ceil((box.y + box.h + 3) / RES) * RES;
     if (plateSet.has(box)) {
       const x = Math.round((box.x + box.w / 2) / RES) * RES;
-      const top = { end: { x, y: box.y }, cell: cellOf(x, above), dir: 0 };
-      const bottom = { end: { x, y: box.y + box.h }, cell: cellOf(x, below), dir: 2 };
+      /**
+       * The stub, shortened where there is not room for a whole one.
+       *
+       * Half the space to the box on that side, at most: two boxes 26 apart would otherwise put
+       * their two stub ends past each other, and a line that has to come BACK up to reach its
+       * goal is worse than one that turns early. Infinity where nothing is on that side, and then
+       * the stub is whole.
+       */
+      const reach = (gap) => (gap === Infinity ? STUB
+        : Math.max(RES, Math.min(STUB, Math.floor(gap / 2 / RES) * RES)));
+      const overhead = other && other.y + other.h <= box.y ? box.y - (other.y + other.h) : Infinity;
+      const underfoot = other && box.y + box.h <= other.y ? other.y - (box.y + box.h) : Infinity;
+      /** The first cell out of one edge: a stub away where that is clear, else against the border
+       *  - a plate with a neighbour in its stub still gets a line, drawn the short way. */
+      const outward = (edgeY, sign, dir) => {
+        const snap = (d) => (sign < 0 ? Math.floor((edgeY - d) / RES) : Math.ceil((edgeY + d) / RES)) * RES;
+        for (const d of [reach(sign < 0 ? overhead : underfoot), 3]) {
+          const y = snap(d);
+          const cell = cellOf(x, y);
+          if (cell >= 0 && cell < gridW * gridH && !hard[cell]) return { end: { x, y: edgeY }, cell, dir };
+        }
+        return { end: { x, y: edgeY }, cell: cellOf(x, snap(3)), dir };
+      };
+      const top = outward(box.y, -1, 0);
+      const bottom = outward(box.y + box.h, 1, 2);
       // The facing face, and BOTH when the facing one is walled in - a plate whose neighbour sits
       // against the only edge the rule allows would otherwise have no port at all, and the line
       // would fall through to the shape router rather than being drawn well the other way up.
