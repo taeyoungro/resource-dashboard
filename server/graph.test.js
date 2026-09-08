@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  CARDS_PER_SUBNET, EDGE_BUDGET, GRAPH_CAPTION, GRAPH_W, NODE_BUDGET, NODE_GAP, NODE_VGAP,
+  CARDS_PER_SUBNET, EDGE_BUDGET, GRAPH_CAPTION, GRAPH_W, HEAD, NODE_BUDGET, NODE_GAP, NODE_VGAP,
   RELATIONS, ROW_GAP,
   graphSummary, idOf, relationScene, ruleSentence, ruleText, shortId, shortName,
 } from './graph.js';
@@ -816,6 +816,57 @@ test('a band plate sits over the things it is joined to, not in the order its id
   for (let i = 1; i < band.length; i += 1) {
     assert.ok(want(band[i].id) >= want(band[i - 1].id) - 0.5,
               `${band[i - 1].id} then ${band[i].id}: the band is not in the order its lines ask for`);
+  }
+});
+
+/** A group in the band joined to an interface in a SECOND zone, so its line has to get past that
+ *  zone's label band to reach it. */
+const TWO_ZONES = () => [
+  g('ec2:vpc', [row('vpc', 'vpc-z', { vpc_id: 'vpc-z' })]),
+  g('ec2:subnet', [
+    row('subnet', 'subnet-near', { vpc_id: 'vpc-z', subnet_id: 'subnet-near', zone: 'us-east-1a' }),
+    row('subnet', 'subnet-far', { vpc_id: 'vpc-z', subnet_id: 'subnet-far', zone: 'us-east-1c' }),
+  ]),
+  g('ec2:network-interface', [
+    row('network-interface', 'eni-near', { vpc_id: 'vpc-z', subnet_id: 'subnet-near', zone: 'us-east-1a',
+                                           links: { security_group: ['sg-z'] } }),
+    row('network-interface', 'eni-far', { vpc_id: 'vpc-z', subnet_id: 'subnet-far', zone: 'us-east-1c',
+                                          links: { security_group: ['sg-z'] } }),
+  ]),
+  g('ec2:security-group', [row('security-group', 'sg-z', { vpc_id: 'vpc-z' })]),
+];
+
+test('a line crosses a container label rather than stepping round it, and never runs along one', () => {
+  // CROSSING is free. The labels are painted over the lines with a halo, so a line that cuts one
+  // reads as passing under the text - which is what it is doing. Charging for the crossing made a
+  // line go round a whole availability zone to avoid its title, and the corner it made doing that
+  // was read as a turn the connection meant.
+  const scene = sceneOf(TWO_ZONES());
+  const far = scene.edges.find((e) => [e.from, e.to].includes('eni-far'))
+    ?? assert.fail('the far interface is not joined to its group');
+  assert.equal(far.points.length, 4, `the line to the far zone bends ${far.points.length - 2} times`);
+  // Straight up out of the interface, across, straight up into the group: the middle piece is the
+  // only sideways one, and it is above both zones rather than beside one of them.
+  const azs = scene.containers.filter((c) => c.kind === 'az');
+  assert.equal(azs.length, 2, 'the fixture no longer has two zones');
+  assert.ok(far.points[1].y < Math.min(...azs.map((c) => c.y)),
+            'the line steps sideways inside a zone rather than above it');
+  // RUNNING ALONG is not free, and no line does it: a line that follows a label band erases the
+  // label, and one that follows a border is read as the border.
+  for (const affected of [TWO_ZONES(), ACCOUNT(), BIG(40)]) {
+    const s2 = sceneOf(affected, null, true, OPEN);
+    for (const e of s2.edges) {
+      for (let i = 1; i < e.points.length; i += 1) {
+        const u = e.points[i - 1]; const v = e.points[i];
+        if (u.y !== v.y) continue;
+        const lo = Math.min(u.x, v.x); const hi = Math.max(u.x, v.x);
+        for (const c of s2.containers) {
+          if (u.y < c.y || u.y > c.y + HEAD) continue;
+          const run = Math.min(hi, c.x + c.w) - Math.max(lo, c.x);
+          assert.ok(run <= 0, `${e.from} -> ${e.to} runs ${Math.round(run)}px along ${c.id}'s label`);
+        }
+      }
+    }
   }
 });
 
