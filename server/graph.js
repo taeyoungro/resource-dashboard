@@ -576,25 +576,41 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   containers.push(cloud, region);
   y = region.y + HEAD;
 
-  /** Lay a list of "cards" (each {ids, w, h, place(x,y)}) into rows inside width w. */
+  /**
+   * Lay a list of "cards" (each {ids, w, h, headH, place(x,y)}) into rows inside width w.
+   *
+   * Two passes per row, because a card's y depends on which row it lands in. Every card's HEAD -
+   * the plate drawn at the card's top, which is the whole of a plain card and the box of an
+   * instance card - is centred on the tallest head in its row, so the icons across a row sit on
+   * one line rather than hanging from one. `h` is the card's whole height, head and whatever
+   * hangs under it, and that is what the row's height is measured from.
+   */
   const flow = (cards, x0, y0, w) => {
+    const rows = [];
+    let row = [];
     let cx = x0;
+    for (const card of cards) {
+      if (cx + card.w > x0 + w && row.length > 0) { rows.push(row); row = []; cx = x0; }
+      row.push({ card, x: cx });
+      cx += card.w + NODE_GAP;
+    }
+    if (row.length > 0) rows.push(row);
     let cy = y0;
     let rowH = 0;
-    for (const card of cards) {
-      if (cx + card.w > x0 + w && cx > x0) {
-        cx = x0;
-        cy += rowH + NODE_VGAP;
-        rowH = 0;
+    for (const line of rows) {
+      const headMax = Math.max(...line.map(({ card }) => card.headH ?? card.h));
+      rowH = 0;
+      for (const { card, x } of line) {
+        const drop = (headMax - (card.headH ?? card.h)) / 2;
+        card.place(x, cy + drop);
+        rowH = Math.max(rowH, drop + card.h);
       }
-      card.place(cx, cy);
-      cx += card.w + NODE_GAP;
-      rowH = Math.max(rowH, card.h);
+      if (line !== rows[rows.length - 1]) cy += rowH + NODE_VGAP;
     }
-    return cards.length === 0 ? 0 : (cy - y0) + rowH;
+    return rows.length === 0 ? 0 : (cy - y0) + rowH;
   };
   const nodeCard = (id, extra = {}) => ({
-    ids: [id], w: NODE_W, h: NODE_H,
+    ids: [id], w: NODE_W, h: NODE_H, headH: NODE_H,
     place: (x, yy) => { emit(id, x, yy, extra); },
   });
   const emit = (id, x, yy, extra = {}) => {
@@ -632,7 +648,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     drawnNodes += 1;
   };
   const overflowCard = (containerId, count) => ({
-    ids: [], w: NODE_W, h: NODE_H,
+    ids: [], w: NODE_W, h: NODE_H, headH: NODE_H,
     place: (x, yy) => {
       overflow.push({ container: containerId, count, x, y: yy, w: NODE_W, h: NODE_H,
                       label: `외 ${count.toLocaleString()}개` });
@@ -666,6 +682,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       ids: [id, ...enis, ...vols],
       w: boxW,
       h: boxH + vols.length * (NODE_H + NODE_VGAP),
+      // The BOX is the head; the volumes hang under it and are not what a row lines up on.
+      headH: boxH,
       place: (x, yy) => {
         emit(id, x, yy, { ...extra, box: true, w: boxW, h: boxH, holds: enis.length, open, note });
         if (open) {
@@ -676,7 +694,13 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
           // and not drawn.
           for (const e of enis) { foldedNodes.push({ id: e, in: id }); drawnNodes += 1; }
         }
-        vols.forEach((v, i) => emit(v, x, yy + boxH + NODE_VGAP + i * (NODE_H + NODE_VGAP)));
+        // CENTRED UNDER THE BOX, not flush with its left edge. A closed box is PAD wider than a
+        // plate on each side, so a volume at the same x sat 12 short of the box's middle - and
+        // since every line leaves through the middle of a face, that 12 was a bend in a line that
+        // has nothing to turn for. The plate is narrower than the box it hangs from, never wider:
+        // the box is at least NODE_W + 2 * PAD.
+        vols.forEach((v, i) => emit(v, x + (boxW - NODE_W) / 2,
+                                    yy + boxH + NODE_VGAP + i * (NODE_H + NODE_VGAP)));
       },
     };
   };
@@ -798,13 +822,17 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       }
       return count > 0 ? sum / count : null;
     });
-    const byWidth = new Map();
+    // Cards swap only with cards of the SAME SHAPE - width, whole height and head height alike.
+    // Anything else moves a height between rows, and the band would no longer be as tall as the
+    // measuring pass told the zones it would be.
+    const byShape = new Map();
     cards.forEach((card, i) => {
       if (!slots[i]) return;
-      if (!byWidth.has(card.w)) byWidth.set(card.w, []);
-      byWidth.get(card.w).push(i);
+      const key = `${card.w}|${card.h}|${card.headH ?? card.h}`;
+      if (!byShape.has(key)) byShape.set(key, []);
+      byShape.get(key).push(i);
     });
-    for (const [, group] of byWidth) {
+    for (const [, group] of byShape) {
       const free = group.map((i) => slots[i]).sort((p, q) => p.y - q.y || p.x - q.x);
       const order = [...group].sort((p, q) => (want[p] ?? slots[p].x) - (want[q] ?? slots[q].x) || p - q);
       order.forEach((i, k) => cards[i].place(free[k].x, free[k].y));
@@ -870,7 +898,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       const mine = [];
       bandCards.forEach((card, i) => {
         if (i % halves.length !== half) return;
-        mine.push({ ids: card.ids, w: card.w, h: card.h,
+        mine.push({ ids: card.ids, w: card.w, h: card.h, headH: card.headH,
                     place: (x, yy) => { slots[i] = { x, y: yy }; } });
       });
       const h = flow(mine, x0, top, x1 - x0);
