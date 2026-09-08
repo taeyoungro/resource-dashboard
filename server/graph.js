@@ -1086,8 +1086,9 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   // is found on a grid of RES-pixel cells with A* instead: plates are walls; a container's border
   // and the label band under its top edge cost extra, so a line crosses them where it must and
   // not along them; a cell another line already runs along costs extra, so parallel lines take
-  // parallel lanes; and every turn costs extra, so a line turns as little as it can. The shape
-  // router is the fallback for the rare pair the grid cannot join.
+  // parallel lanes - unless the two share an end and a kind, when the second joins the first as
+  // one trunk (BUNDLE below); and every turn costs extra, so a line turns as little as it can.
+  // The shape router is the fallback for the rare pair the grid cannot join.
   // Costs are in half-steps: a step is 2, so the extras can be smaller than a step. A line passes
   // a plate at one cell's distance for 1 extra a cell - enough to prefer open ground, not enough
   // to send it round the VPC rather than through a ten-pixel gap. A turn is 20: a line changes
@@ -1104,11 +1105,36 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   const BORDER = 4;
   const LABEL = 6;
   const LANE = 8;
+  /**
+   * The discount for running along a line that SHARES AN END with this one.
+   *
+   * LANE keeps two lines apart, and it was keeping apart the wrong two: three lines out of one
+   * security group to three instances left its one port and were pushed into three parallel
+   * lanes, so what is one fact - "this group is on these three" - read as three separate cables.
+   * A line that shares an end with a line already laid pays no LANE along it, and a little less
+   * than a step, so the shared stretch is the cheapest place to be and the lines run as one until
+   * they part. Lines that share NO end still keep their lanes: two relations that merely pass the
+   * same way are two, and drawing them as one would say something the assessment did not.
+   *
+   * The same KIND as well as an end in common. A line is its colour, and two kinds laid on one
+   * stretch would show one colour and hide the other - a route over an interface line reads as
+   * "no interface line". Three group lines out of one group are one fact in one colour; a group
+   * line and a volume line out of one instance are two facts, and stay two lines.
+   *
+   * Half a step, so a detour to reach a shared cell still costs more than it saves: k extra cells
+   * are 2k paid against k saved. Only a stretch the line was taking anyway gets cheaper.
+   */
+  const BUNDLE = 1;
   const gridW = Math.ceil(GRAPH_W / RES) + 2;
   const gridH = Math.ceil((cloud.y + cloud.h) / RES) + 2;
   const hard = new Uint8Array(gridW * gridH);
   const soft = new Uint8Array(gridW * gridH);
   const traffic = new Uint8Array(gridW * gridH);
+  /** For every cell a line runs along, each such line as (end, end, kind) - flat triples, so that
+   *  "does a line through here share an end and a kind with mine" is a loop and not an
+   *  allocation. Sparse: only cells with traffic have an entry, and the typed array above is
+   *  checked first. */
+  const owners = new Map();
   /** Every cell whose point lies inside the rectangle. */
   const paint = (x0, y0, x1, y1, fn) => {
     const c0 = Math.max(0, Math.ceil(x0 / RES)); const c1 = Math.min(gridW - 1, Math.floor(x1 / RES));
@@ -1222,7 +1248,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
     }
     return top;
   };
-  const gridRoute = (a, b, wide = false) => {
+  const gridRoute = (a, b, kind, wide = false) => {
     const starts = ports(a, b);
     const goals = ports(b, a);
     if (starts.length === 0 || goals.length === 0) return null;
@@ -1282,7 +1308,11 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
         while (cur >= 0) { cells.push(cur >> 2); cur = from[cur]; }
         const start = starts[-1 - cur];
         cells.reverse();
-        for (const c of cells) if (traffic[c] < 255) traffic[c] += 1;
+        for (const c of cells) {
+          if (traffic[c] < 255) traffic[c] += 1;
+          const o = owners.get(c);
+          if (o) o.push(a.id, b.id, kind); else owners.set(c, [a.id, b.id, kind]);
+        }
         const pts = [start.end, ...cells.map((c) => ({ x: (c % gridW) * RES, y: Math.floor(c / gridW) * RES })), goalAt.get(cell).end];
         return tidy(pts);
       }
@@ -1294,13 +1324,25 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
         const ncell = ny * gridW + nx;
         if (hard[ncell] && !goalAt.has(ncell)) continue;
         const ns = ncell * 4 + d;
-        const cost = gScore[st] + STEP + soft[ncell] + traffic[ncell] * LANE + (d !== dir ? TURN : 0);
+        // Other lines through this cell: those that share an end with this line are a trunk to
+        // join for a discount, the rest are lanes to stay out of.
+        let foreign = 0; let shared = false;
+        if (traffic[ncell] > 0) {
+          const o = owners.get(ncell);
+          for (let i = 0; i < o.length; i += 3) {
+            if (o[i + 2] === kind
+                && (o[i] === a.id || o[i] === b.id || o[i + 1] === a.id || o[i + 1] === b.id)) shared = true;
+            else foreign += 1;
+          }
+        }
+        const cost = gScore[st] + STEP + soft[ncell] + foreign * LANE - (shared ? BUNDLE : 0)
+          + (d !== dir ? TURN : 0);
         if (stamp[ns] >= open && gScore[ns] <= cost) continue;
         stamp[ns] = open; gScore[ns] = cost; from[ns] = st;
         hpush(cost + GREED * h(ncell, d), ns);
       }
     }
-    return wide ? null : gridRoute(a, b, true);
+    return wide ? null : gridRoute(a, b, kind, true);
   };
   const addEdge = (kind, a, b, relation, implicit = false) => {
     const key = `${kind}|${[a, b].sort().join('|')}`;
@@ -1386,7 +1428,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   for (const e of edges) {
     const a = boxOf(e.from);
     const b = boxOf(e.to);
-    e.points = (gridRoute(a, b) ?? route(a, b)).map((pt) => ({ x: Math.round(pt.x), y: Math.round(pt.y) }));
+    e.points = (gridRoute(a, b, e.kind) ?? route(a, b)).map((pt) => ({ x: Math.round(pt.x), y: Math.round(pt.y) }));
     e.x1 = e.points[0].x; e.y1 = e.points[0].y;
     e.x2 = e.points[e.points.length - 1].x; e.y2 = e.points[e.points.length - 1].y;
     e.title = `${KIND_LABEL[e.kind]}${e.implicit ? ' (기본 라우팅 테이블에서 도출)' : ''}: `

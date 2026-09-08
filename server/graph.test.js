@@ -690,6 +690,57 @@ test('a line leaves the bottom of the upper plate and enters the top of the lowe
   }
 });
 
+test('lines of one kind out of one plate run as one trunk until they part; other pairs keep their lanes', () => {
+  const scene = sceneOf(ACCOUNT(), null, true, OPEN);
+  const edge = (from, to) => scene.edges.find((e) => e.from === from && e.to === to)
+    ?? assert.fail(`${from} -> ${to} is not drawn`);
+  /** How far two lines coincide, walking from the end they share. */
+  const trunk = (p, q) => {
+    let shared = 0;
+    for (let i = 1; i < Math.min(p.length, q.length); i += 1) {
+      const [a0, a1] = [p[i - 1], p[i]]; const [b0, b1] = [q[i - 1], q[i]];
+      if (a0.x !== b0.x || a0.y !== b0.y) break;
+      const vertical = a0.x === a1.x;
+      if (vertical !== (b0.x === b1.x)) break;
+      const la = vertical ? a1.y - a0.y : a1.x - a0.x; const lb = vertical ? b1.y - b0.y : b1.x - b0.x;
+      if (Math.sign(la) !== Math.sign(lb)) break;
+      shared += Math.min(Math.abs(la), Math.abs(lb));
+      if (la !== lb) break;
+    }
+    return shared;
+  };
+  // Two association lines out of the ACL's bottom, to two subnets below it: one fact - "this ACL
+  // is on these subnets" - and one trunk, down from the port, until the nearer subnet's line
+  // turns off. Before this the second line was pushed into a lane of its own beside the first,
+  // and the two read as two cables.
+  const a2 = edge('acl-default', 'subnet:subnet-a2');
+  const b1 = edge('acl-default', 'subnet:subnet-b1');
+  assert.ok(trunk(a2.points, b1.points) >= 200,
+            `the two ACL lines share only ${trunk(a2.points, b1.points)}px out of the port`);
+  // Two lines of DIFFERENT kinds out of the NAT gateway's top - its interface and the route to it
+  // - do not: a line is its colour, and two colours on one stretch would show one and hide the
+  // other. They share the port and nothing past it.
+  const iface = edge('nat-1', 'eni-nat');
+  const route = edge('rtb-priv', 'nat-1');
+  assert.ok(trunk(iface.points, [...route.points].reverse()) <= 5,
+            'an interface line and a route line run on top of each other');
+  // And the lanes still hold for lines that share nothing: no other line lies along the
+  // horizontal stretch of the nearer ACL line - every other line that meets that row crosses it
+  // at a single x, not along it.
+  const y = a2.points[1].y;
+  for (const e of scene.edges) {
+    if (e === a2 || e === b1) continue;
+    for (let i = 1; i < e.points.length; i += 1) {
+      const u = e.points[i - 1]; const v = e.points[i];
+      if (u.y === y && v.y === y) {
+        const lo = Math.min(u.x, v.x); const hi = Math.max(u.x, v.x);
+        assert.ok(hi < Math.min(a2.points[1].x, a2.points[2].x) || lo > Math.max(a2.points[1].x, a2.points[2].x),
+                  `${e.from} -> ${e.to} runs along the ACL trunk's row over it`);
+      }
+    }
+  }
+});
+
 test('the picture is symmetric about the middle: the gateway on top, the tables in a column, the zones either side', () => {
   const scene = sceneOf(ACCOUNT());
   const by = boxes(scene);

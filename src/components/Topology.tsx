@@ -1653,6 +1653,9 @@ export function PolicyTopology({ policy, name, accountId, coverage, reference, f
                   때는 <strong>위쪽 판의 아래 면에서 나와 아래쪽 판의 위 면으로 들어간다</strong> —
                   선이 위로 돌아 올라갔다 내려오는 일이 없으므로, 어느 판에서 나온 선인지 눈으로
                   따라가지 않아도 안다. 나란히 놓인 두 판은 위아래가 없으니 줄 위나 아래로 돈다.
+                  한 판에서 <strong>같은 종류의 선</strong>이 여럿 나가면 갈라지는 자리까지는{" "}
+                  <strong>한 줄로 겹쳐</strong> 그린다 — 「이 그룹이 이 셋에 붙어 있다」는 하나의
+                  사실이고 굵은 줄기 하나로 읽힌다. 종류가 다른 선은 색이 다르므로 겹치지 않는다.
                 </li>
                 <li>
                   <strong>고른 자원</strong> — 한 번 누른 판은 테두리가 <strong>파랑</strong>이 되고,
