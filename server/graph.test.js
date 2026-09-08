@@ -778,6 +778,41 @@ test('lines of one kind out of one plate run as one trunk until they part; other
   }
 });
 
+test('a band plate sits over the things it is joined to, not in the order its ids happen to sort', () => {
+  const scene = sceneOf(ACCOUNT(), null, true, OPEN);
+  const by = boxes(scene);
+  const mid = (id) => { const b = by.get(id); return b.x + b.w / 2; };
+  /** Where a plate's lines END, on average - the same question the layout asks. */
+  const want = (id) => {
+    const xs = scene.edges.filter((e) => e.from === id || e.to === id)
+      .map((e) => mid(e.from === id ? e.to : e.from));
+    return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+  };
+  // sg-db is joined to i-0bbb222 alone, which is in subnet-b1 in the RIGHT-hand zone; sg-web and
+  // sg-ssh are joined to things in the left one. Under id order sg-db came first and its line
+  // crossed the whole VPC; it is now on the side its line goes to.
+  assert.ok(mid('i-0bbb222') > mid('i-0aaa111'), 'the fixture no longer puts the two instances apart');
+  for (const near of ['sg-web', 'sg-ssh']) {
+    assert.ok(mid(near) < mid('sg-db'),
+              `${near} is joined to the left-hand instance and sits right of sg-db`);
+  }
+  // The whole band, in reading order: every plate that HAS lines wants a place no further left
+  // than the plate before it. That is the assignment being a minimum of the total |slot - want|
+  // for the row - any pair out of that order could be swapped for a shorter total.
+  // The band's first row, by the y the security groups landed on. Not "everything above the
+  // zones": the internet gateway straddles the VPC's top border and is placed by its own rule,
+  // and the middle column is a column rather than a row.
+  const bandY = by.get('sg-web').y;
+  const band = scene.nodes
+    .filter((n) => n.y === bandY && want(n.id) !== null)
+    .sort((a, b) => a.x - b.x);
+  assert.ok(band.length >= 4, `only ${band.length} band plates carry lines`);
+  for (let i = 1; i < band.length; i += 1) {
+    assert.ok(want(band[i].id) >= want(band[i - 1].id) - 0.5,
+              `${band[i - 1].id} then ${band[i].id}: the band is not in the order its lines ask for`);
+  }
+});
+
 test('the picture is symmetric about the middle: the gateway on top, the tables in a column, the zones either side', () => {
   const scene = sceneOf(ACCOUNT());
   const by = boxes(scene);
