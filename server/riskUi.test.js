@@ -1680,6 +1680,71 @@ test('the failures panel is on the failure tab and not on the other three', () =
 // The geometry half is in server/ec2Topology.test.js, because a slot escaping its frame is
 // invisible to any assertion made against source text.
 
+test('대상 줄이 모델 판정의 대상에 없는 필드를 읽지 않는다', () => {
+  // server/riskAnalysis.js 의 findingOf 는 모델 판정의 대상에 여섯 필드만 만든다 - type·count·
+  // scope·sample·sampleComplete·controlPlane. actions 도 status 도 governed 도 없다. 없는 것에
+  // .length 를 물으면 카드 하나가 아니라 이 화면 전체가 죽는다: 대상 하나를 지목한 모델 판정마다.
+  const rows = PANEL.slice(PANEL.indexOf('function Targets('), PANEL.indexOf('function PanelAction('));
+  assert.ok(!/(?<!\?\? \[\]\))\btarget\.actions\.length/.test(rows),
+            'target.actions.length is read without a guard');
+  assert.ok(rows.includes('(target.actions ?? []).length'), 'the actions guard is gone');
+  assert.ok(rows.includes('(target.actions ?? []).map('), 'the actions map is unguarded');
+  // status 는 없는 것을 「CONFIRMED 가 아니다」로 읽으면 근거가 확정된 판정 위에 빈 배지가 뜬다.
+  assert.ok(rows.includes('typeof target.status === "string" && target.status !== "CONFIRMED"'),
+            'an absent status renders as an empty 미확인 badge');
+  // 그림도 같은 규율을 지킨다 - 그쪽은 findingPath.test.js 가 값으로 확인한다.
+  const path = readFileSync(new URL('./findingPath.js', import.meta.url), 'utf8');
+  assert.ok(path.includes("typeof t?.status === 'string'"),
+            'the picture treats an absent target status as unverified');
+});
+
+test('카드는 경로 그림을 본문에 그리고, 그림이 어느 줄도 대신하지 않는다', () => {
+  // 그림에만 있는 사실은 하나도 없다 - 그림은 아래 세 줄이 글로 말하는 것을 먼저 보이는 것이고,
+  // 그러므로 그 세 줄이 그대로 있어야 한다. 접힌 요약줄에는 넣지 않는다: 그 줄은 「열어 볼지」를
+  // 정하는 자리이고 차단 배지가 이미 거기 있다.
+  const at = PANEL.indexOf('<FindingPath finding={finding} containment={containment} />');
+  assert.ok(at > 0, 'the card draws no path picture');
+  assert.ok(at > PANEL.indexOf('className="finding-narrative"'),
+            'the picture is above the sentence it summarises');
+  assert.ok(at < PANEL.indexOf('>발화 동작<'), 'the picture is below the rows it summarises');
+  assert.ok(at > PANEL.indexOf('</summary>'), 'the picture is in the collapsed summary line');
+  // 그림이 발화 동작 목록을 대신하지 않는다.
+  assert.ok(PANEL.includes('finding.triggerActions.map('), 'the action list is gone');
+  assert.ok(PANEL.includes('<Targets'), 'the target rows are gone');
+  // 좌표와 낱말은 server 쪽 순수 함수가 정한다 - Topology 가 topology.js 에 대해 지키는 분업.
+  assert.ok(PANEL.includes("from \"../../server/findingPath.js\""),
+            'the card computes the picture itself instead of reading it from a pure module');
+  assert.ok(PANEL.includes('findingPath(finding, containment, CONTAINMENT[containment])'),
+            'the picture does not get the screen\'s own containment words, so a second set can drift');
+  // marker id 가 아니라 useId 로 짓는다 - 한 화면에 카드가 서른여덟 장 열린다.
+  assert.ok(PANEL.includes('const uid = useId();'), 'the picture uses a fixed id');
+});
+
+test('경로 그림의 색은 전부 토큰이고, 끊김은 카드 테두리와 같은 토큰을 쓴다', () => {
+  const rules = CSS.split('\n').filter((line) => line.trimStart().startsWith('.finding-path'));
+  assert.ok(rules.length >= 10, `only ${rules.length} .finding-path rules`);
+  // 색 리터럴 0개. 새 색을 컴포넌트도 스타일시트도 고르지 않는다.
+  for (const rule of rules) {
+    assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(rule), `literal colour in: ${rule.trim()}`);
+    assert.ok(!/\b(rgb|hsl)a?\(/.test(rule), `literal colour in: ${rule.trim()}`);
+  }
+  // 끊김의 세 색이 카드 왼쪽 테두리의 그 셋이다. 한 카드가 같은 판정을 두 색으로 말하면 승인자는
+  // 어느 쪽을 믿을지 정해야 한다.
+  const token = (re) => CSS.match(re)?.[1] ?? null;
+  for (const state of ['full', 'fenced', 'partial']) {
+    const mark = token(new RegExp(`\\.finding-path-mark-${state} \\{[^}]*stroke:\\s*var\\((--[a-z-]+)\\)`));
+    const edge = token(new RegExp(`\\.finding\\.contained-${state} \\{[^}]*border-left-color:\\s*var\\((--[a-z-]+)\\)`));
+    assert.ok(mark, `.finding-path-mark-${state} has no token`);
+    assert.equal(mark, edge, `the picture and the card edge disagree on ${state}`);
+  }
+  // 그 세 토큰은 관계도에서 간선의 종류를 뜻한다. 이 그림의 선이 그중 하나를 쓰면 끊김 표식이
+  // 가로선으로 읽힌다.
+  const line = CSS.match(/\.finding-path-line \{[^}]*\}/)?.[0] ?? '';
+  for (const t of ['--ok', '--cut-fence', '--cut-partial']) {
+    assert.ok(!line.includes(t), `.finding-path-line uses ${t}, which means a cut`);
+  }
+});
+
 const TOPOLOGY = readFileSync(new URL('../src/components/Topology.tsx', import.meta.url), 'utf8');
 /** The component with its comments stripped. The prose explains at length what the code must NOT
  *  do - "it never renders ServiceIcon", "a literal id=\"topo-arrow\" would collide" - so an
