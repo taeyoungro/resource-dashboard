@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
 import type {
@@ -9,6 +9,7 @@ import type {
 import { CATEGORY_LABEL, GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
 import { BlockPath } from "./BlockPath";
 import { alreadyRestricted, containmentState } from "../../server/blockPath.js";
+import { findingPath } from "../../server/findingPath.js";
 import { findingsOfAnswer } from "../../server/analysisFindings.js";
 import { actionDocUrl } from "../../server/actionDocs.js";
 import { LabeledResource, TagButton } from "./ResourceLine";
@@ -310,18 +311,23 @@ function Targets({ finding, resourceOf, accountId }: {
             )}
             {/* 카드가 확인인데 이 유형만 아닌 경우가 있다. 무엇이 등급을 내렸는지는
                 유형 옆에 붙어야 어느 목록을 의심해야 하는지 알 수 있다. */}
-            {target.status !== "CONFIRMED" && (
+            {/* 모델 판정의 대상에는 status 가 없다 - server/riskAnalysis.js 의 findingOf 는
+                type·count·scope·sample·sampleComplete·controlPlane 여섯만 만든다. 없는 것을
+                「CONFIRMED 가 아니다」로 읽으면 근거가 확정된 판정 위에 빈 배지가 뜬다. */}
+            {typeof target.status === "string" && target.status !== "CONFIRMED" && (
               <span className="badge badge-warn" title="이 유형에 대해서는 확인되지 않았습니다">
                 {" "}{STATUS_LABEL[target.status]}
               </span>
             )}
             {/* 발화 동작 전부가 이 유형에 닿는 것은 아닐 때만 적는다. 전부 닿으면 위의
-                발화 동작 목록이 이미 그 말이다. */}
-            {target.actions.length > 0
-              && target.actions.length < finding.triggerActions.length && (
+                발화 동작 목록이 이미 그 말이다.
+                actions 도 모델 판정의 대상에는 없다. 없는 것에 .length 를 물으면 카드가 아니라
+                이 화면 전체가 죽는다 - 대상 하나를 지목한 모델 판정마다. */}
+            {(target.actions ?? []).length > 0
+              && (target.actions ?? []).length < finding.triggerActions.length && (
               <span className="muted">
                 {" · "}
-                {target.actions.map((action) => (
+                {(target.actions ?? []).map((action) => (
                   <code key={action} className="target-action">{action}</code>
                 ))}
               </span>
@@ -481,6 +487,102 @@ const CONTAINMENT: Record<ContainmentState, { label: string; className: string; 
 };
 
 /**
+ * 발견 하나의 경로 그림.
+ *
+ * 고리는 「부여 · 동작 · 자원」 셋이고 그 셋은 카드의 뼈대이므로 발견마다 수가 변하지 않는다 -
+ * 동작이 마흔 개여도 고리는 셋이다. 발화 동작은 순서가 아니라 술어여서 값마다 고리를 하나씩
+ * 내주면 데이터에 없는 순서를 그리는 것이 되고, 그래서 고리에는 동작 이름이 들어가지 않는다.
+ *
+ * 이어짐은 방향이 아니라 의존이다 - 앞 고리가 서야 뒤 고리가 선다. 그래서 화살촉이 없다:
+ * 구성도가 방향 있는 간선에만 화살촉을 붙이는 규칙과 같고, 화살촉이 바로 이 그림을 시간으로
+ * 읽히게 만드는 것이다. 그림 안 한 줄이 같은 말을 한 번 더 하며, viewBox 안이라 화면을 찍어도
+ * 남는다.
+ *
+ * 좌표·낱말·문장은 전부 server/findingPath.js 가 정한다. Topology.tsx 가 server/topology.js 에
+ * 대해 지키는 그 분업이고 이유도 같다.
+ *
+ * 색은 이 컴포넌트가 고르지 않는다. 끊김의 세 색은 스타일시트에서 카드 왼쪽 테두리와 같은
+ * 토큰을 쓰고, 등급은 그림에 실리지 않는다 - 머리줄의 배지와 카드 테두리가 이미 두 번 말한다.
+ */
+function FindingPath({ finding, containment }: {
+  finding: Finding;
+  containment: ContainmentState;
+}) {
+  const uid = useId();
+  // CONTAINMENT 는 모듈 상수이므로 CONTAINMENT[containment] 의 신원이 렌더마다 같다 - 의존성이
+  // 실제로 안정하고, memo 가 memo 로 동작한다.
+  const path = useMemo(
+    () => findingPath(finding, containment, CONTAINMENT[containment]),
+    [finding, containment],
+  );
+  // 발화 동작이 없는 판정에는 그릴 경로가 없다. 그 카드에는 「평가 불가인 이유」가 이미 있다.
+  if (!path) return null;
+  return (
+    <div className="finding-path">
+      <svg
+        className="finding-path-svg"
+        viewBox={`0 0 ${path.width} ${path.height}`}
+        width={path.width}
+        height={path.height}
+        preserveAspectRatio="xMinYMin meet"
+        fontFamily="inherit"
+        role="img"
+        aria-labelledby={`${uid}-pt ${uid}-pd`}
+      >
+        <title id={`${uid}-pt`}>{`${finding.id} 경로 그림`}</title>
+        <desc id={`${uid}-pd`}>{path.summary}</desc>
+
+        {/* 선을 먼저, 고리를 뒤에. 고리가 선의 끝을 덮어야 선이 고리 안으로 들어가 보이지 않는다. */}
+        {path.lines.map((line) => (
+          <line
+            key={line.key}
+            className={line.dim ? "finding-path-line finding-path-line-dim" : "finding-path-line"}
+            x1={line.x1} y1={path.lineY} x2={line.x2} y2={path.lineY}
+          />
+        ))}
+
+        {path.links.map((item) => (
+          <g key={item.id} className={item.dim ? "finding-path-dim" : undefined}>
+            <rect
+              className={item.state === "established"
+                ? "finding-path-plate"
+                : `finding-path-plate finding-path-${item.state}`}
+              x={item.x} y={item.y} width={item.w} height={item.h} rx={4}
+            >
+              <title>{item.title}</title>
+            </rect>
+            <text className="finding-path-label" x={item.x + 8} y={item.labelY}>{item.label}</text>
+            {item.sub ? (
+              <text className="finding-path-sub" x={item.x + 8} y={item.subY}>{item.sub}</text>
+            ) : null}
+          </g>
+        ))}
+
+        {/* 막대는 끊김, 고리는 물렸으나 끊기지 않음. 모양이 무엇이 일어났는지를 말하고 색은 그
+            위에 얹힌 두 번째 채널이라, 두 색을 구별하지 못해도 둘이 갈린다. */}
+        {path.cut ? (path.cut.kind === "clamp" ? (
+          <circle
+            className={`finding-path-mark finding-path-mark-${path.cut.state}`}
+            cx={path.cut.cx} cy={path.cut.cy} r={5}
+          >
+            <title>{path.cut.title}</title>
+          </circle>
+        ) : (
+          <line
+            className={`finding-path-mark finding-path-mark-${path.cut.state}`}
+            x1={path.cut.cx} y1={path.cut.cy - 7} x2={path.cut.cx} y2={path.cut.cy + 7}
+          >
+            <title>{path.cut.title}</title>
+          </line>
+        )) : null}
+
+        <text className="finding-path-foot" x={0} y={path.footY}>{path.foot}</text>
+      </svg>
+    </div>
+  );
+}
+
+/**
  * ONE finding, in full. The card an approver reads on this page - and, since the diagram grew a
  * per-resource list, the card its popup shows too.
  *
@@ -606,6 +708,11 @@ export function RiskFindingCard({ finding, block, blockWhy = null, containment, 
       </summary>
 
       <p className="finding-narrative">{finding.narrative}</p>
+
+      {/* 아래 세 줄(발화 동작 · 대상 · 차단)이 글로 말하는 것을 한 줄 그림으로 먼저 보인다. 그림에만
+          있는 사실은 하나도 없다. 접힌 요약줄에는 넣지 않는다 - 그 줄은 「열어 볼지」를 정하는
+          자리이고 차단 배지가 이미 거기 있다. */}
+      <FindingPath finding={finding} containment={containment} />
 
       <div className="finding-row">
         <span className="finding-label">발화 동작</span>

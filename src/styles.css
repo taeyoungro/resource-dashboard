@@ -1017,7 +1017,60 @@ code.target-action { font-size: 0.92em; opacity: 0.85; margin-right: 4px; }
   border-radius: 6px;
   font-size: 13px;
 }
+
 .finding-blocked strong { display: block; margin-bottom: 2px; color: var(--warn); }
+/* ---- 카드 안의 경로 그림 -----------------------------------------------------------------------
+   고리 셋과 그것을 잇는 선, 그리고 지금 결정이 끊은 자리. 구성도의 문법을 그대로 따른다 - 점선은
+   관계, 실선 테두리는 그것 하나가 실재한다는 것, `6 4` 는 「측정되지 않았다」이고 이 블록에서도 그
+   뜻으로만 쓰인다. 새 점선 무늬를 만들지 않았다: 화면에는 이미 `6 4`(관계·미측정), `4 4`(구성도의
+   연결), `2 3`(도출한 연결), `4 3`(넘침 판) 넷이 있고 다섯째를 더하면 무늬가 뜻을 잃는다.
+
+   .graph-* 클래스를 빌려 쓰지 않고 제 이름을 갖는다. 같은 클래스를 공유하면서 그 클래스의 색
+   규칙만 덮어쓰면 한 낱말이 두 뜻을 갖게 되고, 이 카드는 구성도 팝업 안에서도 그대로 열리므로
+   (Topology 가 RiskFindingCard 를 원문 그대로 그린다) 그 두 뜻이 한 화면에 동시에 보인다.
+
+   선은 판정을 말하지 않는다. 등급은 카드 왼쪽 테두리와 머리줄 배지가 이미 두 번 말하고, 차단
+   상태는 아래 표식 하나가 말한다. 선 색이 --border 가 아닌 것은 카드 바탕이 --panel 이라 그 위에서
+   1.36:1 이기 때문이다 - 선 하나가 전부인 그림에서 그 선이 보이지 않으면 그림이 없는 것과 같다. */
+.finding-path { overflow-x: auto; margin: 6px 0 2px; }
+/* 줄이지 않는다. 좁으면 감싸개가 넘긴다 - .topology-figure 가 고른 답과 같고 이유도 같다:
+   11px 한글을 줄인 것은 작은 그림이 아니라 읽을 수 없는 그림이다. 폭 328px 은 이 배치가 만드는
+   가장 좁은 카드 안쪽보다 작으므로 그 스크롤은 안전망으로만 남는다. */
+.finding-path-svg { display: block; }
+
+/* 고리. 카드 바탕이 --panel 이므로 판은 --bg 로 뜬다 - 구성도의 .graph-plate 와 같은 셈법이다. */
+.finding-path-plate { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
+/* 근거가 이 주장을 확정하지 못했다. 유형 옆 「미확인」 배지와 같은 색이고, 덧말의 낱말이 두 번째
+   채널이라 색을 구별하지 못해도 남는다. */
+.finding-path-unverified { stroke: var(--warn); }
+/* 주장 자체가 없다 - 자원을 지목하지 않는 판정. 끊긴 것이 아니므로 낮추지 않고, 구성도가
+   「측정되지 않은 것」에 쓰는 그 점선으로 그린다. */
+.finding-path-unclaimed { stroke: var(--muted); stroke-dasharray: 6 4; }
+
+.finding-path-label { fill: var(--text); font-size: 11px; font-weight: 600; }
+.finding-path-sub { fill: var(--muted); font-size: 10px; }
+.finding-path-foot { fill: var(--muted); font-size: 11px; }
+
+/* 고리를 잇는 선. 점선이고 화살촉이 없다 - 구성도가 방향 있는 간선에만 화살촉을 붙이는 규칙과
+   같고, 여기서 이어짐이 뜻하는 것은 방향이 아니라 「앞 고리가 서야 뒤 고리가 선다」이다. */
+.finding-path-line { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 6 4; }
+
+/* 끊긴 자리의 하류. 지우지 않고 낮춘다 - 사라지면 무엇이 끊겼는지 읽을 수 없다. 흐림은
+   .topo-ghost 와 같은 두 줄이고, 글자는 opacity 가 아니라 --muted 로 내린다: opacity 는 두 채널의
+   대비를 한꺼번에 죽이지만 --muted 는 이 바탕에서 대비 바닥을 지킨다. */
+.finding-path-line-dim { stroke-opacity: 0.55; }
+.finding-path-dim .finding-path-plate { stroke-opacity: 0.55; }
+.finding-path-dim .finding-path-label { fill: var(--muted); }
+
+/* 끊긴 자리. 색은 카드 왼쪽 테두리(.finding.contained-full/-fenced/-partial)가 쓰는 그 셋이고 같은
+   세 상태를 말한다 - 한 카드가 같은 판정을 두 색으로 말하면 승인자는 어느 쪽을 믿을지 정해야 한다.
+   같은 토큰이 관계도에서는 간선의 종류를 뜻하므로(.graph-edge-volume, .graph-edge-association) 이
+   표식이 가로선으로 보이면 안 된다: 그래서 굵고 짧고 둥근 끝이며, 점선이 아니고, 이 그림의 선은
+   그 세 토큰을 하나도 쓰지 않는다. */
+.finding-path-mark { fill: none; stroke-width: 3; stroke-linecap: round; }
+.finding-path-mark-full { stroke: var(--ok); }
+.finding-path-mark-fenced { stroke: var(--cut-fence); }
+.finding-path-mark-partial { stroke: var(--cut-partial); }
 
 /* The asset axis is a second grade on the same card and must not compete with the first. Outlined
    whatever its value, so the filled badge stays the one an approver's eye lands on. */
@@ -1103,7 +1156,6 @@ code.target-action { font-size: 0.92em; opacity: 0.85; margin-right: 4px; }
 /* A stack ARN is a hundred characters with no spaces in it. Breaking anywhere beats a scrollbar. */
 .tag-table td { font-family: "SF Mono", Menlo, monospace; word-break: break-all; }
 .tag-table tr + tr th, .tag-table tr + tr td { border-top: 1px solid var(--panel-2); }
-
 
 /* ---- the inline policy an administrator's choices become ---------------------------------------- */
 
@@ -1274,7 +1326,6 @@ code.target-action { font-size: 0.92em; opacity: 0.85; margin-right: 4px; }
   padding-bottom: 1px;
 }
 
-
 /* What this section does NOT offer, and where it went. At the top of the body rather than folded at
    the bottom, because it is the answer to a question asked before the scrolling starts: an approver
    who cannot find lambda:CreateFunction here has to learn it is in another section, not conclude it
@@ -1290,7 +1341,6 @@ code.target-action { font-size: 0.92em; opacity: 0.85; margin-right: 4px; }
   line-height: 1.55;
 }
 
-
 /* The offer to write a list of actions as one service wildcard. Set apart from the size warning
    below it: that one says something is wrong, this one says something is possible. */
 .fold-offer {
@@ -1302,7 +1352,6 @@ code.target-action { font-size: 0.92em; opacity: 0.85; margin-right: 4px; }
   line-height: 1.55;
 }
 .fold-offer > button { margin-right: 4px; }
-
 
 /* An action the assessment holds nothing for. Ticking it can only end in the container refusing the
    restriction, so the checkbox is disabled and the row says why rather than being quietly absent -
