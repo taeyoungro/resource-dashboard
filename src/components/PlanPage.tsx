@@ -101,7 +101,12 @@ export function PlanPage({ state, error, onRefresh }: Props) {
         decision,
         reviewer,
         comment,
-        expected_changes_sha256: detail.changes_sha256 ?? "",
+        // ONE FIELD carrying whichever digest the page was shown - the change digest on a composed
+        // plan, where there is no file to bind to, and the plan's otherwise. The server checks the
+        // one this plan's domain binds by, so a second field name would only be a second way for
+        // the page to be silent about what it read.
+        expected_changes_sha256:
+          (detail.composed ? detail.change_sha256 : detail.changes_sha256) ?? "",
         ...(detail.assessment_sha256
           ? { expected_impact_sha256: detail.assessment_sha256 }
           : {}),

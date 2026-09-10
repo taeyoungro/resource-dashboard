@@ -118,6 +118,19 @@ const ACCOUNT = '644701781058';
 const REQUEST = `${ACCOUNT}-8f2c41d90b7e6a35`;
 const PLAN_ID = `${ACCOUNT}:ps-alice`;
 const PREFIX = `${ACCOUNT}/ps-alice/plan/`;
+
+// The other domain, for the PassRole tests. Every value that panel reads - who asked, which
+// services the trust policy admits, the role ARN to grant on - is an output of the MIRROR ROLE
+// document (event_pipeline code/generator/mirror_role.py), so those tests belong on a mirror role's
+// plan and not on a permission set's. The grant still LANDS in a permission set: hand_over_passrole
+// derives ps-<user> from each confirmed name, which is why one plan can dispatch to several.
+//
+// It used to be ps-alice for all of it, which worked only because nothing checked. It cannot now:
+// a ps-* prefix holds a composed change and no plan.json, so a fixture that put passrole outputs
+// there would be describing a prefix the pipeline cannot produce.
+const MIRROR_RESOURCE = 'lambda-alice';
+const MIRROR_PLAN_ID = `${ACCOUNT}:${MIRROR_RESOURCE}`;
+const MIRROR_PREFIX = `${ACCOUNT}/${MIRROR_RESOURCE}/plan/`;
 const QUEUE = `arn:aws:sqs:us-east-1:${ACCOUNT}:nty-stage-orders`;
 const CHANGES = 'c'.repeat(64);
 
@@ -186,7 +199,8 @@ function stubS3(objects) {
   return s3;
 }
 
-function harness({ pushed = null, riskAnalysis = false, assessment = null, planOutputs = null,
+function harness({ resource = 'ps-alice', omit = [], pushed = null, riskAnalysis = false,
+                   assessment = null, planOutputs = null,
                    noChanges = false, refreshFails = false, outcome = null, markers = {},
                    // The ingest key authorises the MACHINE routes - announcements, the assessment
                    // delivery, and the notifier's failure reports. Set here so those are reachable;
@@ -197,28 +211,55 @@ function harness({ pushed = null, riskAnalysis = false, assessment = null, planO
                  } = {}) {
   const document = assessment ? JSON.stringify(assessment) : ASSESSMENT_JSON;
   const sha = createHash('sha256').update(document).digest('hex');
-  const s3 = stubS3({
-    [`${PREFIX}plan.txt`]: 'Terraform will perform the following actions:',
-    [`${PREFIX}main.tf.json`]: JSON.stringify({ resource: {} }),
-    [`${PREFIX}request.json`]: JSON.stringify({
-      request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice', kind: 'ps_role',
+  const prefix = `${ACCOUNT}/${resource}/plan/`;
+  // Which layout the prefix holds, decided the same way every other component decides it: off the
+  // resource name. A ps-* prefix carries a composed change and no plan file, because the
+  // restriction is decided after the inspection - see server/sweep.js composesDocument.
+  const composed = resource.startsWith('ps-');
+  const stored = {
+    ...(composed ? {
+      [`${prefix}changes.txt`]: 'managed_policy_arns  CHANGES\n  + "arn:aws:iam::aws:policy/X"\n',
+      [`${prefix}spec.json`]: JSON.stringify({
+        kind: 'ps_role', account_id: ACCOUNT, spec_role_name: resource,
+        bare_name: resource.slice(3), managed_policy_arns: [], twin_policy_names: [],
+      }),
+      [`${prefix}change.sha256`]: CHANGES,
+      [`${prefix}change.json`]: JSON.stringify({
+        before: { kind: 'ps_role', managed_policy_arns: [] },
+        after: {
+          kind: 'ps_role',
+          managed_policy_arns: noChanges ? [] : ['arn:aws:iam::aws:policy/AWSLambda_FullAccess'],
+        },
+      }),
+    } : {
+      [`${prefix}plan.txt`]: 'Terraform will perform the following actions:',
+      [`${prefix}main.tf.json`]: JSON.stringify({ resource: {} }),
+      [`${prefix}changes.sha256`]: CHANGES,
+      [`${prefix}tfplan`]: 'binary-plan-bytes',
+      [`${prefix}plan.json`]: JSON.stringify({
+        resource_changes: noChanges ? [] : [{ change: { actions: ['update'] } }],
+        ...(planOutputs ? { output_changes: planOutputs } : {}),
+      }),
+    }),
+    [`${prefix}request.json`]: JSON.stringify({
+      request_id: REQUEST, account_id: ACCOUNT, resource,
+      kind: composed ? 'ps_role' : 'service_role',
       has_changes: true,
     }),
-    [`${PREFIX}changes.sha256`]: CHANGES,
-    [`${PREFIX}tfplan`]: 'binary-plan-bytes',
-    [`${PREFIX}plan.json`]: JSON.stringify({
-      resource_changes: noChanges ? [] : [{ change: { actions: ['update'] } }],
-      ...(planOutputs ? { output_changes: planOutputs } : {}),
-    }),
-    [`${PREFIX}impact.json`]: document,
-    [`${PREFIX}impact.sha256`]: sha,
+    [`${prefix}impact.json`]: document,
+    [`${prefix}impact.sha256`]: sha,
     // What the applier recorded, when a test is about a plan that has been applied. Absent by
     // default: a prefix with one of these is a plan nobody may decide about again.
-    ...(outcome ? { [`${PREFIX}outcome.json`]: JSON.stringify(outcome) } : {}),
+    ...(outcome ? { [`${prefix}outcome.json`]: JSON.stringify(outcome) } : {}),
     // The inline writer's locks and results, in the marker bucket. Same namespace in this stub as
     // the state bucket, which is harmless because every read of them is prefixed.
     ...markers,
-  });
+  };
+  // What this prefix does NOT hold. Named as an input rather than deleted afterwards, because the
+  // stub is what a test can reach - and a prefix missing one artifact is the state every
+  // completeness check exists for.
+  for (const name of omit) delete stored[`${prefix}${name}`];
+  const s3 = stubS3(stored);
   const route = routes({
     config: {
       markerBucket: 'opt-solution-markers', stateBucket: 'state', ingestKey,
@@ -250,7 +291,7 @@ function harness({ pushed = null, riskAnalysis = false, assessment = null, planO
     actions: { all: () => ({ schema: 1, services: {}, error: null }) },
     log: { info: () => {}, warn: () => {}, error: () => {} },
   });
-  return { route, s3, impactSha256: sha };
+  return { route, s3, impactSha256: sha, planId: `${ACCOUNT}:${resource}`, prefix };
 }
 
 const PUSHED = { impact: ASSESSMENT, impact_sha256: ASSESSMENT_SHA, body_omitted: false };
@@ -1626,8 +1667,8 @@ const ASKED = {
 };
 
 test('the requests reach the page so an approver can see what is being asked', async () => {
-  const { route } = harness({ planOutputs: ASKED });
-  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  const { route } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
+  const detail = await route['GET /api/plans/:id']({ params: { id: MIRROR_PLAN_ID } });
   assert.deepEqual(detail.passrole, {
     requested_by: ['alice'], granted_to: [], untagged: [], unavailable: [],
     services: ['lambda.amazonaws.com'], target_arn: null,
@@ -1637,17 +1678,17 @@ test('the requests reach the page so an approver can see what is being asked', a
 test('approving the plan grants nothing on its own', async () => {
   // The whole point of the second confirmation. An approval that carried the grant with it would
   // act on whatever tag happened to be on the source role when it was inspected.
-  const { route, s3 } = harness({ planOutputs: ASKED });
-  await route['POST /api/plans/:id/decision']({ params: { id: PLAN_ID }, body: decision() });
+  const { route, s3 } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
+  await route['POST /api/plans/:id/decision']({ params: { id: MIRROR_PLAN_ID }, body: decision() });
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.equal('passrole_grant_to' in marker, false,
     'an approval with nobody ticked carried a grant');
 });
 
 test('a confirmed name travels as a name and nothing else', async () => {
-  const { route, s3 } = harness({ planOutputs: ASKED });
+  const { route, s3 } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
   await route['POST /api/plans/:id/decision']({
-    params: { id: PLAN_ID }, body: decision({ passrole_grant_to: ['alice'] }),
+    params: { id: MIRROR_PLAN_ID }, body: decision({ passrole_grant_to: ['alice'] }),
   });
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.deepEqual(marker.passrole_grant_to, ['alice']);
@@ -1657,10 +1698,10 @@ test('a confirmed name travels as a name and nothing else', async () => {
 });
 
 test('a name nobody asked for is refused, and the message says who did ask', async () => {
-  const { route, s3 } = harness({ planOutputs: ASKED });
+  const { route, s3 } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
   await assert.rejects(
     () => route['POST /api/plans/:id/decision']({
-      params: { id: PLAN_ID }, body: decision({ passrole_grant_to: ['root-admin'] }),
+      params: { id: MIRROR_PLAN_ID }, body: decision({ passrole_grant_to: ['root-admin'] }),
     }),
     (e) => e.status === 409 && /root-admin/.test(e.message) && /alice/.test(e.message));
   assert.equal(s3.puts.some((p) => p.key.startsWith('applier/')), false,
@@ -1668,10 +1709,10 @@ test('a name nobody asked for is refused, and the message says who did ask', asy
 });
 
 test('a denial cannot confirm a grant', async () => {
-  const { route } = harness({ planOutputs: ASKED });
+  const { route } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
   await assert.rejects(
     () => route['POST /api/plans/:id/decision']({
-      params: { id: PLAN_ID },
+      params: { id: MIRROR_PLAN_ID },
       body: decision({ decision: 'deny', comment: 'no', passrole_grant_to: ['alice'] }),
     }),
     (e) => e.status === 400 && /nothing is granted/.test(e.message));
@@ -1681,11 +1722,11 @@ test('a grant on a role no service can assume is refused before the apply, not a
   // An unconditioned PassRole allows passing the role to anything, so the applier refuses it. That
   // refusal would land after the mirror role was already created; this one lands on the button.
   const { route } = harness({
-    planOutputs: { ...ASKED, passrole_services: { after: [] } },
+    resource: MIRROR_RESOURCE, planOutputs: { ...ASKED, passrole_services: { after: [] } },
   });
   await assert.rejects(
     () => route['POST /api/plans/:id/decision']({
-      params: { id: PLAN_ID }, body: decision({ passrole_grant_to: ['alice'] }),
+      params: { id: MIRROR_PLAN_ID }, body: decision({ passrole_grant_to: ['alice'] }),
     }),
     (e) => e.status === 409 && /iam:PassedToService/.test(e.message));
 });
@@ -1694,9 +1735,9 @@ test('a withdrawal is the only thing that takes a grant back', async () => {
   // Leaving somebody unticked removes nothing: the writer keeps every grant a dispatch does not
   // name. So the marker has to carry the withdrawal explicitly, and an ordinary approval must not
   // imply one - an approver who confirms bob has said nothing about alice.
-  const { route, s3 } = harness({ planOutputs: ASKED });
+  const { route, s3 } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
   await route['POST /api/plans/:id/decision']({
-    params: { id: PLAN_ID }, body: decision({ passrole_revoke_from: ['alice'] }),
+    params: { id: MIRROR_PLAN_ID }, body: decision({ passrole_revoke_from: ['alice'] }),
   });
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.deepEqual(marker.passrole_revoke_from, ['alice']);
@@ -1707,9 +1748,9 @@ test('withdrawing from somebody who never asked is allowed, unlike granting', as
   // The asymmetry is the point. The ordinary reason to withdraw is that the tag is gone, so the
   // person is no longer among the plan's requesters - requiring them to be would make the only
   // removal path unusable in exactly the case it exists for.
-  const { route, s3 } = harness({ planOutputs: ASKED });
+  const { route, s3 } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
   await route['POST /api/plans/:id/decision']({
-    params: { id: PLAN_ID }, body: decision({ passrole_revoke_from: ['carol'] }),
+    params: { id: MIRROR_PLAN_ID }, body: decision({ passrole_revoke_from: ['carol'] }),
   });
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.deepEqual(marker.passrole_revoke_from, ['carol']);
@@ -1719,29 +1760,29 @@ test('a role no service can assume can still have its grants withdrawn', async (
   // Granting is refused there; withdrawing must not be. A role whose trust policy lost its services
   // is exactly the one whose grants should come off.
   const { route, s3 } = harness({
-    planOutputs: { ...ASKED, passrole_services: { after: [] } },
+    resource: MIRROR_RESOURCE, planOutputs: { ...ASKED, passrole_services: { after: [] } },
   });
   await route['POST /api/plans/:id/decision']({
-    params: { id: PLAN_ID }, body: decision({ passrole_revoke_from: ['alice'] }),
+    params: { id: MIRROR_PLAN_ID }, body: decision({ passrole_revoke_from: ['alice'] }),
   });
   assert.ok(s3.puts.some((p) => p.key.startsWith('applier/')));
 });
 
 test('confirming and withdrawing the same person in one decision is refused', async () => {
-  const { route } = harness({ planOutputs: ASKED });
+  const { route } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
   await assert.rejects(
     () => route['POST /api/plans/:id/decision']({
-      params: { id: PLAN_ID },
+      params: { id: MIRROR_PLAN_ID },
       body: decision({ passrole_grant_to: ['alice'], passrole_revoke_from: ['alice'] }),
     }),
     (e) => e.status === 400 && /alice/.test(e.message));
 });
 
 test('a denial cannot withdraw either, because nothing runs to write it', async () => {
-  const { route } = harness({ planOutputs: ASKED });
+  const { route } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
   await assert.rejects(
     () => route['POST /api/plans/:id/decision']({
-      params: { id: PLAN_ID },
+      params: { id: MIRROR_PLAN_ID },
       body: decision({ decision: 'deny', comment: 'no', passrole_revoke_from: ['alice'] }),
     }),
     (e) => e.status === 400 && /not applied/.test(e.message));
@@ -1749,10 +1790,10 @@ test('a denial cannot withdraw either, because nothing runs to write it', async 
 
 test('withdrawals of another shape are refused', async () => {
   for (const broken of ['alice', [''], [null], [{ user_name: 'alice' }]]) {
-    const { route } = harness({ planOutputs: ASKED });
+    const { route } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
     await assert.rejects(
       () => route['POST /api/plans/:id/decision']({
-        params: { id: PLAN_ID }, body: decision({ passrole_revoke_from: broken }),
+        params: { id: MIRROR_PLAN_ID }, body: decision({ passrole_revoke_from: broken }),
       }),
       (e) => e.status === 400, `accepted passrole_revoke_from=${JSON.stringify(broken)}`);
   }
@@ -1761,10 +1802,10 @@ test('withdrawals of another shape are refused', async () => {
 
 test('confirmations of another shape are refused', async () => {
   for (const broken of ['alice', [''], [null], [{ user_name: 'alice' }]]) {
-    const { route } = harness({ planOutputs: ASKED });
+    const { route } = harness({ resource: MIRROR_RESOURCE, planOutputs: ASKED });
     await assert.rejects(
       () => route['POST /api/plans/:id/decision']({
-        params: { id: PLAN_ID }, body: decision({ passrole_grant_to: broken }),
+        params: { id: MIRROR_PLAN_ID }, body: decision({ passrole_grant_to: broken }),
       }),
       (e) => e.status === 400, `accepted passrole_grant_to=${JSON.stringify(broken)}`);
   }
@@ -1777,11 +1818,11 @@ test('an assessment survives an inspection that moves no resource', async () => 
   // changed - was dropped. A governed resource that had been assessed and applied read as
   // unassessed, and the answer to "what does this reach" became silence.
   const { route } = harness({
-    assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
+    resource: MIRROR_RESOURCE, assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
     planOutputs: ASKED,
     noChanges: true,
   });
-  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  const detail = await route['GET /api/plans/:id']({ params: { id: MIRROR_PLAN_ID } });
   assert.ok(detail.assessment, 'the earlier assessment was dropped');
   assert.equal(detail.assessment_source, 'earlier');
   // And carried WITHOUT a digest, which is the whole safety of it: a restriction is validated
@@ -1805,13 +1846,13 @@ test('a restriction cannot be composed from an earlier assessment', async () => 
   // It has no digest, so the page sends none, and the decision route refuses a restriction without
   // one. Checked here because the display change must not have opened a path around that.
   const { route } = harness({
-    assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
+    resource: MIRROR_RESOURCE, assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
     planOutputs: ASKED,
     noChanges: true,
   });
   await assert.rejects(
     () => route['POST /api/plans/:id/decision']({
-      params: { id: PLAN_ID },
+      params: { id: MIRROR_PLAN_ID },
       body: decision({ restrictions: [restriction] }),
     }),
     (e) => e.status === 400 || e.status === 409);
@@ -1824,12 +1865,12 @@ test('the analysis runs on an assessment kept because the plan moves nothing', a
   // assessment and then refused to analyse it:
   //   "the stored assessment describes <id> and this plan is <id>; reload the plan"
   const { route } = harness({
-    assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
+    resource: MIRROR_RESOURCE, assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
     planOutputs: ASKED,
     noChanges: true,
   });
   const answer = await route['POST /api/plans/:id/analysis']({
-    params: { id: PLAN_ID }, body: { engine: 'rules' },
+    params: { id: MIRROR_PLAN_ID }, body: { engine: 'rules' },
   });
   assert.ok(answer, 'the analysis refused an assessment the detail route had just displayed');
 });
@@ -1851,13 +1892,13 @@ test('an analysis of an earlier assessment cannot be cited on the decision', asy
   // two never match and nothing is cited. Checked here because the fix above must not have opened a
   // way to bind an approval to an assessment it was not made from.
   const { route } = harness({
-    assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
+    resource: MIRROR_RESOURCE, assessment: { ...ASSESSMENT, request_id: `${ACCOUNT}-0000000000000000` },
     planOutputs: ASKED,
     noChanges: true,
   });
-  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  const detail = await route['GET /api/plans/:id']({ params: { id: MIRROR_PLAN_ID } });
   const answer = await route['POST /api/plans/:id/analysis']({
-    params: { id: PLAN_ID }, body: { engine: 'rules' },
+    params: { id: MIRROR_PLAN_ID }, body: { engine: 'rules' },
   });
   assert.equal(detail.assessment_sha256, null);
   assert.notEqual(answer.impact_sha256, null,
@@ -1894,8 +1935,8 @@ function applied({ dispatch = [DISPATCHED('alice'), DISPATCHED('bob')], results 
   })) markers[RETRY_RESULT(user)] = JSON.stringify(body);
   for (const key of locks) markers[key] = JSON.stringify({ request_id: REQUEST });
   return harness({
-    outcome: {
-      schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice',
+    resource: MIRROR_RESOURCE, outcome: {
+      schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: MIRROR_RESOURCE,
       decision: 'approve', reviewer: 'kim', applied: true, detail: 'Apply complete!',
       inline_state: 'dispatched', passrole_dispatch: dispatch, retries: [],
     },
@@ -1908,7 +1949,7 @@ const retry = (extra = {}) => ({ users: ['alice'], reviewer: 'someone', ...extra
 test('a retry names the failed target and nothing about the grant itself', async () => {
   const { route, s3 } = applied();
   const answer = await route['POST /api/plans/:id/passrole-retry']({
-    params: { id: PLAN_ID }, body: retry(),
+    params: { id: MIRROR_PLAN_ID }, body: retry(),
   });
   assert.ok(answer.written);
 
@@ -1924,8 +1965,8 @@ test('a retry names the failed target and nothing about the grant itself', async
 
 test('a retry gets its own request id, so two of them are two objects', async () => {
   const { route, s3 } = applied();
-  await route['POST /api/plans/:id/passrole-retry']({ params: { id: PLAN_ID }, body: retry() });
-  await route['POST /api/plans/:id/passrole-retry']({ params: { id: PLAN_ID }, body: retry() });
+  await route['POST /api/plans/:id/passrole-retry']({ params: { id: MIRROR_PLAN_ID }, body: retry() });
+  await route['POST /api/plans/:id/passrole-retry']({ params: { id: MIRROR_PLAN_ID }, body: retry() });
 
   const keys = s3.puts.filter((p) => p.key.startsWith('applier/')).map((p) => p.key);
   assert.equal(keys.length, 2);
@@ -1943,7 +1984,7 @@ test('a retry repeats the act it is retrying and never the opposite one', async 
     dispatch: [DISPATCHED('alice', 'revoke')],
     results: { alice: { state: 'failed', ok: false, reason: 'AccessDenied' } },
   });
-  await route['POST /api/plans/:id/passrole-retry']({ params: { id: PLAN_ID }, body: retry() });
+  await route['POST /api/plans/:id/passrole-retry']({ params: { id: MIRROR_PLAN_ID }, body: retry() });
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.deepEqual(marker.passrole_revoke_from, ['alice']);
   assert.equal('passrole_grant_to' in marker, false,
@@ -1954,7 +1995,7 @@ test('a writer that finished cannot be retried', async () => {
   const { route } = applied();
   await assert.rejects(
     () => route['POST /api/plans/:id/passrole-retry']({
-      params: { id: PLAN_ID }, body: retry({ users: ['bob'] }),
+      params: { id: MIRROR_PLAN_ID }, body: retry({ users: ['bob'] }),
     }),
     (err) => err.status === 409 && /이미 부여가 적용되어 있다/.test(err.message),
   );
@@ -1968,7 +2009,7 @@ test('a lock with no result cannot be retried, and the message says why', async 
   });
   await assert.rejects(
     () => route['POST /api/plans/:id/passrole-retry']({
-      params: { id: PLAN_ID }, body: retry({ users: ['carol'] }),
+      params: { id: MIRROR_PLAN_ID }, body: retry({ users: ['carol'] }),
     }),
     (err) => err.status === 409 && /결과를 남기지 않았다/.test(err.message),
   );
@@ -1980,7 +2021,7 @@ test('a retry cannot name somebody this decision never dispatched', async () => 
   const { route } = applied();
   await assert.rejects(
     () => route['POST /api/plans/:id/passrole-retry']({
-      params: { id: PLAN_ID }, body: retry({ users: ['mallory'] }),
+      params: { id: MIRROR_PLAN_ID }, body: retry({ users: ['mallory'] }),
     }),
     (err) => err.status === 409 && /발송한 대상이 아니다/.test(err.message),
   );
@@ -1995,7 +2036,7 @@ test('a retry needs a name and at least one target', async () => {
     [retry({ users: 'alice' }), 'not an array'],
   ]) {
     await assert.rejects(
-      () => route['POST /api/plans/:id/passrole-retry']({ params: { id: PLAN_ID }, body }),
+      () => route['POST /api/plans/:id/passrole-retry']({ params: { id: MIRROR_PLAN_ID }, body }),
       (err) => err.status === 400, why,
     );
   }
@@ -2029,9 +2070,10 @@ test('a retry that is written survives a sweep that is not', async () => {
   // presses again, taking a lock over twice.
   const base = applied();
   const { route, s3 } = harness({
+    resource: MIRROR_RESOURCE,
     refreshFails: true,
     outcome: {
-      schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice',
+      schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: MIRROR_RESOURCE,
       decision: 'approve', reviewer: 'kim', applied: true, detail: 'Apply complete!',
       inline_state: 'dispatched', passrole_dispatch: [DISPATCHED('alice')], retries: [],
     },
@@ -2042,7 +2084,7 @@ test('a retry that is written survives a sweep that is not', async () => {
   });
   assert.ok(base);
   const answer = await route['POST /api/plans/:id/passrole-retry']({
-    params: { id: PLAN_ID }, body: retry(),
+    params: { id: MIRROR_PLAN_ID }, body: retry(),
   });
   assert.ok(answer.written);
   assert.ok(s3.puts.some((p) => p.key.startsWith('applier/')));
@@ -2122,14 +2164,14 @@ const revocation = (extra = {}) => ({ users: ['Taeyoung'], reviewer: 'someone', 
 test('a grant can be taken back on a plan that was already applied', async () => {
   // The whole point. This is the state in which every other path is shut.
   const { route, s3 } = harness({
-    planOutputs: HELD,
+    resource: MIRROR_RESOURCE, planOutputs: HELD,
     outcome: {
       schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice',
       decision: 'approve', reviewer: 'kim', applied: true, detail: 'Apply complete!',
     },
   });
   const answer = await route['POST /api/plans/:id/passrole-revoke']({
-    params: { id: PLAN_ID }, body: revocation(),
+    params: { id: MIRROR_PLAN_ID }, body: revocation(),
   });
   assert.ok(answer.written);
 
@@ -2145,7 +2187,7 @@ test('the same plan cannot be decided again, which is why this route exists', as
   // Pinned so the two stay in step. If the decision route ever stopped refusing, this route would
   // be a second way to do the same thing rather than the only way to do this one.
   const { route } = harness({
-    planOutputs: HELD,
+    resource: MIRROR_RESOURCE, planOutputs: HELD,
     outcome: {
       schema: 1, request_id: REQUEST, account_id: ACCOUNT, resource: 'ps-alice',
       decision: 'approve', reviewer: 'kim', applied: true, detail: 'Apply complete!',
@@ -2153,7 +2195,7 @@ test('the same plan cannot be decided again, which is why this route exists', as
   });
   await assert.rejects(
     () => route['POST /api/plans/:id/decision']({
-      params: { id: PLAN_ID },
+      params: { id: MIRROR_PLAN_ID },
       body: decision({ passrole_revoke_from: ['Taeyoung'] }),
     }),
     (err) => err.status === 409 && /already applied/.test(err.message),
@@ -2163,10 +2205,10 @@ test('the same plan cannot be decided again, which is why this route exists', as
 test('only somebody the plan records as holding the grant can be revoked', async () => {
   // The list is a container's reading of the mirror role's own tags, not something this tier
   // authored - the same rule the grant path follows against passrole_requested_by.
-  const { route } = harness({ planOutputs: HELD });
+  const { route } = harness({ resource: MIRROR_RESOURCE, planOutputs: HELD });
   await assert.rejects(
     () => route['POST /api/plans/:id/passrole-revoke']({
-      params: { id: PLAN_ID }, body: revocation({ users: ['mallory'] }),
+      params: { id: MIRROR_PLAN_ID }, body: revocation({ users: ['mallory'] }),
     }),
     (err) => err.status === 409 && /가지고 있지 않습니다/.test(err.message),
   );
@@ -2174,7 +2216,7 @@ test('only somebody the plan records as holding the grant can be revoked', async
 
 test('a role that does not exist yet has no statement to remove', async () => {
   const { route } = harness({
-    planOutputs: {
+    resource: MIRROR_RESOURCE, planOutputs: {
       ...HELD,
       // The ordinary shape for a plan that CREATES the role: terraform cannot say the ARN yet.
       passrole_target_arn: { actions: ['create'], after: null, after_unknown: true },
@@ -2182,14 +2224,14 @@ test('a role that does not exist yet has no statement to remove', async () => {
   });
   await assert.rejects(
     () => route['POST /api/plans/:id/passrole-revoke']({
-      params: { id: PLAN_ID }, body: revocation(),
+      params: { id: MIRROR_PLAN_ID }, body: revocation(),
     }),
     (err) => err.status === 409 && /미러 역할이 아직 만들어지지 않았습니다/.test(err.message),
   );
 });
 
 test('a withdrawal needs a name and at least one target', async () => {
-  const { route } = harness({ planOutputs: HELD });
+  const { route } = harness({ resource: MIRROR_RESOURCE, planOutputs: HELD });
   for (const [body, why] of [
     [revocation({ reviewer: '' }), 'reviewer'],
     [revocation({ users: [] }), 'no target'],
@@ -2197,16 +2239,16 @@ test('a withdrawal needs a name and at least one target', async () => {
     [revocation({ users: 'Taeyoung' }), 'not an array'],
   ]) {
     await assert.rejects(
-      () => route['POST /api/plans/:id/passrole-revoke']({ params: { id: PLAN_ID }, body }),
+      () => route['POST /api/plans/:id/passrole-revoke']({ params: { id: MIRROR_PLAN_ID }, body }),
       (err) => err.status === 400, why,
     );
   }
 });
 
 test('several holders can be taken back in one act', async () => {
-  const { route, s3 } = harness({ planOutputs: HELD });
+  const { route, s3 } = harness({ resource: MIRROR_RESOURCE, planOutputs: HELD });
   await route['POST /api/plans/:id/passrole-revoke']({
-    params: { id: PLAN_ID }, body: revocation({ users: ['TestUser', 'Taeyoung', 'Taeyoung'] }),
+    params: { id: MIRROR_PLAN_ID }, body: revocation({ users: ['TestUser', 'Taeyoung', 'Taeyoung'] }),
   });
   const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
   assert.deepEqual(marker.passrole_revoke_from, ['Taeyoung', 'TestUser'], 'sorted and deduplicated');
@@ -2451,7 +2493,7 @@ test('an earlier assessment does not open the editor', async () => {
   // It carries no digest, so the decision route refuses any restriction composed from it. An open
   // form there is one whose submission is refused after the approver has filled it in.
   const { route } = harness({
-    assessment: {
+    resource: MIRROR_RESOURCE, assessment: {
       ...ASSESSMENT,
       request_id: `${ACCOUNT}-0000000000000000`,
       permission_set_name: `${ACCOUNT}-alice`,
@@ -2460,8 +2502,109 @@ test('an earlier assessment does not open the editor', async () => {
     planOutputs: ASKED,
     noChanges: true,
   });
-  const detail = await route['GET /api/plans/:id']({ params: { id: PLAN_ID } });
+  const detail = await route['GET /api/plans/:id']({ params: { id: MIRROR_PLAN_ID } });
   assert.equal(detail.assessment_source, 'earlier');
   assert.equal(detail.assessment_sha256, null);
   assert.equal(detail.restrictions_in_force, null);
+});
+
+
+// ---- which digest an approval binds by ---------------------------------------------------------
+//
+// The applier decides that from the RESOURCE NAME, so the marker has to carry the right one and
+// this route has to check the right one. A ps-* prefix has no plan file at all - the restriction is
+// decided after the inspection, so the document cannot exist until the decision does - and what
+// binds an approval instead is the digest of the two states in change.json.
+
+test('a composed approval carries the change digest, and no plan digests at all', async () => {
+  const { route, s3 } = harness();
+  assert.ok(await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID }, body: decision(),
+  }));
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal(marker.resource, 'ps-alice');
+  assert.equal(marker.change_sha256, CHANGES);
+  // The applier reads the resource name and requires change_sha256 for a ps-* one; the other two
+  // are absent on this path and it does not ask for them.
+  assert.equal(marker.changes_sha256, null);
+  assert.equal(marker.plan.tfplan_sha256, null);
+});
+
+test('a terraform approval still carries the plan digests, and no change digest', async () => {
+  const { route, s3, planId } = harness({ resource: MIRROR_RESOURCE });
+  assert.ok(await route['POST /api/plans/:id/decision']({
+    params: { id: planId }, body: decision(),
+  }));
+  const marker = JSON.parse(s3.puts.find((p) => p.key.startsWith('applier/')).body);
+  assert.equal(marker.changes_sha256, CHANGES);
+  assert.ok(marker.plan.tfplan_sha256);
+  assert.equal(marker.change_sha256, null);
+});
+
+test('a composed decision names the change it was made about, and a stale one is refused',
+  async () => {
+    // The prefix is overwritten in place by every inspection, so between the page rendering the two
+    // states and this request arriving, an edit can have replaced them. Without this the server
+    // would read the NEW change, record its digest, and file an approval for something nobody saw -
+    // and every downstream check would pass, because marker and bucket would agree perfectly.
+    const { route } = harness();
+    await assert.rejects(
+      () => route['POST /api/plans/:id/decision']({
+        params: { id: PLAN_ID }, body: decision({ expected_changes_sha256: 'f'.repeat(64) }),
+      }),
+      (err) => /re-inspected since it was shown/.test(err.message),
+    );
+    await assert.rejects(
+      () => route['POST /api/plans/:id/decision']({
+        params: { id: PLAN_ID }, body: decision({ expected_changes_sha256: '' }),
+      }),
+      (err) => /expected_changes_sha256 is required/.test(err.message),
+    );
+  });
+
+test('a composed prefix with no change digest cannot be approved at all', async () => {
+  // The one thing that says the two states shown are the two states the applier will compare
+  // against. Without it there is nothing binding the approval, so there is nothing to approve.
+  const { route } = harness({ omit: ['change.sha256'] });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({ params: { id: PLAN_ID }, body: decision() }),
+    (err) => /has no change.sha256/.test(err.message),
+  );
+});
+
+test('a composed prefix with no change.json is not a plan and is refused as one', async () => {
+  const { route } = harness({ omit: ['change.json'] });
+  await assert.rejects(
+    () => route['POST /api/plans/:id/decision']({ params: { id: PLAN_ID }, body: decision() }),
+    (err) => /has no change.json/.test(err.message),
+  );
+});
+
+
+test('the page binds by the digest the domain uses, and never by the other one', () => {
+  // Structural, because the runner cannot load the .tsx. The tests above prove the SERVER checks
+  // the right digest; this is about the other half - a page that sent changes_sha256 on a composed
+  // plan would send an empty string, and every approval of a ps-* change would come back 400 with
+  // nothing on screen saying why.
+  const page = readFileSync(new URL('../src/components/PlanPage.tsx', import.meta.url), 'utf8');
+  assert.match(page, /detail\.composed \? detail\.change_sha256 : detail\.changes_sha256/,
+               'the decision does not name the digest this plan binds by');
+
+  const detail = readFileSync(
+    new URL('../src/components/PlanDetail.tsx', import.meta.url), 'utf8',
+  );
+  // One local, computed once, because the same question is asked by the change table, the footer,
+  // the warning and the button - and one of them asked the wrong way round is a button offering to
+  // approve a plan with nothing binding it.
+  assert.match(detail, /const binding = detail\.composed \? detail\.change_sha256 : detail\.changes_sha256/,
+               'the page derives the binding somewhere other than in one place');
+  assert.match(detail, /disabled=\{busy \|\| !binding \|\|/,
+               'the approve button is gated on a digest that may belong to the other domain');
+  // And the refusal is rendered at all. It is the only record of a check-7 rejection: a refusal
+  // writes no outcome, so nothing else on this page would ever mention it.
+  assert.match(detail, /detail\.mismatch \?/,
+               'a refused approval leaves no trace on the page it was made from');
+  assert.match(detail, /detail\.mismatch\.findings\.map/,
+               'only some of the findings reach the page, and the three send a person to '
+               + 'different places');
 });

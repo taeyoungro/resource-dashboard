@@ -60,6 +60,32 @@ const actionClass = (actions: string[]) => {
 };
 
 /**
+ * One side of a composed change, as a line a person reads.
+ *
+ * A list is joined rather than JSON-dumped because every list here is a list of names - policy
+ * ARNs, customer managed references - and an approver comparing two of them is comparing names.
+ * Anything else falls back to JSON, which is honest about not knowing the shape.
+ */
+function describeState(value: unknown): string {
+  if (value === null || value === undefined) return "없음";
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "없음";
+    return value
+      .map((v) => (typeof v === "string" ? v : JSON.stringify(v)))
+      .join("\n");
+  }
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+/** The three verdicts, in the words that say what a person has to do about each. */
+const VERDICT: Record<string, string> = {
+  more: "더 한다",
+  less: "덜 한다",
+  moved: "움직였다",
+};
+
+/**
  * The PassRole requests on this plan, and the one place they can be confirmed.
  *
  * Deliberately its own section, below what the plan changes and above the plan text. A request is
@@ -677,6 +703,19 @@ export function PlanDetail({
   // see. The form is shown read-only and the button refuses; see the notice below.
   const inForceUnknown = detail.restrictions_in_force === null;
   /**
+   * The digest THIS plan's approval binds by, and what it moves - one pair of names for two domains.
+   *
+   * The alternative was asking `detail.composed` at every use, and there are eight of them between
+   * the change table, the footer, the warning and the button. One of them being asked the wrong way
+   * round is a button that offers to approve a plan with nothing binding it.
+   *
+   *   binding  change.sha256 on a composed plan, changes.sha256 otherwise. Both null means the
+   *            inspector that wrote this prefix did not write one, and nothing can be approved
+   *   moves    the change list this domain fills. Never both, so the empty one is not a claim
+   */
+  const binding = detail.composed ? detail.change_sha256 : detail.changes_sha256;
+  const moves = detail.composed ? detail.composed_changes : detail.changes;
+  /**
    * Why a restriction cannot be composed on this plan right now, as a sentence - or null when it
    * can. The risk cards print it where the 차단 button would be.
    *
@@ -950,12 +989,36 @@ export function PlanDetail({
       {view === "passrole" ? null : (
       <>
       <h3>바뀌는 것</h3>
-      {detail.changes.length === 0 ? (
+      {moves.length === 0 ? (
         <div className="empty">
-          변경 없음. 트윈이 이미 spec과 일치하므로 결정할 것이 없습니다. 이 계획이 저장된 이유는
+          변경 없음. {detail.composed
+            ? "권한 세트가 이미 spec이 요구하는 것을 들고 있으므로 결정할 것이 없습니다."
+            : "트윈이 이미 spec과 일치하므로 결정할 것이 없습니다."} 이 계획이 저장된 이유는
           앞의 계획을 덮기 위해서입니다 — 건너뛰었다면 이미 되돌린 수정을 승인할 수 있는 계획이
           그대로 남았을 것입니다.
         </div>
+      ) : detail.composed ? (
+        /* No terraform action verb, because there is no plan yet: the applier composes the
+           document after this decision. What can be shown instead is which part of the permission
+           set moves and what it moves between - which is what the two states actually say. */
+        <table className="policy-table">
+          <thead>
+            <tr>
+              <th>항목</th>
+              <th>지금</th>
+              <th>승인 후</th>
+            </tr>
+          </thead>
+          <tbody>
+            {detail.composed_changes.map((c) => (
+              <tr key={c.key}>
+                <td>{c.key}</td>
+                <td className="muted">{describeState(c.before)}</td>
+                <td>{describeState(c.after)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       ) : (
         <table className="policy-table">
           <thead>
@@ -979,12 +1042,33 @@ export function PlanDetail({
         </table>
       )}
 
-      <h3>terraform plan</h3>
-      <pre className="plan">{detail.plan_text || "plan.txt 가 없습니다."}</pre>
+      <h3>{detail.composed ? "권한 세트가 들게 되는 것" : "terraform plan"}</h3>
+      {detail.composed ? (
+        <div className="meta small">
+          움직이지 않는 항목도 함께 보입니다. 합성은 관리자 제한 묶음을 통째로 교체하므로,
+          승인자는 무엇이 바뀌는지만이 아니라 권한 세트가 결국 무엇을 들게 되는지 전부 볼 수
+          있어야 합니다.
+        </div>
+      ) : null}
+      <pre className="plan">
+        {detail.plan_text
+          || (detail.composed ? "changes.txt 가 없습니다." : "plan.txt 가 없습니다.")}
+      </pre>
 
       <details>
-        <summary>생성된 구성 (main.tf.json)</summary>
-        <pre className="plan">{detail.config_json || "main.tf.json 이 없습니다."}</pre>
+        <summary>
+          {detail.composed ? "검사기가 읽은 선언 (spec.json)" : "생성된 구성 (main.tf.json)"}
+        </summary>
+        {detail.composed ? (
+          <div className="meta small">
+            생성된 문서가 아니라 <strong>선언</strong>입니다. 제한은 이 결정 뒤에 정해지므로
+            문서는 아직 없고, 적용기가 승인이 들어온 뒤 이것으로 합성합니다.
+          </div>
+        ) : null}
+        <pre className="plan">
+          {detail.config_json
+            || (detail.composed ? "spec.json 이 없습니다." : "main.tf.json 이 없습니다.")}
+        </pre>
       </details>
       </>
       )}
@@ -1022,15 +1106,32 @@ export function PlanDetail({
       {/* Both values go into the marker and both are checked before anything is applied. Worth
           being able to read them here: if a decision is ever disputed, these are what the applier
           compared against. The first is the file itself, the second is what it will do. */}
-      <div className="meta small">
-        tfplan sha256: <code>{detail.plan_file_sha256 ?? "계산할 수 없음"}</code>
-        {detail.plan_bytes !== null ? ` · ${detail.plan_bytes} bytes` : ""}
-      </div>
-      <div className="meta small">
-        변경 다이제스트: <code>{detail.changes_sha256 ?? "없음"}</code>
-      </div>
+      {detail.composed ? (
+        <div className="meta small">
+          변경 다이제스트: <code>{detail.change_sha256 ?? "없음"}</code>
+          {detail.plan_bytes !== null ? ` · change.json ${detail.plan_bytes} bytes` : ""}
+        </div>
+      ) : (
+        <>
+          <div className="meta small">
+            tfplan sha256: <code>{detail.plan_file_sha256 ?? "계산할 수 없음"}</code>
+            {detail.plan_bytes !== null ? ` · ${detail.plan_bytes} bytes` : ""}
+          </div>
+          <div className="meta small">
+            변경 다이제스트: <code>{detail.changes_sha256 ?? "없음"}</code>
+          </div>
+        </>
+      )}
 
-      {detail.changes_sha256 ? null : (
+      {binding ? null : detail.composed ? (
+        <div className="row-warn">
+          이 변경에는 <code>change.sha256</code>이 없어 <strong>승인할 수 없습니다.</strong> 그
+          값을 쓰지 않던 검사기가 만든 것입니다. 이 도메인에는 얼어붙은 계획 파일이 없고 — 제한이
+          검사 뒤에 정해지므로 담을 수가 없습니다 — 대신 적용기가 결정 뒤에 문서를 합성하고 자기
+          계획을 위의 두 상태와 대조합니다. 그 다이제스트가 위에 보이는 두 상태가 바로 그 두
+          상태라고 말하는 유일한 값입니다. 자원을 다시 변경해 새 검사를 받으면 됩니다.
+        </div>
+      ) : (
         <div className="row-warn">
           이 계획에는 <code>changes.sha256</code>이 없어 <strong>승인할 수 없습니다.</strong> 그
           값을 쓰지 않던 검사기가 만든 계획입니다. 계획 접두사는 객체 다섯 개이고, 일부만 덮어써지면
@@ -1039,6 +1140,41 @@ export function PlanDetail({
           적용할 파일을 설명하는지 확인합니다. 자원을 다시 변경해 새 계획을 받으면 됩니다.
         </div>
       )}
+
+      {/* Why the applier REFUSED, when it did. Terminal in the opposite direction from the outcome
+          below: an outcome says the decision was dealt with, and this says it was not - the marker
+          is still in the bucket and nothing moves until somebody inspects again and decides again.
+          Every finding, because the three verdicts send a person to different places. */}
+      {detail.mismatch ? (
+        <div className="row-warn">
+          <strong>적용기가 거부했습니다</strong> — 합성한 계획이 승인된 두 상태와{" "}
+          {detail.mismatch.findings.length}군데 어긋납니다.
+          {detail.mismatch.refused_at ? ` (${detail.mismatch.refused_at})` : ""}
+          <table className="policy-table">
+            <thead>
+              <tr>
+                <th>판정</th>
+                <th>항목</th>
+                <th>값</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.mismatch.findings.map((f, i) => (
+                <tr key={`${f.verdict}-${f.key}-${i}`}>
+                  <td>{VERDICT[f.verdict] ?? f.verdict}</td>
+                  <td>{f.key}</td>
+                  <td className="muted">{describeState(f.value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="meta small">
+            「움직였다」는 합성이 틀린 것이 아니라 <strong>계정이 승인 밑에서 바뀐 것</strong>입니다.
+            어느 판정이든 자원을 다시 검사하고 다시 결정해야 합니다 — 승인 마커는 아직 버킷에
+            남아 있고, 아무것도 적용되지 않았습니다.
+          </div>
+        </div>
+      ) : null}
 
       {detail.outcome ? (
         <div className="row-warn">
@@ -1086,7 +1222,7 @@ export function PlanDetail({
               exactly one somebody may want to refuse. */}
           <button
             className="btn-approve"
-            disabled={busy || !detail.changes_sha256 || !detail.has_changes || !!detail.outcome}
+            disabled={busy || !binding || !detail.has_changes || !!detail.outcome}
             onClick={() => submit("approve")}
           >
             승인

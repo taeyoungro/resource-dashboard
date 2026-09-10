@@ -28,6 +28,58 @@ const MARKER_SUFFIX = '.json';
 const CONFIG_ARTIFACT = 'main.tf.json';
 const PLAN_ARTIFACT = 'tfplan';
 
+/**
+ * The domain whose document nobody has planned yet, and what it stores instead.
+ *
+ * A ps-* prefix holds no tfplan and no main.tf.json, because there is nothing to plan at inspection
+ * time: the administrator's restriction is decided AFTER the inspection, so a frozen plan could not
+ * contain it. The applier composes the document from spec.json once the decision exists, plans what
+ * it composed, and checks that plan against the two states below.
+ *
+ *   spec.json      what the inspector READ. The applier composes from this, so the approval binds
+ *                  to the declaration rather than to a file. It is also what names the account and
+ *                  the resource here, in place of main.tf.json
+ *   change.json    {"before": ..., "after": ...} - what the permission set holds and will hold
+ *   change.sha256  the digest of change.json's canonical form. COPIED into the marker, never
+ *                  computed here, for the reason changes.sha256 was: this component must not author
+ *                  the value that authorises its own approval
+ *   changes.txt    the same two states for a person to read, in place of plan.txt
+ *   mismatch.json  why the applier refused, when it refused at check 7
+ *
+ * See event_pipeline code/inspector/inspector/change.py and code/applier/applier/compose.py.
+ */
+const COMPOSED_PREFIX = 'ps-';
+const SPEC_ARTIFACT = 'spec.json';
+const CHANGE_ARTIFACT = 'change.json';
+const CHANGE_DIGEST_ARTIFACT = 'change.sha256';
+const CHANGE_TEXT_ARTIFACT = 'changes.txt';
+
+/**
+ * Why the applier refused an approval at check 7, written into the plan prefix.
+ *
+ * 무엇인가   합성한 계획과 승인된 두 상태가 어긋난 자리 전부. 판정(더 한다 · 덜 한다 · 움직였다)과
+ *            어느 열의 어느 값인지
+ * 어디 있나  상태 버킷의 <계정>/<자원>/plan/mismatch.json
+ * 누가 쓰나  적용기 하나, 검사 7 이 거부한 실행에서만 (code/applier/applier/mismatch.py)
+ * 누가 읽나  여기 하나. 승인자가 무엇을 다시 해야 하는지 아는 유일한 곳이다
+ *
+ * Read unmatched to the request id, unlike outcome.json. A refusal writes NO outcome - the marker
+ * stays and the decision is not processed - so the only thing that says why is this, and matching
+ * it to a request id would hide it the moment the resource was inspected again. It is cleared by
+ * the next inspection overwriting the prefix, which is the same rule refusal.json lives by.
+ */
+const MISMATCH_ARTIFACT = 'mismatch.json';
+
+/** Whether this resource's document is composed by the applier rather than planned by the inspector.
+ *
+ * Read off the RESOURCE NAME, which is what the applier's marker parser does with the same prefix -
+ * see code/applier/applier/marker.py COMPOSED_PREFIX. Both have to answer this the same way or the
+ * page would show a plan the applier will not accept an approval for.
+ */
+export function composesDocument(resource) {
+  return typeof resource === 'string' && resource.startsWith(COMPOSED_PREFIX);
+}
+
 // Written last by the inspector, and therefore what says the prefix holds a finished plan rather
 // than an upload in progress. It also carries the request id, which stopped being part of the key
 // when plans moved to one-per-governed-resource.
@@ -180,8 +232,9 @@ export function planPrefixFromId(planId) {
   if (colon !== 12) return null;
   const prefix = `${planId.slice(0, colon)}/${planId.slice(colon + 1)}/plan/`;
   // Built and then checked against the same pattern that reads keys, so the two cannot drift and
-  // a crafted id cannot produce a key shape the reader would never have accepted.
-  return planIdFromKey(`${prefix}tfplan`) ? prefix : null;
+  // a crafted id cannot produce a key shape the reader would never have accepted. The artifact name
+  // is a placeholder for the shape check and nothing more - a composed prefix holds no tfplan.
+  return planIdFromKey(`${prefix}artifact`) ? prefix : null;
 }
 
 /** The backend key is <account id>/<resource>/terraform.tfstate - see generator/twin.py.
@@ -195,6 +248,22 @@ export function identityFromConfig(configJson) {
   const parts = key.split('/');
   if (parts.length < 3) return { accountId: null, resource: null };
   return { accountId: parts[0], resource: parts[1] };
+}
+
+/** The same two values for a composed prefix, from spec.json - there is no generated document.
+ *
+ * From the inspector's own artifact rather than from the key, for the reason above: the key is a
+ * listing result and this is what the container that read the account wrote down. If the two ever
+ * disagree the prefix holds one resource's artifacts under another's name, and a row built from the
+ * key would hide that instead of leaving the row empty.
+ */
+export function identityFromSpec(specJson) {
+  const accountId = specJson?.account_id;
+  const resource = specJson?.spec_role_name;
+  return {
+    accountId: typeof accountId === 'string' && accountId.trim() ? accountId.trim() : null,
+    resource: typeof resource === 'string' && resource.trim() ? resource.trim() : null,
+  };
 }
 
 /**
@@ -219,9 +288,20 @@ export function permissionSetFromConfig(configJson) {
  *
  * 무엇인가   이 권한 세트에 지금 걸려 있는 제한 전부를 승인자가 고른 결정 그대로. 문장이 아니다 -
  *            체크박스를 되살리려면 결정이어야 하고, 문장에서는 intent 가 복원되지 않는다
- * 어디 있나  마커 버킷의 inline_result/<계정>:<권한 세트>.json, 키 restrictions_in_force
- * 누가 쓰나  인라인 작성기 하나 (code/inline_writer/inline_writer/result.py)
+ * 어디 있나  합성 도메인이면 계획 접두사의 outcome.json 의 outputs.restrictions_in_force —
+ *            terraform 상태의 출력값을 적용기가 복사한 것이다. 그 밖에는 마커 버킷의
+ *            inline_result/<계정>:<권한 세트>.json 의 restrictions_in_force
+ * 누가 쓰나  각각 하나다. 적용기(code/applier/applier/outcome.py, terraform apply 가 문서와 이
+ *            값을 같은 한 번에 쓴다)이거나 인라인 작성기(code/inline_writer/.../result.py)
  * 누가 읽나  여기, 그리고 계획 상세의 제한 편집기가 이 값으로 폼을 시드한다
+ *
+ * 대시보드가 terraform 상태를 직접 읽지 않는 이유는 못 읽기 때문이다 —
+ * opt-stack-dashboard-host.yaml 의 NeverReadTerraformState 가 <상태 버킷>/*&#47;*&#47;terraform.tfstate*
+ * 를 명시적으로 거부한다. 상태에는 피부여자의 principal id 와 합성된 정책 본문이 통째로 들어 있다.
+ *
+ * The argument for one shape holding both: this takes a DOCUMENT and reads one key off it, so the
+ * caller decides which document. Two functions would be two places to keep the null/[] distinction
+ * right, and that distinction is the entire contract.
  *
  * null and [] are different answers and the editor acts on the difference. [] is "nothing is
  * restricted" and an empty form is then correct. null is "no run has said", and an empty form would
@@ -320,6 +400,33 @@ export function changesFromPlan(planJson) {
       name: change.name ?? '?',
       actions,
     });
+  }
+  return changes;
+}
+
+/**
+ * The same list for a composed prefix, from the two states in change.json.
+ *
+ * There is no plan and therefore no terraform action verb. What the page can say instead is which
+ * part of the permission set moves and what it moves from and to, which is what a person reading a
+ * ps-* change actually needs - the resource addresses in a domain 3 plan were one permission set
+ * and a row per attachment, and they told nobody anything the values do not.
+ *
+ * A key that does not move is left OUT of this list and stays in the text beside it. The text is
+ * what shows the whole of what will be held; this is what shows what a decision changes, and a list
+ * where everything is a row is a list nobody reads to the end.
+ */
+export function changesFromChange(changeJson) {
+  const before = changeJson?.before;
+  const after = changeJson?.after;
+  if (!before || !after || typeof before !== 'object' || typeof after !== 'object') return [];
+
+  const changes = [];
+  for (const key of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
+    const held = before[key];
+    const coming = after[key];
+    if (JSON.stringify(held ?? null) === JSON.stringify(coming ?? null)) continue;
+    changes.push({ key, before: held ?? null, after: coming ?? null });
   }
   return changes;
 }
@@ -622,8 +729,13 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
   const staged = [];
   for (const { planId, artifacts } of byPlan.values()) {
     const prefix = planPrefixFromId(planId);
-    const plan = artifacts.get(PLAN_ARTIFACT);
-    const configObject = artifacts.get(CONFIG_ARTIFACT);
+    // Which pair of artifacts this domain stores its plan in. The name is read from the plan id
+    // rather than from anything in the prefix, because the question has to be answerable BEFORE
+    // deciding which objects to require - a prefix judged by what happens to be in it would call a
+    // half-uploaded composed change a complete terraform plan.
+    const composed = composesDocument(planId.slice(planId.indexOf(':') + 1));
+    const plan = artifacts.get(composed ? CHANGE_ARTIFACT : PLAN_ARTIFACT);
+    const configObject = artifacts.get(composed ? SPEC_ARTIFACT : CONFIG_ARTIFACT);
     const manifestObject = artifacts.get(MANIFEST_ARTIFACT);
 
     // request.json is written last, so a prefix without it is an upload in progress rather than a
@@ -672,11 +784,17 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
     let mirrorRoleName = null;
     try {
       const document = await getJson(s3, config.stateBucket, configObject.key);
-      identity = identityFromConfig(document);
-      requesters = requestersFromConfig(document);
-      unavailable = unavailableFromConfig(document);
-      holders = holdersFromConfig(document);
-      mirrorRoleName = mirrorRoleFromConfig(document);
+      // A composed prefix holds a declaration and not a document, so the only thing this read can
+      // answer is the identity. The four PassRole lists below are outputs of the MIRROR ROLE plan -
+      // domain 1 - and a ps-* prefix never carried them under either layout, so nothing is lost by
+      // leaving them empty here rather than reaching for an artifact that would not have them.
+      identity = composed ? identityFromSpec(document) : identityFromConfig(document);
+      if (!composed) {
+        requesters = requestersFromConfig(document);
+        unavailable = unavailableFromConfig(document);
+        holders = holdersFromConfig(document);
+        mirrorRoleName = mirrorRoleFromConfig(document);
+      }
     } catch (err) {
       errors.push(`${configObject.key}: ${err.message}`);
     }
@@ -1167,27 +1285,38 @@ export async function readPlan(s3, config, planId) {
   const objects = await listPrefix(s3, config.stateBucket, prefix);
   if (objects.length === 0) return null;
 
+  const composed = composesDocument(planId.slice(planId.indexOf(':') + 1));
   const byName = new Map(objects.map((o) => [o.key.slice(prefix.length), o]));
-  const planObject = byName.get(PLAN_ARTIFACT);
+  // What stands in for the saved plan file. On a composed prefix there is none, and change.json is
+  // what the approval binds to instead - so it is what `plan_stored` and the size and timestamp
+  // below are read off, and there is no binary to digest.
+  const planObject = byName.get(composed ? CHANGE_ARTIFACT : PLAN_ARTIFACT);
   const refusalObject = byName.get(REFUSAL_ARTIFACT);
+  const textArtifact = composed ? CHANGE_TEXT_ARTIFACT : 'plan.txt';
+  const configArtifact = composed ? SPEC_ARTIFACT : CONFIG_ARTIFACT;
+  const digestArtifact = composed ? CHANGE_DIGEST_ARTIFACT : DIGEST_ARTIFACT;
 
   const [planText, configJson, planJson, planBytes, digestText, manifest, outcome, withdrawals,
-         refusal] =
+         refusal, mismatch] =
     await Promise.all([
-    byName.has('plan.txt')
-      ? getBytes(s3, config.stateBucket, `${prefix}plan.txt`).then((b) => b.toString('utf-8'))
+    byName.has(textArtifact)
+      ? getBytes(s3, config.stateBucket, `${prefix}${textArtifact}`).then((b) => b.toString('utf-8'))
       : Promise.resolve(''),
-    byName.has(CONFIG_ARTIFACT)
-      ? getJson(s3, config.stateBucket, `${prefix}${CONFIG_ARTIFACT}`)
+    byName.has(configArtifact)
+      ? getJson(s3, config.stateBucket, `${prefix}${configArtifact}`)
       : Promise.resolve(null),
-    byName.has('plan.json')
-      ? getJson(s3, config.stateBucket, `${prefix}plan.json`)
+    // change.json on a composed prefix, plan.json otherwise. Both are the machine-readable half of
+    // what the text above says, and both are what the change list on the page is built from.
+    byName.has(composed ? CHANGE_ARTIFACT : 'plan.json')
+      ? getJson(s3, config.stateBucket, `${prefix}${composed ? CHANGE_ARTIFACT : 'plan.json'}`)
       : Promise.resolve(null),
-    planObject
+    // No binary on a composed prefix, so nothing to read and nothing to digest. plan_file_sha256
+    // stays null there and the approval binds to the change digest instead.
+    !composed && planObject
       ? getBytes(s3, config.stateBucket, `${prefix}${PLAN_ARTIFACT}`)
       : Promise.resolve(null),
-    byName.has(DIGEST_ARTIFACT)
-      ? getBytes(s3, config.stateBucket, `${prefix}${DIGEST_ARTIFACT}`).then((b) =>
+    byName.has(digestArtifact)
+      ? getBytes(s3, config.stateBucket, `${prefix}${digestArtifact}`).then((b) =>
           b.toString('utf-8').trim())
       : Promise.resolve(null),
     byName.has(MANIFEST_ARTIFACT)
@@ -1208,9 +1337,19 @@ export async function readPlan(s3, config, planId) {
     refusalObject
       ? getJson(s3, config.stateBucket, `${prefix}${REFUSAL_ARTIFACT}`).catch(() => null)
       : Promise.resolve(null),
+    // Why the applier refused, when it did. Read unmatched to any request id, because a refusal
+    // writes no outcome - the marker stays and the decision is not processed - so this is the only
+    // record of it, and matching would hide it exactly when a person came looking.
+    byName.has(MISMATCH_ARTIFACT)
+      ? getJson(s3, config.stateBucket, `${prefix}${MISMATCH_ARTIFACT}`).catch(() => null)
+      : Promise.resolve(null),
   ]);
 
-  const identity = identityFromConfig(configJson);
+  // From spec.json on a composed prefix and from the generated document otherwise - the same
+  // substitution the row makes, and it has to be made here too: the account id is what the marker
+  // and the state key are built from, and a null one produces a decision route that 404s on a plan
+  // the list is offering.
+  const identity = composed ? identityFromSpec(configJson) : identityFromConfig(configJson);
   const requestId = typeof manifest?.request_id === 'string' ? manifest.request_id : null;
   const mine = outcomeFor(outcome, requestId);
 
@@ -1262,13 +1401,28 @@ export async function readPlan(s3, config, planId) {
   // Read even when nothing was dispatched. The results map above is filled only when the outcome
   // names work orders, which is the PassRole path; a plan that only restricts names none, and that
   // is exactly the plan whose form this has to fill.
+  //
+  // TWO SOURCES, and which one applies is decided by the domain rather than by which answered.
+  //
+  //   composed   the terraform output the apply itself wrote, copied into outcome.json. The
+  //              document and this value are written by ONE apply, so they cannot disagree - which
+  //              is the whole reason the restriction moved out of the inline writer
+  //   otherwise  the inline writer's own record, which is what wrote the restriction on that path
+  //
+  // The composed read is NOT matched to the request id, unlike everything else read out of
+  // outcome.json. What is standing belongs to the RESOURCE and outlives the inspection that
+  // produced the plan on the page - the same argument the withdrawals are read by - and matching it
+  // would empty the editor on every re-inspection, which is precisely the form that then clears
+  // every restriction the approver could not see.
   const permissionSetName = permissionSetFromConfig(configJson);
-  const inForce = permissionSetName
-    ? await getJson(
-        s3, config.markerBucket,
-        `${config.inlineResultPrefix}${identity.accountId}:${permissionSetName}.json`,
-      ).then(restrictionsInForce).catch(() => null)
-    : null;
+  const inForce = composed
+    ? restrictionsInForce(outcome?.outputs)
+    : permissionSetName
+      ? await getJson(
+          s3, config.markerBucket,
+          `${config.inlineResultPrefix}${identity.accountId}:${permissionSetName}.json`,
+        ).then(restrictionsInForce).catch(() => null)
+      : null;
 
   const passrole = passroleFromPlan(planJson);
   const live = liveGrants({
@@ -1321,6 +1475,31 @@ export async function readPlan(s3, config, planId) {
     // refused, and null when the record describes the inspection that produced the plan standing
     // here - see refusalFor.
     refusal: refusalFor(refusal, requestId, refusalObject),
+
+    // Whether the applier composes this resource's document instead of applying a stored one, and
+    // therefore which of the two digests below an approval has to carry. Sent to the page rather
+    // than re-derived there, so one answer reaches the marker, the screens and the approve route -
+    // three places deriving it from a name is three places to get it wrong.
+    composed,
+
+    // Why the applier REFUSED, when it refused at check 7. Composed domain only, because that is
+    // the only path with a comparison to fail. Null on every other plan and on every run that did
+    // not refuse.
+    //
+    // Terminal in the opposite direction from `outcome`: an outcome says the decision was dealt
+    // with, and this says it was not - the marker is still there and nothing will move until a
+    // person re-inspects and decides again.
+    mismatch: composed && mismatch && typeof mismatch === 'object' ? {
+      request_id: typeof mismatch.request_id === 'string' ? mismatch.request_id : null,
+      change_sha256: typeof mismatch.change_sha256 === 'string' ? mismatch.change_sha256 : '',
+      refused_at: mismatch.refused_at ?? null,
+      // Every finding, not the first. The three verdicts send a person to different places - the
+      // account moved, the composition did more, the composition did less - and one run can
+      // produce more than one kind at once.
+      findings: Array.isArray(mismatch.findings)
+        ? mismatch.findings.filter((f) => f && typeof f === 'object' && !Array.isArray(f))
+        : [],
+    } : null,
     // Whether there is a plan in this prefix AT ALL. False on a resource whose first inspection was
     // refused: the page then holds a reason and nothing to decide, and every other field below is
     // empty because there is nothing to fill it with - not because reading failed.
@@ -1334,7 +1513,18 @@ export async function readPlan(s3, config, planId) {
     // Read from the bucket, not computed. Null when the plan predates the inspector writing it,
     // and such a plan cannot be approved: nothing would establish that the plan.txt shown on this
     // page describes the file the applier is about to run.
-    changes_sha256: isDigest(digestText) ? digestText : null,
+    //
+    // On a composed prefix this is null and change_sha256 below carries the binding instead. The
+    // two are kept apart rather than merged under one name because they answer different questions -
+    // "the description describes the file that will run" against "the two states shown are the two
+    // states the applier will compare its own plan to" - and a reader that could not tell which it
+    // held would compare a shape digest against a plan file.
+    changes_sha256: !composed && isDigest(digestText) ? digestText : null,
+
+    // The digest of change.json, on a composed prefix. COPIED out of change.sha256 and never
+    // computed here, for the same reason changes_sha256 is: the dashboard is the component that is
+    // not trusted, so it must not author the value that authorises its own approval.
+    change_sha256: composed && isDigest(digestText) ? digestText : null,
 
     // The hash of the saved plan file - the file the applier runs, unchanged. This is what the
     // approval binds to. The ETag would not do: it is an MD5, and this is the one place in the
@@ -1343,7 +1533,12 @@ export async function readPlan(s3, config, planId) {
 
     plan_text: planText,
     config_json: configJson ? JSON.stringify(configJson, null, 2) : '',
-    changes: changesFromPlan(planJson),
+    // TWO FIELDS and never both filled, because the two lists are different shapes: a terraform
+    // change names an address and an action verb, and a composed one names a part of the permission
+    // set and what it moves between. One field holding either would make every reader ask which it
+    // had, and `changes` is already read by the sweep row, the analysis route and the page.
+    changes: composed ? [] : changesFromPlan(planJson),
+    composed_changes: composed ? changesFromChange(planJson) : [],
     // Who asked to be able to pass this mirror role, and to which services. Requests, not grants -
     // except granted_to, which IS a grant and is the live one: the inspector's snapshot with the
     // inline writer's own record of what its runs left standing laid over it.

@@ -272,6 +272,52 @@ export interface PlanChange {
   actions: string[];
 }
 
+/**
+ * One part of a permission set that a composed change moves.
+ *
+ * Not a terraform action, because there is no plan yet: the applier composes the document after the
+ * decision, so what the page can show is which part of the permission set moves and what it moves
+ * from and to. A key that does not move is left out of the list and stays in the text beside it -
+ * see server/sweep.js changesFromChange.
+ */
+export interface ComposedChange {
+  key: string;
+  before: unknown;
+  after: unknown;
+}
+
+/**
+ * One place the applier's own plan and the approval disagreed.
+ *
+ * 무엇인가   합성한 계획과 승인된 두 상태가 어긋난 자리 하나. 판정과 어느 열의 어느 값인지
+ * 어디 있나  상태 버킷의 <계정>/<자원>/plan/mismatch.json 의 findings
+ * 누가 쓰나  적용기 하나, 검사 7 이 거부한 실행에서만
+ * 누가 읽나  이 화면 하나
+ *
+ * The three verdicts send a person to different places, which is why the verdict is carried rather
+ * than a single "refused":
+ *
+ *   more   the composition would grant something the approval did not describe
+ *   less   it would grant less. Still refused - applying it would make the record say something
+ *          that did not happen
+ *   moved  the ACCOUNT changed under the approval. Nothing is wrong with the composition; the
+ *          answer is to inspect again rather than to apply against a state that is gone
+ */
+export interface MismatchFinding {
+  verdict: string;
+  key: string;
+  value: unknown;
+  instead_of?: unknown;
+}
+
+/** Why the applier refused an approval at check 7. Null on every run that did not refuse. */
+export interface PlanMismatch {
+  request_id: string | null;
+  change_sha256: string;
+  refused_at: string | null;
+  findings: MismatchFinding[];
+}
+
 export interface PlanDetail {
   plan_id: string;
   /**
@@ -366,16 +412,56 @@ export interface PlanDetail {
    */
   changes_sha256: string | null;
   /**
+   * Whether the applier COMPOSES this resource's document instead of applying a stored one.
+   *
+   * 무엇인가   이 자원의 문서를 검사기가 미리 계획했는가, 적용기가 결정 뒤에 합성하는가
+   * 어디 있나  계획 상세 응답. 서버가 자원 이름에서 유도한다 (server/sweep.js composesDocument)
+   * 누가 쓰나  서버 하나. 화면이 이름을 다시 보고 판단하면 답이 두 개가 된다
+   * 누가 읽나  이 화면(어느 다이제스트를 보내는지), 그리고 승인 경로가 같은 값을 다시 유도한다
+   *
+   * True 면 tfplan 도 main.tf.json 도 없다. 제한이 검사 뒤에 결정되므로 얼어붙은 계획이 그 결정을
+   * 담을 수 없고, 그래서 승인이 묶이는 것은 파일이 아니라 change.json 의 두 상태다.
+   */
+  composed: boolean;
+  /**
+   * The digest of change.json, on a composed plan. This is what such an approval binds to.
+   *
+   * Null on every terraform plan, where changes_sha256 above carries the binding instead. The two
+   * are separate fields because they answer different questions - "the description describes the
+   * file that will run" against "the two states shown are the two the applier will compare its own
+   * plan to" - and one field would let a page send a shape digest where a plan digest belongs.
+   */
+  change_sha256: string | null;
+  /**
    * The saved plan file's own hash. This is what the approval binds to - the applier runs the
    * inspector's file unchanged, because the generated document names a profile rather than a role
    * and is therefore identical whichever container produced it.
+   *
+   * Null on a composed plan. There is no file.
    */
   plan_file_sha256: string | null;
-  /** terraform show, as a person reads it. This is the thing being approved. */
+  /**
+   * terraform show, as a person reads it - or, on a composed plan, changes.txt: the two states the
+   * permission set holds and will hold. This is the thing being approved either way.
+   */
   plan_text: string;
-  /** The generated configuration the plan came from. */
+  /**
+   * The generated configuration the plan came from - or, on a composed plan, the DECLARATION the
+   * inspector read. There is no generated document to show: the applier composes one from this
+   * after the decision, so what a person can read beforehand is what it will compose from.
+   */
   config_json: string;
   changes: PlanChange[];
+  /** The same list for a composed plan, which has no terraform actions to name. */
+  composed_changes: ComposedChange[];
+  /**
+   * Why the applier refused this approval, when it refused at check 7.
+   *
+   * Terminal in the opposite direction from `outcome`: an outcome says the decision was dealt with,
+   * and this says it was NOT - the marker is still in the bucket and nothing moves until somebody
+   * re-inspects and decides again.
+   */
+  mismatch: PlanMismatch | null;
   /** Who asked to be able to pass this mirror role, and to which services. Requests, not grants. */
   passrole: PassroleRequests;
   /**
