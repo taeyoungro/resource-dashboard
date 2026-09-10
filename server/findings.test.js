@@ -119,6 +119,33 @@ test('a malformed rule file is refused rather than started with', () => {
     schemaVersion: '0.1', rules: [{ ...RULES[0], relatedTo: ['E-9'] }],
     sectionOrder: ['ESCALATION'],
   }), RuleError, 'relatedTo names a rule that is not here');
+
+  // The flow picture reads `enables` and nothing else, so every way that field can be wrong is a
+  // way the picture can draw an order nobody established.
+  const step = (over) => ({ ...RULES[0], stepLabel: '권한 획득', ...over });
+  const doc = (rules) => ({ schemaVersion: '0.2', rules, sectionOrder: ['ESCALATION', 'EXPOSURE'] });
+  const other = { ...RULES.find((r) => r.id === 'X-6') };
+  assert.ok(validate(doc([step({ enables: ['X-6'] }), other])), 'a good enables edge is refused');
+  assert.throws(() => validate(doc([step({ enables: ['E-9'] })])),
+                RuleError, 'enables names a rule that is not here');
+  assert.throws(() => validate(doc([step({ enables: ['E-1'] })])),
+                RuleError, 'enables names itself');
+  // Both ends need a word, because the picture draws both plates.
+  assert.throws(() => validate(doc([step({ enables: ['X-6'] }), { ...other, stepLabel: undefined }])),
+                RuleError, 'an enables edge to a rule with no stepLabel');
+  assert.throws(() => validate(doc([step({ stepLabel: undefined, enables: ['X-6'] }), other])),
+                RuleError, 'an enables edge from a rule with no stepLabel');
+  // Measured with the picture's own ruler. A clipped label says nothing on screen about the word
+  // that went missing, which is why this refuses to load rather than rendering.
+  assert.throws(() => validate(doc([step({ stepLabel: '아주 긴 이름을 붙인 단계' })])),
+                RuleError, 'a stepLabel wider than a plate');
+  // A pair cannot be both a sequence and an alternative - the two say opposite things.
+  assert.throws(() => validate(doc([step({ enables: ['X-6'], contrastsWith: ['X-6'] }), other])),
+                RuleError, 'enables and contrastsWith on the same pair');
+  // A cycle has no column order, so the picture could not place a plate at all.
+  assert.throws(() => validate(doc([step({ enables: ['X-6'] }),
+                                    { ...other, enables: ['E-1'] }])),
+                RuleError, 'a cycle in enables');
   assert.throws(() => validate({
     schemaVersion: '0.1', rules: [RULES[0]], sectionOrder: ['ESCALATION'],
     // T-7 as data: the file forbids the key and the loader enforces it.
@@ -646,6 +673,84 @@ test('relatedTo is only shown for rules that actually fired on the same policy',
   const both = digest([grant('Recon', escalation, [], { non_restrictable: reads })]);
   const [linked] = only(findings(both), 'R-1', 'action');
   assert.deepEqual(linked.relatedFired, ['E-1']);
+});
+
+test('the flow is the rules that fired here, in the order the file establishes', () => {
+  // AmazonEC2FullAccess, which is the case this was built for. Three rules of the twelve it fires
+  // stand in a directed relation - turning the block off and making a copy both lead to sharing one
+  // - and every one of the three carries the SAME flow with its own position marked, because an
+  // approver reading any of the three cards needs to see where that card sits.
+  const chainable = ['ec2:DisableSnapshotBlockPublicAccess', 'ec2:CreateSnapshot',
+                     'ec2:ModifySnapshotAttribute'];
+  const list = findings(digest([grant('AmazonEC2FullAccess', chainable, [])]));
+  const at = (id) => list.find((f) => f.id === id && f.axis === 'action');
+  for (const id of ['V-2', 'X-5', 'X-6']) assert.ok(at(id), `${id} did not fire`);
+
+  for (const self of ['V-2', 'X-5', 'X-6']) {
+    const { chain } = at(self);
+    assert.ok(chain, `${self}: no flow`);
+    assert.deepEqual(chain.steps.map((s) => [s.id, s.column]),
+                     [['V-2', 0], ['X-5', 0], ['X-6', 1]], `${self}: wrong order`);
+    // Neither of the two sources enables the other, so they SHARE a column. Laying them out in a
+    // line would assert an order the file does not state.
+    assert.deepEqual(chain.steps.filter((s) => s.self).map((s) => s.id), [self]);
+    // And the edges are the two the file states, not the cross product of the columns.
+    assert.deepEqual(chain.edges, [{ from: 'V-2', to: 'X-6' }, { from: 'X-5', to: 'X-6' }]);
+    assert.equal(chain.omittedSteps, 0);
+    for (const step of chain.steps) assert.ok(step.label && step.title, `${step.id}: no words`);
+  }
+  // Deterministic, like every other thing an approval record can cite.
+  assert.deepEqual(at('X-6').chain, findings(digest([
+    grant('AmazonEC2FullAccess', chainable, [])])).find(
+    (f) => f.id === 'X-6' && f.axis === 'action').chain);
+});
+
+test('a flow needs both ends to have fired - one rule alone is not an order', () => {
+  // The same discipline as relatedFired, and the same reason: an edge in the file is what the rule
+  // author saw in the vocabulary, and drawing one whose other end did not fire would put a step in
+  // the picture that THIS grant cannot take.
+  const [alone] = only(findings(digest([grant('P', ['ec2:ModifySnapshotAttribute'], [])])),
+                       'X-6', 'action');
+  assert.equal(alone.chain, null, 'a flow was drawn from one rule');
+  assert.deepEqual(alone.relatedFired, []);
+
+  // Two of the three: still a flow, and a shorter one.
+  const pair = findings(digest([grant('P', ['ec2:CreateSnapshot',
+                                            'ec2:ModifySnapshotAttribute'], [])]));
+  const { chain } = pair.find((f) => f.id === 'X-6' && f.axis === 'action');
+  assert.deepEqual(chain.steps.map((s) => [s.id, s.column]), [['X-5', 0], ['X-6', 1]]);
+  assert.deepEqual(chain.edges, [{ from: 'X-5', to: 'X-6' }]);
+});
+
+test('a contrast is not a flow - same target, different residue, no order', () => {
+  // D-5 and D-6 reach the same function and leave different things behind: one is gone and one
+  // looks fine while nothing arrives. The file says so with contrastsWith, and the picture must not
+  // turn that into a sequence.
+  const both = ['lambda:DeleteFunction', 'lambda:RemovePermission'];
+  const list = findings(digest([grant('P', both, [])]));
+  for (const id of ['D-5', 'D-6']) {
+    const found = list.find((f) => f.id === id && f.axis === 'action');
+    assert.ok(found, `${id} did not fire`);
+    assert.equal(found.chain, null, `${id}: a contrast was drawn as an order`);
+    // Still connected - the card says they stand together, which is the true statement.
+    assert.deepEqual(found.relatedFired, [id === 'D-5' ? 'D-6' : 'D-5']);
+  }
+});
+
+test('the wire carries the relation in both directions, whichever way the file wrote it', () => {
+  // The file states V-2 enables X-6 and X-6 says nothing about V-2, which is right for a file a
+  // person edits and wrong for a card: X-6 has to know what comes before it. So the reverse is
+  // derived rather than written twice.
+  const rule = (id) => RULES.find((r) => r.id === id);
+  assert.deepEqual(rule('V-2').enables, ['X-6'], 'the file states this one way');
+  assert.equal(rule('X-6').enables, undefined, 'and does not state the reverse');
+
+  const list = findings(digest([grant('P', ['ec2:DisableSnapshotBlockPublicAccess',
+                                            'ec2:ModifySnapshotAttribute'], [])]));
+  const at = (id) => list.find((f) => f.id === id && f.axis === 'action');
+  assert.ok(at('X-6').relatedTo.includes('V-2'), 'the reverse direction never reached the card');
+  assert.deepEqual(at('X-6').relatedFired, ['V-2']);
+  assert.deepEqual(at('V-2').relatedFired, ['X-6']);
 });
 
 test('sharing a disk copy out of the account is its own rule, linked to making one', () => {

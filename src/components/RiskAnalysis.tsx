@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
 import type {
-  AssetGrade, Finding, FindingAxis, FindingCategory, FindingStatus, Grade,
+  AssetGrade, Finding, FindingAxis, FindingCategory, FindingChain, FindingStatus, Grade,
   Impact as ImpactAssessment, ImpactResource, Restriction, RiskAnalysisAnswer,
   RiskAnalysisCitation,
 } from "../types";
@@ -487,16 +487,43 @@ const CONTAINMENT: Record<ContainmentState, { label: string; className: string; 
 };
 
 /**
+ * 흐름을 말로. 그림 안의 밑줄이 말하는 것과 같은 차례이고, 여기서는 규칙 아이디까지 있다.
+ *
+ * 열이 같은 단계는 화살표가 아니라 쉼표로 잇는다. V-2 와 X-5 는 어느 쪽도 다른 쪽을 성립시키지
+ * 않고 둘 다 X-6 로 가므로, 화살표로 이으면 파일이 말하지 않은 방향을 문장이 지어낸다.
+ *
+ * 그림이 아니라 문장이므로 폭 예산이 없고, 그래서 stepLabel 옆에 규칙 아이디를 붙인다 - 승인자가
+ * 다른 단계의 카드를 찾아갈 때 쓰는 것은 이름이 아니라 아이디다.
+ */
+function chainWords(chain: FindingChain): string {
+  const columns = new Map<number, string[]>();
+  for (const step of [...chain.steps].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (!columns.has(step.column)) columns.set(step.column, []);
+    columns.get(step.column)!.push(`${step.id} ${step.label}`);
+  }
+  const order = [...columns.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, names]) => names.join(", "))
+    .join(" → ");
+  const omitted = chain.omittedSteps > 0
+    ? ` 카드 폭에 담지 못한 단계 ${chain.omittedSteps}개가 더 있습니다.`
+    : "";
+  return `${order} — 위 그림의 차례이고, 방향은 규칙 파일이 말한 것입니다.${omitted}`;
+}
+
+/**
  * 발견 하나의 경로 그림.
  *
- * 고리는 「부여 · 동작 · 자원」 셋이고 그 셋은 카드의 뼈대이므로 발견마다 수가 변하지 않는다 -
- * 동작이 마흔 개여도 고리는 셋이다. 발화 동작은 순서가 아니라 술어여서 값마다 고리를 하나씩
- * 내주면 데이터에 없는 순서를 그리는 것이 되고, 그래서 고리에는 동작 이름이 들어가지 않는다.
+ * 뼈대는 「부여 … 자원」이고 첫 판과 끝 판은 무슨 일이 있어도 그 자리다. 가운데는 둘 중 하나다 -
+ * 흐름이 없으면 「동작」 판 하나, 있으면 그 흐름의 단계마다 판 하나. 늘어나는 근거는 발화 동작의
+ * 개수가 아니라 finding.chain 이고, 그것은 규칙 파일이 방향을 말한 관계 중 이 정책에서 실제로
+ * 발화한 것만 담는다(server/findings.js 의 chainFor). 발화 동작 자체에는 순서를 주지 않는다 -
+ * 그것은 술어여서 값마다 판을 내주면 데이터에 없는 차례를 그리게 되고, 그래서 판에는 동작 이름이
+ * 들어가지 않는다.
  *
- * 이어짐은 방향이 아니라 의존이다 - 앞 고리가 서야 뒤 고리가 선다. 그래서 화살촉이 없다:
- * 구성도가 방향 있는 간선에만 화살촉을 붙이는 규칙과 같고, 화살촉이 바로 이 그림을 시간으로
- * 읽히게 만드는 것이다. 그림 안 한 줄이 같은 말을 한 번 더 하며, viewBox 안이라 화면을 찍어도
- * 남는다.
+ * 화살촉은 어느 쪽에도 없다. 흐름이 없는 그림에서 이어짐은 방향이 아니라 의존이고, 흐름이 있는
+ * 그림에서는 왼쪽에서 오른쪽이 이미 차례다 - 그림 안의 밑줄이 어느 쪽인지 말하며, 두 문장은 서로
+ * 반대의 것을 말하므로 같은 문장을 쓸 수 없다. viewBox 안이라 화면을 찍어도 남는다.
  *
  * 좌표·낱말·문장은 전부 server/findingPath.js 가 정한다. Topology.tsx 가 server/topology.js 에
  * 대해 지키는 그 분업이고 이유도 같다.
@@ -532,21 +559,27 @@ function FindingPath({ finding, containment }: {
         <title id={`${uid}-pt`}>{`${finding.id} 경로 그림`}</title>
         <desc id={`${uid}-pd`}>{path.summary}</desc>
 
-        {/* 선을 먼저, 고리를 뒤에. 고리가 선의 끝을 덮어야 선이 고리 안으로 들어가 보이지 않는다. */}
+        {/* 선을 먼저, 판을 뒤에. 판이 선의 끝을 덮어야 선이 판 안으로 들어가 보이지 않는다.
+            높이가 같은 두 판은 두 점, 다른 두 판은 네 점 - 한 곳으로 모이는 선 여럿이 같은
+            세로줄에서 만나므로 모임으로 읽힌다. */}
         {path.lines.map((line) => (
-          <line
+          <polyline
             key={line.key}
             className={line.dim ? "finding-path-line finding-path-line-dim" : "finding-path-line"}
-            x1={line.x1} y1={path.lineY} x2={line.x2} y2={path.lineY}
+            points={line.points.map(([x, y]) => `${x},${y}`).join(" ")}
           />
         ))}
 
         {path.links.map((item) => (
           <g key={item.id} className={item.dim ? "finding-path-dim" : undefined}>
             <rect
-              className={item.state === "established"
-                ? "finding-path-plate"
-                : `finding-path-plate finding-path-${item.state}`}
+              className={[
+                "finding-path-plate",
+                item.state === "established" ? null : `finding-path-${item.state}`,
+                // 흐름의 판 중 이 카드가 서 있는 하나. 옆 판은 다른 카드이므로, 어느 것이 지금
+                // 읽고 있는 판정인지 그림 안에서 갈려야 한다.
+                item.self ? "finding-path-self" : null,
+              ].filter(Boolean).join(" ")}
               x={item.x} y={item.y} width={item.w} height={item.h} rx={4}
             >
               <title>{item.title}</title>
@@ -800,7 +833,15 @@ export function RiskFindingCard({ finding, block, blockWhy = null, containment, 
         <div className="finding-row">
           <span className="finding-label">연결</span>
           <span>
-            {finding.relatedFired!.join(", ")} 과 같은 정책에서 함께 성립합니다.
+            {/* 방향이 있는 것은 차례로, 없는 것은 「함께」로. 한 문장에 섞어 쓰면 대비 관계가
+                순서로 읽힌다 - 규칙 파일이 두 관계를 가른 이유가 그것이다. */}
+            {finding.chain ? `${chainWords(finding.chain)} ` : ""}
+            {(() => {
+              const inChain = new Set((finding.chain?.steps ?? []).map((s) => s.id));
+              const rest = finding.relatedFired!.filter((id) => !inChain.has(id));
+              if (rest.length === 0) return null;
+              return `${rest.join(", ")} 과 같은 정책에서 함께 성립합니다.`;
+            })()}
           </span>
         </div>
       )}

@@ -15,6 +15,22 @@
 // a rule silently never fire: an action name with a wildcard in it (the engine matches exact
 // strings, so 'ec2:*' matches nothing), an evaluation scope that does not exist, a relatedTo
 // pointing at a rule id that was renamed, a sort key the design forbids.
+//
+// Three kinds of relation, and the card draws only one of them
+// -----------------------------------------------------------
+// The file used to have one field, relatedTo, doing two jobs. X-5 and X-6 compose - a disk copy is
+// what there is to share - and D-5 and D-6 are alternatives, same target and different residue. One
+// undirected field could say neither, so the flow picture had nothing to draw an order from.
+//
+//   enables         direction ESTABLISHED, and established by the rule's own notes rather than by
+//                   whoever added the edge. This is the only field the flow picture reads
+//   contrastsWith   same target, different residue. Explicitly NOT a sequence
+//   relatedTo       related, direction not established. X-8 and X-9 sit here: reading a layer and
+//                   sharing one belong together, and neither note says which comes first
+//
+// The wire keeps relatedTo as the union of all three so the card's "together on this policy" badge
+// is unchanged, and it gains the reverse direction it never had - X-6 now lists V-2, which enables
+// it. Symmetry is not required of the file for that reason: the union supplies it.
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -22,6 +38,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CAP } from './capabilities.js';
+// The same ruler the picture measures plate text with. Importing it rather than restating the
+// arithmetic is the point: a bound derived twice is a bound that will disagree with itself.
+import { textUnits } from './topology.js';
 
 export class RuleError extends Error {}
 
@@ -34,6 +53,21 @@ const STATUSES = ['CONFIRMED', 'UNVERIFIED', 'NOT_ASSESSABLE'];
 // compromise.
 const CATEGORIES = ['ESCALATION', 'EXPOSURE', 'EVASION', 'RECON', 'DESTRUCTIVE', 'COST'];
 const SCOPES = ['policyActionUnion', 'resourceActionSet', 'policyNonRestrictable'];
+/** The relation fields, and whether the flow picture reads them. */
+const RELATIONS = ['enables', 'contrastsWith', 'relatedTo'];
+/**
+ * How wide a stepLabel may be, in the units topology.js measures plate text in.
+ *
+ * Measured rather than counted, with the SAME ruler the picture uses. A character count is the
+ * wrong bound here - 'V-2' and '보호 해제' are both under it and differ by a factor of three in
+ * width - and the failure it lets through is silent: nothing on screen says a word was clipped, so
+ * a label that does not fit is worse than a rule file that refuses to load.
+ *
+ * The budget is findingPath.js's plate: LINK_W 88px less 8px of padding a side, at the 11.09px per
+ * unit that topology.js's own width tests establish. That is 6.49 units, or about six Korean
+ * glyphs.
+ */
+const STEP_LABEL_UNITS = (88 - 16) / (112 / 10.1);
 /** The closed capability vocabulary a predicate may name. Anything else is a typo, not a category. */
 const CAPABILITIES = new Set(Object.values(CAP));
 
@@ -95,6 +129,17 @@ function checkRule(rule, index, seen) {
 
   const at = `rule ${id}`;
   if (typeof rule.title !== 'string' || !rule.title) throw new RuleError(`${at}: title is required`);
+  if (rule.stepLabel !== undefined) {
+    if (typeof rule.stepLabel !== 'string' || !rule.stepLabel) {
+      throw new RuleError(`${at}: stepLabel must be a non-empty string`);
+    }
+    const wide = textUnits(rule.stepLabel);
+    if (wide > STEP_LABEL_UNITS) {
+      throw new RuleError(`${at}: stepLabel ${JSON.stringify(rule.stepLabel)} measures `
+        + `${wide.toFixed(2)} units and one plate of the flow picture holds `
+        + `${STEP_LABEL_UNITS.toFixed(2)}`);
+    }
+  }
   if (typeof rule.narrative !== 'string' || !rule.narrative) {
     throw new RuleError(`${at}: narrative is required`);
   }
@@ -149,6 +194,31 @@ function checkRule(rule, index, seen) {
   return actions;
 }
 
+/** The first cycle in the enables graph, as the path that closes it, or null. */
+function findCycle(rules) {
+  const out = new Map(rules.map((r) => [r.id, r.enables ?? []]));
+  const state = new Map();
+  const path = [];
+  const walk = (id) => {
+    if (state.get(id) === 'done') return null;
+    if (state.get(id) === 'open') return [...path.slice(path.indexOf(id)), id];
+    state.set(id, 'open');
+    path.push(id);
+    for (const next of out.get(id) ?? []) {
+      const found = walk(next);
+      if (found) return found;
+    }
+    path.pop();
+    state.set(id, 'done');
+    return null;
+  };
+  for (const rule of rules) {
+    const found = walk(rule.id);
+    if (found) return found;
+  }
+  return null;
+}
+
 /**
  * Validate a parsed rule document. Throws RuleError on anything that would make a rule unable to
  * fire, or a finding unable to be sorted as the design says.
@@ -167,7 +237,35 @@ export function validate(doc) {
     for (const action of checkRule(rule, index, seen)) actions.add(action);
   }
 
+  const stepLabels = new Map(doc.rules.map((r) => [r.id, r.stepLabel]));
   for (const rule of doc.rules) {
+    for (const field of RELATIONS) {
+      const targets = rule[field];
+      if (targets === undefined) continue;
+      if (!Array.isArray(targets) || targets.length === 0) {
+        throw new RuleError(`rule ${rule.id}: ${field} must be a non-empty array`);
+      }
+      for (const target of targets) {
+        if (!seen.has(target)) {
+          throw new RuleError(`rule ${rule.id}: ${field} names ${target}, which is not a rule here`);
+        }
+        if (target === rule.id) throw new RuleError(`rule ${rule.id}: ${field} names itself`);
+      }
+    }
+    // A pair cannot be both a sequence and an alternative. The two fields say opposite things about
+    // the same two rules, and the picture would draw an order the contrast denies.
+    for (const target of rule.enables ?? []) {
+      if ((rule.contrastsWith ?? []).includes(target)) {
+        throw new RuleError(`rule ${rule.id}: ${target} is in both enables and contrastsWith`);
+      }
+      // Both ends, because the picture draws both plates and a plate needs a word in it.
+      for (const end of [rule.id, target]) {
+        if (!stepLabels.get(end)) {
+          throw new RuleError(`rule ${end}: an enables edge puts it in the flow picture, so it `
+            + 'needs a stepLabel');
+        }
+      }
+    }
     for (const related of rule.relatedTo ?? []) {
       if (!seen.has(related)) {
         throw new RuleError(`rule ${rule.id}: relatedTo names ${related}, which is not a rule here`);
@@ -184,6 +282,14 @@ export function validate(doc) {
         throw new RuleError(`rule ${rule.id}: supersededBy names itself`);
       }
     }
+  }
+
+  // A cycle in enables has no column order, so the picture could not place a plate at all. Refused
+  // at load rather than broken at render: a cycle is a mistake in the file and the file is what a
+  // reviewer reads.
+  const cycle = findCycle(doc.rules);
+  if (cycle) {
+    throw new RuleError(`enables has a cycle: ${cycle.join(' -> ')}. A flow needs an order`);
   }
 
   const sort = doc.sort ?? {};
