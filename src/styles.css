@@ -1047,20 +1047,12 @@ code.target-action { font-size: 0.92em; opacity: 0.85; margin-right: 4px; }
    「측정되지 않은 것」에 쓰는 그 점선으로 그린다. */
 .finding-path-unclaimed { stroke: var(--muted); stroke-dasharray: 6 4; }
 
-/* 흐름의 단계 중 이 카드가 서 있는 하나. 옆 판은 같은 정책에서 함께 발화한 다른 카드이므로,
-   지금 읽고 있는 판정이 어느 것인지 그림 안에서 갈려야 한다. 색은 구성도가 「고른 것」에 쓰는
-   --accent 그대로이고, 굵기가 두 번째 채널이라 색을 구별하지 못해도 남는다. 미확인·주장 없음
-   뒤에 두어 그 상태를 덮는다 - 이 카드의 판이라는 사실이 그 상태보다 먼저 읽혀야 한다. */
-.finding-path-self { stroke: var(--accent); stroke-width: 2; stroke-dasharray: none; }
-
 .finding-path-label { fill: var(--text); font-size: 11px; font-weight: 600; }
 .finding-path-sub { fill: var(--muted); font-size: 10px; }
 .finding-path-foot { fill: var(--muted); font-size: 11px; }
 
-/* 판을 잇는 선. 점선이고 화살촉이 없다 - 흐름이 없는 그림에서 이어짐이 뜻하는 것은 방향이 아니라
-   「앞 판이 서야 뒤 판이 선다」이고, 흐름이 있는 그림에서는 왼쪽에서 오른쪽이 이미 차례여서
-   화살촉이 더할 것이 없다. 어느 쪽인지는 그림 안의 밑줄이 말한다. polyline 이므로 fill 을 끈다 -
-   켜져 있으면 꺾인 선이 삼각형으로 칠해진다. */
+/* 고리를 잇는 선. 점선이고 화살촉이 없다 - 구성도가 방향 있는 간선에만 화살촉을 붙이는 규칙과
+   같고, 여기서 이어짐이 뜻하는 것은 방향이 아니라 「앞 고리가 서야 뒤 고리가 선다」이다. */
 .finding-path-line { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 6 4; }
 
 /* 끊긴 자리의 하류. 지우지 않고 낮춘다 - 사라지면 무엇이 끊겼는지 읽을 수 없다. 흐림은
@@ -1079,6 +1071,71 @@ code.target-action { font-size: 0.92em; opacity: 0.85; margin-right: 4px; }
 .finding-path-mark-full { stroke: var(--ok); }
 .finding-path-mark-fenced { stroke: var(--cut-fence); }
 .finding-path-mark-partial { stroke: var(--cut-partial); }
+
+/* 흐름 띠. 구역들 위에 서서 「이 정책이 내주는 차례」를 한 번 말한다.
+   ------------------------------------------------------------------
+   카드 안의 작은 그림(.finding-path)과 자리가 다르고 크기도 다르다. 그쪽은 카드 하나의 도달을
+   요약하는 것이라 본문에 묻혀도 되지만, 이쪽은 목록 전체보다 먼저 읽혀야 하는 것이라 판이 크고
+   글자가 카드 본문과 같은 급이다 - 그림만 더 작으면 그림부터 건너뛰게 된다. */
+.flow-band {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.flow-band-head { margin: 0 0 8px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.flow + .flow { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
+.flow-policy { margin: 0 0 4px; font-size: 0.84rem; }
+/* 줄이지 않는다. 좁으면 넘긴다 - .topology-figure 와 .finding-path 가 고른 답과 같다. */
+.flow-figure { overflow-x: auto; }
+.flow-figure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.flow-svg { display: block; }
+
+/* 판. 띠 바탕이 --panel 이므로 --bg 로 뜬다 - .finding-path-plate 와 .graph-plate 가 같은 셈이다. */
+.flow-plate-box { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
+/* 눌리는 판만 손가락이 된다. 시작을 말하는 판은 카드가 없으므로 눌리지 않고, 눌리지 않는 것이
+   보여야 누른 뒤에 아무 일도 없는 일이 생기지 않는다. */
+.flow-plate-live { cursor: pointer; }
+.flow-plate-live:hover .flow-plate-box { stroke: var(--accent); stroke-width: 2; }
+.flow-plate-live:focus-visible { outline: none; }
+.flow-plate-live:focus-visible .flow-plate-box { stroke: var(--accent); stroke-width: 2; }
+/* 등급 띠. 카드 왼쪽 테두리(.finding.grade-*)가 쓰는 그 토큰이고 같은 것을 말한다 - 한 화면이
+   같은 판정을 두 색으로 말하면 승인자는 어느 쪽을 믿을지 정해야 한다. 이름에 grade- 를 쓰지 않는
+   것은 .grade-critical 이 배지와 카드 뿌리에 동시에 걸리는 자리이기 때문이다. */
+.flow-plate-grade { stroke: none; }
+.flow-grade-critical { fill: var(--danger); }
+.flow-grade-high { fill: var(--danger); }
+.flow-grade-medium { fill: var(--warn); }
+.flow-grade-low { fill: var(--border); }
+.flow-grade-none { fill: var(--border); }
+
+.flow-label { fill: var(--text); font-size: 14px; font-weight: 600; }
+.flow-sub { fill: var(--muted); font-size: 12px; }
+.flow-foot { fill: var(--muted); font-size: 12px; }
+/* 판을 잇는 선. 점선이고 화살촉이 없다 - 왼쪽에서 오른쪽이 이미 차례여서 화살촉이 더할 것이 없고,
+   그림 안의 밑줄이 그 사실을 말한다. polyline 이므로 fill 을 끈다: 켜져 있으면 꺾인 선이
+   삼각형으로 칠해진다. */
+.flow-line { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 6 4; }
+
+/* 차례 없이 함께 발화한 규칙. 판이 아니라 칩인 것이 요점이다 - 선이 닿지 않는 판은 무언가의
+   단계로 읽힌다. */
+.flow-chips { margin: 8px 0 0; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.flow-chip {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.flow-chip code { font-size: 0.95em; }
+.flow-chip:hover { border-color: var(--accent); }
+
+/* 카드 창. .finding-dialog 와 같은 이유로 자기 안에서 스크롤한다 - 카드는 500px 을 넘고, 축이 둘인
+   규칙은 두 장이라 천 픽셀을 넘는다. 그것이 자기 닫기 단추를 화면 밖으로 밀면 안 된다. */
+dialog.policy-dialog.flow-dialog { max-height: calc(100vh - 48px); overflow: auto; }
+.flow-dialog .finding { margin: 0 0 8px; }
+.flow-dialog-card + .flow-dialog-card { margin-top: 12px; }
 
 /* The asset axis is a second grade on the same card and must not compete with the first. Outlined
    whatever its value, so the filled badge stays the one an approver's eye lands on. */
