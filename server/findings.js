@@ -75,6 +75,52 @@ const GRADE_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4 };
 const STATUS_ORDER = { CONFIRMED: 0, UNVERIFIED: 1, NOT_ASSESSABLE: 2 };
 
 /**
+ * The rule relations, read once into three maps.
+ *
+ * The file states enables in ONE direction, which is right for a file a person edits and wrong for
+ * the picture: X-6's card has to know that V-2 comes before it, and V-2's edge is the only place
+ * that says so. So the reverse is derived here rather than written twice, and `related` is the
+ * union of all three relations in both directions - which is what the card's "together on this
+ * policy" badge has always rendered, now including the direction the file only stated once.
+ */
+const RELATIONS = (() => {
+  const enables = new Map();
+  const enabledBy = new Map();
+  const related = new Map();
+  const add = (map, key, value) => {
+    if (!map.has(key)) map.set(key, []);
+    if (!map.get(key).includes(value)) map.get(key).push(value);
+  };
+  for (const rule of RULES) {
+    for (const target of rule.enables ?? []) {
+      add(enables, rule.id, target);
+      add(enabledBy, target, rule.id);
+      add(related, rule.id, target);
+      add(related, target, rule.id);
+    }
+    for (const field of ['contrastsWith', 'relatedTo']) {
+      for (const target of rule[field] ?? []) {
+        add(related, rule.id, target);
+        add(related, target, rule.id);
+      }
+    }
+  }
+  for (const list of related.values()) list.sort();
+  return { enables, enabledBy, related, label: new Map(RULES.map((r) => [r.id, r.stepLabel])),
+           title: new Map(RULES.map((r) => [r.id, r.title])) };
+})();
+
+/**
+ * How far the flow picture will go.
+ *
+ * Not a safety limit - it is what the card is wide enough for. findingPath.js puts the grant plate
+ * first and the resource plate last whatever happens, so a chain of four steps is six plates, and
+ * six is what fits. A longer component is reported at this depth with the overflow counted rather
+ * than drawn, because a picture that runs off the card is worse than one that says it is partial.
+ */
+const CHAIN_MAX = 4;
+
+/**
  * What a control-plane role is worth as an asset, when the pipeline's own configuration is what
  * identified it.
  *
@@ -528,7 +574,7 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
         restrictable: rule.forceRestrictable
           ?? !hits.some((a) => (grant.non_restrictable ?? []).includes(a)),
         blockedBy: [...new Set(matches.flatMap((m) => m.blockedBy))],
-        relatedTo: rule.relatedTo ?? [],
+        relatedTo: RELATIONS.related.get(rule.id) ?? [],
         // Read by withTwins and removed there - engine bookkeeping, not part of a finding.
         supersededBy: rule.supersededBy ?? [],
         // Copied. Never composed, never interpolated - see T-4 and the header.
@@ -554,7 +600,7 @@ export function evaluateGrant(grant, digest, rules = RULES, reference = null) {
         targets: [],
         restrictable: rule.forceRestrictable ?? true,
         blockedBy: [`the rule could not be evaluated: ${error.message}`],
-        relatedTo: rule.relatedTo ?? [],
+        relatedTo: RELATIONS.related.get(rule.id) ?? [],
         supersededBy: rule.supersededBy ?? [],
         narrative: rule.narrative,
         notes: rule.notes ?? null,
@@ -648,7 +694,77 @@ function withTwins(list) {
     // asks for the conditional ("동일 정책에서 E-1이 발화한 경우"); nothing was applying it.
     relatedFired: (finding.relatedTo ?? []).filter(
       (id) => firedOn.get(finding.policyId)?.has(id)),
+    // The ORDER those related rules stand in, where the file establishes one. Same input as
+    // relatedFired and a stronger statement out of it: not "these are here too" but "this one comes
+    // before that one". null on a finding with nothing to compose, which is most of them.
+    chain: chainFor(finding.id, firedOn.get(finding.policyId) ?? new Set()),
   }));
+}
+
+/**
+ * The flow this finding stands in, or null when it stands alone.
+ *
+ * Restricted to the rules that FIRED on this policy, for the same reason relatedFired exists: an
+ * edge in the file is what the rule author saw in the vocabulary, and drawing one whose other end
+ * did not fire would put a step in the picture that THIS grant cannot take. So the component is
+ * computed over the intersection, and a card whose neighbours all sat out gets no flow and keeps
+ * the three plates it has.
+ *
+ * A column is the LONGEST distance from a source, not the shortest. V-2 and X-5 both enable X-6 and
+ * neither enables the other, so both are sources and X-6 is one column along - shortest and longest
+ * agree there, and they part the moment a step is reachable by two paths of different length. The
+ * later position is the true one: every predecessor has to come first, so a step is as far along as
+ * its furthest predecessor.
+ */
+function chainFor(id, fired) {
+  // The undirected component over directed edges whose BOTH ends fired here.
+  const seen = new Set([id]);
+  const queue = [id];
+  while (queue.length) {
+    const at = queue.shift();
+    for (const next of [...(RELATIONS.enables.get(at) ?? []),
+                        ...(RELATIONS.enabledBy.get(at) ?? [])]) {
+      if (!fired.has(next) || seen.has(next)) continue;
+      seen.add(next);
+      queue.push(next);
+    }
+  }
+  if (seen.size < 2) return null;
+
+  const depth = new Map();
+  const visit = (x) => {
+    if (depth.has(x)) return depth.get(x);
+    // Placeholder against re-entry. It can only be READ on a cycle, and rules.js refuses to load a
+    // file whose enables graph has one - so a 0 from here would be a loader bug, not a flow.
+    depth.set(x, 0);
+    const before = (RELATIONS.enabledBy.get(x) ?? []).filter((u) => seen.has(u));
+    const at = before.length === 0 ? 0 : Math.max(...before.map(visit)) + 1;
+    depth.set(x, at);
+    return at;
+  };
+  for (const x of seen) visit(x);
+
+  // A component wider than the card gets drawn to the depth that fits, with the rest counted. The
+  // exception is a card whose OWN step falls outside that window: a flow picture missing the
+  // finding it sits on is worse than no picture, so it gets none.
+  if (depth.get(id) >= CHAIN_MAX) return null;
+  const drawn = [...seen].filter((x) => depth.get(x) < CHAIN_MAX);
+  const shown = new Set(drawn);
+  return {
+    steps: drawn
+      .map((x) => ({ id: x, label: RELATIONS.label.get(x) ?? x, title: RELATIONS.title.get(x) ?? '',
+                     column: depth.get(x), self: x === id }))
+      .sort((a, b) => a.column - b.column || a.id.localeCompare(b.id)),
+    // The edges themselves, not the cross product of the columns. Two steps in one column and one
+    // in the next is two lines here and four if the picture guessed - and the two it would invent
+    // are edges the file does not state. Same discipline as relatedFired: draw what is written.
+    edges: drawn
+      .flatMap((from) => (RELATIONS.enables.get(from) ?? [])
+        .filter((to) => shown.has(to))
+        .map((to) => ({ from, to })))
+      .sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to)),
+    omittedSteps: seen.size - drawn.length,
+  };
 }
 
 /** escalationGrade desc, then status, then id. assetImpactGrade is never a key (T-7). */

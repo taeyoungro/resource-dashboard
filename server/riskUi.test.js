@@ -1745,6 +1745,63 @@ test('경로 그림의 색은 전부 토큰이고, 끊김은 카드 테두리와
   }
 });
 
+test('흐름은 그림과 말이 같은 차례를 말하고, 대비 관계를 순서로 바꾸지 않는다', () => {
+  // 「연결」 줄과 그림은 같은 값(finding.chain)에서 나오므로 차례가 어긋날 수 없다. 어긋날 수 있는
+  // 것은 그 줄이 흐름에 없는 이웃을 잃는 경우다 - 대비 관계(contrastsWith)는 흐름에 들어가지 않고
+  // 여전히 「함께 성립합니다」로 말해져야 한다.
+  const row = PANEL.slice(PANEL.indexOf('<span className="finding-label">연결</span>'),
+                          PANEL.indexOf('열거 완전성'));
+  assert.ok(row.includes('chainWords(finding.chain)'), 'the row does not say the order');
+  assert.ok(row.includes('const inChain = new Set('), 'the row drops the neighbours outside the flow');
+  assert.ok(row.includes('과 같은 정책에서 함께 성립합니다'),
+            'a neighbour with no established direction lost its sentence');
+  // 같은 열의 단계는 화살표가 아니라 쉼표로 잇는다. 화살표로 이으면 파일이 말하지 않은 방향이
+  // 문장에서 생긴다 - V-2 와 X-5 는 어느 쪽도 다른 쪽을 성립시키지 않는다.
+  const words = PANEL.slice(PANEL.indexOf('function chainWords('),
+                            PANEL.indexOf('발견 하나의 경로 그림'));
+  assert.ok(/columns\.set\(step\.column/.test(words), 'chainWords ignores the columns');
+  assert.ok(words.includes('names.join(", ")'), 'steps sharing a column are not joined with a comma');
+  assert.ok(words.includes('.join(" → ")'), 'the columns are not joined with an arrow');
+});
+
+test('흐름의 판은 구성도가 「고른 것」에 쓰는 색을 그대로 쓰고, 꺾인 선은 칠해지지 않는다', () => {
+  // 이 카드가 서 있는 단계는 옆 판정과 갈려야 한다. 색을 새로 고르지 않고 구성도가 고른 자원에
+  // 쓰는 --accent 를 쓴다 - 화면 하나에 「지금 보고 있는 것」이 두 색이면 그것은 두 가지 뜻이 된다.
+  const self = CSS.match(/\.finding-path-self \{[^}]*\}/)?.[0] ?? '';
+  assert.ok(/stroke:\s*var\(--accent\)/.test(self), '.finding-path-self does not use --accent');
+  assert.ok(/stroke-width:\s*2/.test(self), 'the self plate has no second channel besides colour');
+  // 미확인·주장 없음보다 뒤에 와야 그 상태를 덮는다.
+  assert.ok(CSS.indexOf('.finding-path-self') > CSS.indexOf('.finding-path-unclaimed'),
+            'a self plate that is also unclaimed keeps the dashed stroke');
+  // polyline 은 fill 이 켜져 있으면 꺾인 선이 삼각형으로 칠해진다.
+  const line = CSS.match(/\.finding-path-line \{[^}]*\}/)?.[0] ?? '';
+  assert.ok(/fill:\s*none/.test(line), '.finding-path-line does not turn fill off');
+  assert.ok(PANEL.includes('<polyline'), 'the picture still draws straight lines only');
+});
+
+test('규칙 파일의 방향은 그림에 오르는 것만 이름을 가진다', () => {
+  // enables 는 그림이 읽는 하나뿐인 관계이므로, 그 양 끝은 판에 들어갈 낱말이 있어야 한다.
+  // rules.js 가 적재 때 거절하지만, 그 거절이 사라져도 여기서 잡힌다.
+  const labels = new Map(RULES.map((r) => [r.id, r.stepLabel]));
+  for (const rule of RULES) {
+    for (const target of rule.enables ?? []) {
+      assert.ok(labels.get(rule.id), `${rule.id} is in the flow picture with no stepLabel`);
+      assert.ok(labels.get(target), `${target} is in the flow picture with no stepLabel`);
+    }
+    // 방향이 없는 두 관계는 그림에 오르지 않으므로 낱말이 필요 없다 - 그리고 방향과 대비를 한
+    // 쌍에 함께 쓸 수 없다.
+    for (const target of rule.contrastsWith ?? []) {
+      assert.ok(!(rule.enables ?? []).includes(target),
+                `${rule.id} says ${target} is both a sequence and an alternative`);
+    }
+  }
+  // 옛 이름은 남아 있으면 안 된다 - 남으면 방향 없는 관계가 조용히 그림에 오른다.
+  const engine = readFileSync(new URL('./findings.js', import.meta.url), 'utf8');
+  assert.ok(engine.includes('RELATIONS.enables'), 'the engine no longer reads the directed field');
+  assert.ok(!/rule\.relatedTo \?\? \[\]/.test(engine),
+            'the wire relatedTo is the rule field again rather than the union of all three');
+});
+
 const TOPOLOGY = readFileSync(new URL('../src/components/Topology.tsx', import.meta.url), 'utf8');
 /** The component with its comments stripped. The prose explains at length what the code must NOT
  *  do - "it never renders ServiceIcon", "a literal id=\"topo-arrow\" would collide" - so an

@@ -1163,6 +1163,40 @@ export interface Containment {
 }
 
 /**
+ * One step of the flow a finding stands in. A rule that fired on the same policy.
+ *
+ * The steps are rules, not actions, and that is the whole reason this can be drawn at all: an
+ * action list is a predicate with no order in it, while `enables` in finding-rules.json is a
+ * direction a rule's own notes establish. So the picture shows an order somebody wrote down and a
+ * check confirmed fired, never one derived from the shape of an action name.
+ */
+export interface FindingChainStep {
+  /** The rule id. The other steps are other cards on this same policy. */
+  id: string;
+  /** The rule's stepLabel - at most 8 characters, which is what one plate holds. */
+  label: string;
+  /** The rule's full title, for the plate's tooltip. */
+  title: string;
+  /** 0-based position. Two steps SHARE a column when neither enables the other. */
+  column: number;
+  /** The step this card is. Exactly one step in a chain has it. */
+  self: boolean;
+}
+
+/** A drawn `enables` edge. Only edges the rule file states - never a column cross product. */
+export interface FindingChainEdge {
+  from: string;
+  to: string;
+}
+
+export interface FindingChain {
+  steps: FindingChainStep[];
+  edges: FindingChainEdge[];
+  /** Steps past the width the card can draw. Counted, not drawn, and said in words on the card. */
+  omittedSteps: number;
+}
+
+/**
  * Which of the two questions a finding answers.
  *
  * resource  what this grant reaches in the account AS IT IS. Names ARNs, needs the inventory, and
@@ -1215,6 +1249,15 @@ export interface Finding {
    * unchecked made R-1 claim E-1 was standing beside it on policies where E-1 never fired.
    */
   relatedFired?: string[];
+  /**
+   * The ORDER those related rules stand in, where the rule file establishes one.
+   *
+   * Same input as relatedFired and a stronger statement out of it - not "these are here too" but
+   * "this one comes before that one". null on a finding with nothing to compose, which is most of
+   * them, and absent on a model finding: the candidate graph's own composition is a separate piece
+   * of work and this field would otherwise imply it landed.
+   */
+  chain?: FindingChain | null;
   narrative: string;
   notes?: string | null;
   /** null means enumeration completeness was never established. Not the same as false. */
