@@ -1,5 +1,5 @@
 import { useId, useMemo, useRef, useState } from "react";
-import type { Finding, Grade } from "../types";
+import type { ContainmentState, Finding, Grade } from "../types";
 import { GRADE_CLASS, GRADE_LABEL } from "../grades";
 import { policyFlows } from "../../server/policyFlow.js";
 import type { FlowChip, FlowPlate } from "../../server/policyFlow";
@@ -25,20 +25,28 @@ import type { FlowChip, FlowPlate } from "../../server/policyFlow";
  * 좌표·낱말·문장은 전부 server/policyFlow.js 가 정한다. Topology.tsx 가 server/topology.js 에
  * 대해 지키는 그 분업이고 이유도 같다.
  */
-export function PolicyFlowBand({ findings, renderCard, onBlock }: {
+export function PolicyFlowBand({ findings, renderCard, onBlock, containmentOf }: {
   /** 화면이 지금 보이고 있는 판정 전부. 정책으로 나누는 것은 순수 함수가 한다. */
   findings: Finding[];
   /** 카드 하나를 이 창 안에 그린다. 목록이 쓰는 그 카드여야 한다 - 두 벌이면 언젠가 갈라진다. */
   renderCard: (finding: Finding) => React.ReactNode;
   /** 이 판정을 제한하러 간다. null 이면 이 카드에는 차단이 없다 - 단추를 내지 않는다. */
   onBlock: (finding: Finding) => (() => void) | null;
+  /** 지금 작성 중인 결정이 이 판정을 얼마나 끊었는가. 목록의 카드가 쓰는 그 함수여야 한다. */
+  containmentOf: (finding: Finding) => ContainmentState;
 }) {
   const uid = useId();
   const box = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState<string | null>(null);
 
-  // GRADE_LABEL 은 모듈 상수이므로 신원이 렌더마다 같다 - 의존성이 실제로 안정하다.
-  const flows = useMemo(() => policyFlows(findings, GRADE_LABEL), [findings]);
+  // GRADE_LABEL 은 모듈 상수이므로 신원이 렌더마다 같다. containmentOf 는 결정이 바뀔 때마다 새로
+  // 오므로 의존성에 넣는다 - 그래야 제한을 하나 쓰면 그림의 단계가 바로 닫힌다. 도착의 한국어는
+  // 여기서 넘기지 않는다: chain 이 값과 함께 싣고 오고, 그 표기표를 여는 rules.js 는 적재 때
+  // 디스크를 읽어 브라우저 번들에 들어갈 수 없다.
+  const flows = useMemo(
+    () => policyFlows(findings, { grade: GRADE_LABEL, containmentOf }),
+    [findings, containmentOf],
+  );
   // 규칙 아이디 하나가 카드 한 장일 수도 두 장일 수도 있다. 정책까지 함께 열쇠로 쓰는 것은 같은
   // 규칙이 정책 둘에서 발화하면 다른 카드이기 때문이다.
   const cards = useMemo(() => {
@@ -103,6 +111,16 @@ export function PolicyFlowBand({ findings, renderCard, onBlock }: {
               <text className="flow-foot" x={0} y={flow.footY}>{flow.foot}</text>
             </svg>
           </div>
+
+          {/* 그림이 말하는 위험을 지금의 결정에 비추어 한 줄로. 요약(<desc>)에만 있으면 그림을
+              보는 사람에게는 없는 것과 같고, 이것이 승인이 대답해야 하는 물음이다. */}
+          {flow.openSteps !== null && (
+            <p className={flow.openSteps > 0 ? "flow-open warn-inline" : "flow-open"}>
+              {flow.openSteps > 0
+                ? `단계 ${flow.steps}개 중 ${flow.openSteps}개가 아직 차단되지 않았습니다.`
+                : `단계 ${flow.steps}개가 모두 차단되었습니다 — 이 경로는 지금 결정으로 닫힙니다.`}
+            </p>
+          )}
 
           {/* 판이 아니라 칩. 선이 닿지 않는 판은 무언가의 단계로 읽히고, 이것들은 단계가 아니라
               이 정책이 함께 내주는 다른 능력이다. */}
@@ -187,6 +205,13 @@ export function PolicyFlowBand({ findings, renderCard, onBlock }: {
  */
 function FlowPlateShape({ plate, onOpen }: { plate: FlowPlate; onOpen: () => void }) {
   const live = plate.ruleId !== null;
+  const box = [
+    "flow-plate-box",
+    plate.kind === "outcome" ? "flow-plate-arrival" : null,
+    // 지금 결정이 이 단계를 끊었는가. 색은 카드 왼쪽 테두리(.finding.contained-*)가 쓰는 그 셋이고
+    // 같은 세 상태를 말한다 - 왼쪽의 등급 띠와 다른 채널이라 둘이 겹치지 않는다.
+    plate.contained && plate.contained !== "none" ? `flow-cut-${plate.contained}` : null,
+  ].filter(Boolean).join(" ");
   return (
     <g className={live ? "flow-plate flow-plate-live" : "flow-plate"}
        role={live ? "button" : undefined}
@@ -196,8 +221,7 @@ function FlowPlateShape({ plate, onOpen }: { plate: FlowPlate; onOpen: () => voi
        onKeyDown={live ? (e) => {
          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); }
        } : undefined}>
-      <rect className="flow-plate-box" x={plate.x} y={plate.y} width={plate.w} height={plate.h}
-            rx={6}>
+      <rect className={box} x={plate.x} y={plate.y} width={plate.w} height={plate.h} rx={6}>
         <title>{plate.title}</title>
       </rect>
       {/* 등급 띠. 카드 왼쪽 테두리와 같은 것을 말하므로 스타일시트에서 같은 토큰을 쓴다 - 한 화면이
@@ -206,12 +230,43 @@ function FlowPlateShape({ plate, onOpen }: { plate: FlowPlate; onOpen: () => voi
           한 번 배포된 적이 있고 riskUi.test.js 가 그것을 막고 있다. */}
       {plate.grade && (
         <rect className={`flow-plate-grade flow-grade-${plate.grade.toLowerCase()}`}
-              x={plate.x} y={plate.y + 6} width={4} height={plate.h - 12} rx={2} />
+              x={plate.x} y={plate.y + 8} width={4} height={plate.h - 16} rx={2} />
       )}
-      <text className="flow-label" x={plate.x + 16} y={plate.labelY}>{plate.label}</text>
-      {plate.sub ? (
-        <text className="flow-sub" x={plate.x + 16} y={plate.subY}>{plate.sub}</text>
-      ) : null}
+      {plate.kind === "step" ? (
+        <>
+          <text className="flow-label" x={plate.x + 16} y={plate.labelY}>
+            <tspan className="flow-number">{plate.number}</tspan>{` ${plate.label}`}
+          </text>
+          {/* 이 단계가 무엇을 하는가. 이 줄이 있어서 그림이 규칙 아이디의 목차가 아니게 된다. */}
+          {plate.story.map((line, i) => (
+            <text className="flow-story" key={line} x={plate.x + 16} y={plate.storyY[i]}>{line}</text>
+          ))}
+          <text className="flow-note" x={plate.x + 16} y={plate.noteY}>
+            {plate.note}
+            {plate.contained && plate.contained !== "none"
+              ? ` · ${CUT_WORD[plate.contained]}` : null}
+          </text>
+        </>
+      ) : (
+        <>
+          <text className="flow-arrival-note" x={plate.x + 16} y={plate.noteY}>{plate.note}</text>
+          {plate.story.map((line, i) => (
+            <text className="flow-arrival" key={line} x={plate.x + 16} y={plate.storyY[i]}>{line}</text>
+          ))}
+        </>
+      )}
     </g>
   );
 }
+
+/**
+ * 끊긴 단계 옆에 붙는 낱말.
+ *
+ * 화면의 CONTAINMENT 낱말표를 그대로 쓸 수 없어 짧게 줄인 것이고, 온전한 문장은 카드가 말한다.
+ * 색만으로는 말하지 않는다 - 색을 구별하지 못하는 사람에게 이 줄이 두 번째 채널이다.
+ */
+const CUT_WORD: Record<Exclude<ContainmentState, "none">, string> = {
+  full: "차단됨",
+  fenced: "울타리로 차단됨",
+  partial: "일부 차단됨",
+};

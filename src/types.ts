@@ -1142,6 +1142,15 @@ export interface FindingTarget {
 }
 
 /**
+ * 지금 작성 중인 결정이 이 경로를 얼마나 끊었는가.
+ *
+ * blockPath.js 의 containmentState 가 내는 네 값이다. 카드의 왼쪽 테두리, 카드 안의 경로 그림,
+ * 흐름 띠의 판이 전부 이 낱말로 같은 것을 말하므로 한 곳에 둔다 - 화면마다 제 벌을 들면 언젠가
+ * 한 화면이 다른 화면과 다른 말을 한다.
+ */
+export type ContainmentState = "full" | "fenced" | "partial" | "none";
+
+/**
  * What to deny to close a path, and what denying it costs.
  *
  * The restriction editor is on the same screen as the finding, so this is the one field that
@@ -1177,6 +1186,29 @@ export interface FindingChainStep {
   label: string;
   /** The rule's full title, for the plate's tooltip. */
   title: string;
+  /**
+   * One clause saying what this step DOES - the rule file's stepStory.
+   *
+   * The flow picture draws it, and it is why that picture is not an index of rule ids. Copied from
+   * the rule, never composed: the same discipline `narrative` is under, and for the same reason.
+   */
+  story: string;
+  /**
+   * Where the path ARRIVES, when the flow ends here. null on a step something else follows.
+   *
+   * One of server/candidatePaths.js's OUTCOME values - the vocabulary the candidate graph already
+   * ends in, so the two halves of the analysis name the same places. rules.js refuses to load a
+   * file where a step that ends a flow has none: a picture that stops without saying what was
+   * reached does not answer the question an approval asks.
+   */
+  outcome: string | null;
+  /**
+   * 그 도착의 한국어 표기. outcome 이 null 이면 null.
+   *
+   * 표기표는 규칙 파일에 있고 그 파일을 여는 rules.js 는 적재 때 디스크를 읽으므로, 화면이 직접
+   * 가져가면 그 읽기가 브라우저 번들에 딸려 온다. 그래서 낱말이 값과 함께 실려 나간다.
+   */
+  outcomeLabel: string | null;
   /** 0-based position. Two steps SHARE a column when neither enables the other. */
   column: number;
   /** The step this card is. Exactly one step in a chain has it. */

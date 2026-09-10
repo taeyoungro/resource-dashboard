@@ -1,11 +1,12 @@
 {
-  "schemaVersion": "0.2",
-  "description": "영향도 평가 위험 판정 규칙. 코드에 하드코딩하지 말고 이 파일을 로드한다. 동작명은 산출물 원문 표기와 정확히 일치해야 하며 접두사 매칭을 쓰지 않는다. 규칙 사이의 관계는 셋으로 가른다 — enables 는 방향이 확립된 것으로 각 규칙의 notes 가 그 방향을 말하는 경우에만 쓰고, contrastsWith 는 같은 대상에 다른 잔여를 남기는 것으로 순서가 아니며, relatedTo 는 관계는 있으나 방향이 확립되지 않은 것이다. 카드의 흐름 그림은 enables 만 그린다.",
+  "schemaVersion": "0.3",
+  "description": "영향도 평가 위험 판정 규칙. 코드에 하드코딩하지 말고 이 파일을 로드한다. 동작명은 산출물 원문 표기와 정확히 일치해야 하며 접두사 매칭을 쓰지 않는다. 규칙 사이의 관계는 셋으로 가른다 — enables 는 방향이 확립된 것으로 각 규칙의 notes 가 그 방향을 말하는 경우에만 쓰고, contrastsWith 는 같은 대상에 다른 잔여를 남기는 것으로 순서가 아니며, relatedTo 는 관계는 있으나 방향이 확립되지 않은 것이다. 카드의 흐름 그림은 enables 만 그린다. 흐름의 판이 그리는 것은 stepLabel(이름)과 stepStory(무엇을 하는가)이고, 흐름이 끝나는 규칙은 outcome 으로 도달한 곳을 댄다. 도착 낱말은 server/candidatePaths.js 의 OUTCOME 이 정하는 닫힌 목록이고 outcomes 가 그 한국어 표기다.",
   "rules": [
     {
       "id": "E-1",
       "title": "역할 전달을 통한 임의 권한 획득",
       "stepLabel": "권한 획득",
+      "stepStory": "역할을 넘겨 그 자격으로 실행한다",
       "category": "ESCALATION",
       "escalationGrade": "CRITICAL",
       "assetImpactGrade": "UNDETERMINED",
@@ -67,6 +68,7 @@
           }
         ]
       },
+      "outcome": "code_execution_as",
       "narrative": "임의 역할을 전달해 함수를 생성하고 그 역할의 자격 증명하에 코드를 실행할 수 있다. 전달 가능 역할의 상한이 이 정책으로 도달 가능한 권한의 상한이다.",
       "upperBound": {
         "requires": "passableRoleSet",
@@ -290,6 +292,7 @@
       "id": "X-5",
       "title": "디스크 사본 생성",
       "stepLabel": "사본 생성",
+      "stepStory": "볼륨의 사본을 만든다",
       "category": "EXPOSURE",
       "escalationGrade": "MEDIUM",
       "assetImpactGrade": "UNDETERMINED",
@@ -314,6 +317,7 @@
       "id": "X-6",
       "title": "디스크 사본의 외부 계정 공유",
       "stepLabel": "외부 공유",
+      "stepStory": "사본을 계정 밖으로 내보낸다",
       "category": "EXPOSURE",
       "escalationGrade": "HIGH",
       "assetImpactGrade": "UNDETERMINED",
@@ -328,6 +332,7 @@
           }
         ]
       },
+      "outcome": "data_egress",
       "narrative": "스냅샷이나 이미지를 다른 계정에 공유하거나 공개로 바꾼다. 이것은 계정 경계 밖으로 나가는 단계이고 되돌릴 수 없다 — 공유를 거둬들여도 받는 쪽이 이미 복사한 사본은 회수되지 않는다.",
       "notes": "사본을 만드는 권한과 함께 있으면 임의의 볼륨을 복제해 밖으로 내보내는 경로가 된다. 두 규칙이 같은 정책에서 함께 발화했는지는 카드의 연결 항목이 말한다."
     },
@@ -335,6 +340,7 @@
       "id": "R-1",
       "title": "차단 불가 정찰",
       "stepLabel": "정찰",
+      "stepStory": "역할과 정책의 본문을 읽는다",
       "category": "RECON",
       "escalationGrade": "MEDIUM",
       "assetImpactGrade": "UNDETERMINED",
@@ -508,6 +514,7 @@
       "id": "V-2",
       "title": "보호 설정 해제",
       "stepLabel": "보호 해제",
+      "stepStory": "거부하던 설정을 끈다",
       "category": "EVASION",
       "escalationGrade": "HIGH",
       "assetImpactGrade": "UNDETERMINED",
@@ -627,5 +634,19 @@
     "resourceName",
     "resourceTags",
     "stackName"
-  ]
+  ],
+  "outcomes": {
+    "credentials_of": "다른 역할의 자격 증명",
+    "code_execution_as": "그 역할로 코드 실행",
+    "control_plane_write": "결정하는 자원에 쓰기",
+    "data_egress": "계정 밖으로 데이터 반출",
+    "network_exposure": "외부와 통하는 경로 개설",
+    "availability_denial": "자원 소멸·정지",
+    "audit_blind": "일어난 일의 기록 소멸",
+    "tag_tamper": "조건이 보는 이름표 조작",
+    "control_rebind": "결합의 상대 교체",
+    "guardrail_off": "거부하던 설정 해제",
+    "traffic_intercept": "통신 내용 복제·우회",
+    "cost_amplify": "청구액 증폭"
+  }
 }
