@@ -1394,22 +1394,10 @@ dialog.policy-dialog.flow-dialog { max-height: calc(100vh - 48px); overflow: aut
   gap: 4px 10px;
   margin-top: 4px;
 }
-/* An action in this policy's statement that another policy put there. Marked rather than hidden:
-   the statement is shown whole because a trimmed copy is a statement nobody will write, and an
-   approver has to be able to tell which half of it they are responsible for. */
-.statement-actions .from-elsewhere {
-  color: var(--muted);
-  text-decoration: underline dotted;
-  text-underline-offset: 3px;
-}
-/* An action this policy chose AND another policy chose too. Not the same thing as the above: this
-   one IS this policy's, and unticking it here leaves the statement standing because the other
-   policy's identical decision still composes it. The most misleading row on the screen without a
-   mark, because it looks exactly like a row the approver controls. */
-.statement-actions .co-owned {
-  border-bottom: 2px solid var(--warn);
-  padding-bottom: 1px;
-}
+/* .from-elsewhere and .co-owned used to be here, marking actions in this policy's statement that
+   another policy had put there or had also chosen. The fold now runs inside one attached policy's
+   group - which is what lets a Sid name an owner - so a statement has exactly one owner and neither
+   row can occur. The marks went with the thing they marked. */
 
 /* What this section does NOT offer, and where it went. At the top of the body rather than folded at
    the bottom, because it is the answer to a question asked before the scrolling starts: an approver
