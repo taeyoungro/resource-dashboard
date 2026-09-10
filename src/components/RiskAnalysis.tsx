@@ -2,7 +2,8 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
 import type {
-  AssetGrade, Finding, FindingAxis, FindingCategory, FindingChain, FindingStatus, Grade,
+  AssetGrade, ContainmentState, Finding, FindingAxis, FindingCategory, FindingChain, FindingStatus,
+  Grade,
   Impact as ImpactAssessment, ImpactResource, Restriction, RiskAnalysisAnswer,
   RiskAnalysisCitation,
 } from "../types";
@@ -140,7 +141,9 @@ interface ScopeProps extends Props {
  */
 type View = "rules" | "ai" | "both";
 /** 카드 배지가 말하는 세 상태. server/blockPath.js가 판정한다. */
-export type ContainmentState = "full" | "fenced" | "partial" | "none";
+// 낱말은 src/types.ts 가 든다 - 두 화면과 두 그림이 같은 것을 말하므로. 여기서 다시 내보내는 것은
+// 이 파일에서 가져다 쓰던 곳들이 그대로 돌아가게 하기 위해서다.
+export type { ContainmentState };
 
 const GRADE_ORDER: Record<Grade, number> = {
   CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4,
@@ -1349,6 +1352,7 @@ function RiskScope({
                                  accountId={accountId} showAxis defaultOpen />
               )}
               onBlock={(f) => blockProps(f)?.open ?? null}
+              containmentOf={containmentOf}
             />
           )}
 

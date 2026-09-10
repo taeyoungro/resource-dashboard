@@ -56,7 +56,7 @@
 // class of error as the union-of-statements one the unit scope exists to prevent, arriving through
 // the other door.
 
-import { RULES, SECTION_ORDER, SORT } from './rules.js';
+import { OUTCOME_LABEL, RULES, SECTION_ORDER, SORT } from './rules.js';
 import { ROLES } from './controlPlane.js';
 import { capabilitiesOf } from './capabilities.js';
 
@@ -106,7 +106,15 @@ const RELATIONS = (() => {
     }
   }
   for (const list of related.values()) list.sort();
-  return { enables, enabledBy, related, label: new Map(RULES.map((r) => [r.id, r.stepLabel])),
+  return { enables, enabledBy, related,
+           label: new Map(RULES.map((r) => [r.id, r.stepLabel])),
+           // 그 단계가 무엇을 하는지, 그리고 흐름이 거기서 끝난다면 어디에 도달하는지. 둘 다 규칙
+           // 파일의 값이고 그림이 그리는 것이라, 이름·제목과 같은 자리에서 같이 실려 나간다.
+           story: new Map(RULES.map((r) => [r.id, r.stepStory])),
+           outcome: new Map(RULES.map((r) => [r.id, r.outcome])),
+           // 도착의 한국어까지 함께 싣는다. 표기표는 규칙 파일에 있고 그 파일을 여는 것은 적재
+           // 때 디스크를 읽는 rules.js 이므로, 화면이 직접 가져가면 그 읽기가 번들에 딸려 온다.
+           arrival: new Map(RULES.map((r) => [r.id, OUTCOME_LABEL[r.outcome] ?? null])),
            title: new Map(RULES.map((r) => [r.id, r.title])) };
 })();
 
@@ -753,6 +761,9 @@ function chainFor(id, fired) {
   return {
     steps: drawn
       .map((x) => ({ id: x, label: RELATIONS.label.get(x) ?? x, title: RELATIONS.title.get(x) ?? '',
+                     story: RELATIONS.story.get(x) ?? '',
+                     outcome: RELATIONS.outcome.get(x) ?? null,
+                     outcomeLabel: RELATIONS.arrival.get(x) ?? null,
                      column: depth.get(x), self: x === id }))
       .sort((a, b) => a.column - b.column || a.id.localeCompare(b.id)),
     // The edges themselves, not the cross product of the columns. Two steps in one column and one

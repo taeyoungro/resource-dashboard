@@ -1819,6 +1819,28 @@ test('흐름 띠는 목록의 카드를 그대로 열고, 그 창의 차단 단�
             'the window closes without putting the state back, so the same plate opens nothing next');
 });
 
+test('흐름 그림은 카드의 목차가 아니라 무엇이 일어나는지를 그린다', () => {
+  // 판이 규칙 이름만 들면 그림을 볼 이유가 없다 - 무엇이 일어나는지는 판을 눌러야 나오고, 그것은
+  // 목차다. 그래서 판이 셋을 든다: 차례의 번호, 그 단계가 하는 일, 그리고 지금 끊겼는지.
+  assert.ok(BAND.includes('className="flow-number"'), 'the plate does not number the order');
+  assert.ok(BAND.includes('className="flow-story"'), 'the plate does not say what the step does');
+  assert.ok(BAND.includes('CUT_WORD[plate.contained]'),
+            'the plate says the cut with colour alone');
+  // 흐름에는 끝이 있다. 도착 판이 없으면 그림은 마지막 단계에서 그냥 멈춘다.
+  assert.ok(BAND.includes('className="flow-arrival"'), 'the flow arrives nowhere');
+  assert.ok(BAND.includes('plate.kind === "outcome"'), 'the arrival is drawn as one more step');
+  // 그리고 위험이 지금 얼마나 열려 있는지가 요약이 아니라 화면에 있어야 한다.
+  assert.ok(BAND.includes('flow.openSteps'), 'how much of the flow is still open is only in <desc>');
+  // 차단의 세 색은 카드 왼쪽 테두리가 쓰는 그 셋이다.
+  const token = (re) => CSS.match(re)?.[1] ?? null;
+  for (const state of ['full', 'fenced', 'partial']) {
+    const cut = token(new RegExp(`\\.flow-cut-${state} \\{[^}]*stroke:\\s*var\\((--[a-z-]+)\\)`));
+    const edge = token(new RegExp(`\\.finding\\.contained-${state} \\{[^}]*border-left-color:\\s*var\\((--[a-z-]+)\\)`));
+    assert.ok(cut, `.flow-cut-${state} has no token`);
+    assert.equal(cut, edge, `the band and the card edge disagree on ${state}`);
+  }
+});
+
 test('규칙 파일의 방향은 그림에 오르는 것만 이름을 가진다', () => {
   // enables 는 그림이 읽는 하나뿐인 관계이므로, 그 양 끝은 판에 들어갈 낱말이 있어야 한다.
   // rules.js 가 적재 때 거절하지만, 그 거절이 사라져도 여기서 잡힌다.

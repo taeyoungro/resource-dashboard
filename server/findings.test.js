@@ -97,33 +97,39 @@ test('the rule file loads, and every action a rule names is exported for the dig
 test('a malformed rule file is refused rather than started with', () => {
   // §2 line 1. An empty rule set reports every grant as clean, which is the page a clean grant
   // produces - so there is no version of this that falls back.
-  const good = { schemaVersion: '0.1', rules: [RULES[0]], sort: {}, sectionOrder: ['ESCALATION'] };
+  // 도착 표기가 없으면 그림이 영어 식별자를 판에 적으므로, 표기표는 문서의 일부다. E-1 이 흐름의
+  // 끝이라 outcome 을 들고 있고, 그래서 이 표가 없는 문서는 정당하게 거절된다.
+  const arrivals = { code_execution_as: '그 역할로 코드 실행', data_egress: '계정 밖으로 반출' };
+  const good = { schemaVersion: '0.3', rules: [RULES[0]], sort: {}, outcomes: arrivals,
+                 sectionOrder: ['ESCALATION'] };
   assert.ok(validate(good));
 
-  assert.throws(() => validate({ schemaVersion: '0.1', rules: [] }), RuleError, 'empty rule set');
+  assert.throws(() => validate({ schemaVersion: '0.3', outcomes: arrivals, rules: [] }), RuleError, 'empty rule set');
   assert.throws(() => validate({ rules: [RULES[0]] }), RuleError, 'no schemaVersion');
   assert.throws(() => validate({
-    schemaVersion: '0.1',
+    schemaVersion: '0.3', outcomes: arrivals,
     // A wildcard would not throw at match time. It would match nothing, silently, forever.
     rules: [{ ...RULES[0], predicate: { action: 'ec2:*' } }],
     sectionOrder: ['ESCALATION'],
   }), RuleError, 'wildcard action');
   assert.throws(() => validate({
-    schemaVersion: '0.1', rules: [{ ...RULES[0], evaluatedOn: 'perAccount' }],
+    schemaVersion: '0.3', outcomes: arrivals, rules: [{ ...RULES[0], evaluatedOn: 'perAccount' }],
     sectionOrder: ['ESCALATION'],
   }), RuleError, 'unknown scope');
   assert.throws(() => validate({
-    schemaVersion: '0.1', rules: [RULES[0], RULES[0]], sectionOrder: ['ESCALATION'],
+    schemaVersion: '0.3', outcomes: arrivals, rules: [RULES[0], RULES[0]], sectionOrder: ['ESCALATION'],
   }), RuleError, 'duplicate id');
   assert.throws(() => validate({
-    schemaVersion: '0.1', rules: [{ ...RULES[0], relatedTo: ['E-9'] }],
+    schemaVersion: '0.3', outcomes: arrivals, rules: [{ ...RULES[0], relatedTo: ['E-9'] }],
     sectionOrder: ['ESCALATION'],
   }), RuleError, 'relatedTo names a rule that is not here');
 
   // The flow picture reads `enables` and nothing else, so every way that field can be wrong is a
   // way the picture can draw an order nobody established.
-  const step = (over) => ({ ...RULES[0], stepLabel: '권한 획득', ...over });
-  const doc = (rules) => ({ schemaVersion: '0.2', rules, sectionOrder: ['ESCALATION', 'EXPOSURE'] });
+  const step = (over) => ({ ...RULES[0], stepLabel: '권한 획득', stepStory: '역할을 넘긴다', ...over });
+  // 도착 표기가 없으면 그림이 영어 식별자를 판에 적으므로, 표기표는 문서의 일부다.
+  const doc = (rules) => ({ schemaVersion: '0.3', rules, outcomes: arrivals,
+                            sectionOrder: ['ESCALATION', 'EXPOSURE'] });
   const other = { ...RULES.find((r) => r.id === 'X-6') };
   assert.ok(validate(doc([step({ enables: ['X-6'] }), other])), 'a good enables edge is refused');
   assert.throws(() => validate(doc([step({ enables: ['E-9'] })])),
@@ -137,7 +143,7 @@ test('a malformed rule file is refused rather than started with', () => {
                 RuleError, 'an enables edge from a rule with no stepLabel');
   // Measured with the picture's own ruler. A clipped label says nothing on screen about the word
   // that went missing, which is why this refuses to load rather than rendering.
-  assert.throws(() => validate(doc([step({ stepLabel: '아주 긴 이름을 붙인 단계' })])),
+  assert.throws(() => validate(doc([step({ stepLabel: '아주 길게 붙여 놓은 흐름 단계의 이름표' })])),
                 RuleError, 'a stepLabel wider than a plate');
   // A pair cannot be both a sequence and an alternative - the two say opposite things.
   assert.throws(() => validate(doc([step({ enables: ['X-6'], contrastsWith: ['X-6'] }), other])),
@@ -146,8 +152,26 @@ test('a malformed rule file is refused rather than started with', () => {
   assert.throws(() => validate(doc([step({ enables: ['X-6'] }),
                                     { ...other, enables: ['E-1'] }])),
                 RuleError, 'a cycle in enables');
+  // 그림이 규칙 아이디의 목차가 아니게 하는 것이 stepStory 다. 없으면 판에 무엇이 일어나는지가
+  // 없고, 그러면 판을 눌러 카드를 열어야만 흐름을 읽을 수 있다.
+  assert.throws(() => validate(doc([step({ enables: ['X-6'] }),
+                                    { ...other, stepStory: undefined }])),
+                RuleError, 'an enables edge to a rule with no stepStory');
+  // 흐름의 끝에는 도달한 곳이 있어야 한다. 없으면 그림이 마지막 판에서 그냥 멈춘다.
+  assert.throws(() => validate(doc([step({ enables: ['X-6'] }),
+                                    { ...other, outcome: undefined }])),
+                RuleError, 'a flow that ends nowhere');
+  // 도착은 후보 경로 그래프가 정하는 닫힌 목록이다.
+  assert.throws(() => validate(doc([step({ outcome: 'becomes_root' })])),
+                RuleError, 'an outcome outside the vocabulary');
+  assert.throws(() => validate({ ...doc([step({})]), outcomes: { becomes_root: '루트가 된다' } }),
+                RuleError, 'a label for an outcome that does not exist');
+  // 판이 자르는 것은 화면이 말하지 않으므로, 안 들어가는 것은 적재 때 거절한다.
+  assert.throws(() => validate(doc([step({ stepStory: '한 판의 두 줄에 도저히 들어가지 않을 만큼 '
+                                     + '길게 쓴 이야기 한 줄이고 이것은 잘릴 것이다' })])),
+                RuleError, 'a stepStory wider than two lines');
   assert.throws(() => validate({
-    schemaVersion: '0.1', rules: [RULES[0]], sectionOrder: ['ESCALATION'],
+    schemaVersion: '0.3', outcomes: arrivals, rules: [RULES[0]], sectionOrder: ['ESCALATION'],
     // T-7 as data: the file forbids the key and the loader enforces it.
     sort: { keys: ['assetImpactGrade:desc'], forbiddenKeys: ['assetImpactGrade'] },
   }), RuleError, 'forbidden sort key');
@@ -698,6 +722,11 @@ test('the flow is the rules that fired here, in the order the file establishes',
     assert.deepEqual(chain.edges, [{ from: 'V-2', to: 'X-6' }, { from: 'X-5', to: 'X-6' }]);
     assert.equal(chain.omittedSteps, 0);
     for (const step of chain.steps) assert.ok(step.label && step.title, `${step.id}: no words`);
+    // 그림이 그리는 것은 이름이 아니라 이 두 개다 - 무엇을 하는가, 그리고 어디에 도달하는가.
+    assert.deepEqual(chain.steps.map((s) => s.story),
+                     ['거부하던 설정을 끈다', '볼륨의 사본을 만든다', '사본을 계정 밖으로 내보낸다']);
+    assert.deepEqual(chain.steps.map((s) => s.outcome), [null, null, 'data_egress'],
+                     'the arrival is on a step something else follows, or missing where it ends');
   }
   // Deterministic, like every other thing an approval record can cite.
   assert.deepEqual(at('X-6').chain, findings(digest([
