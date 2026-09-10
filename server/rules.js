@@ -41,6 +41,8 @@ import { CAP } from './capabilities.js';
 // The same ruler the picture measures plate text with. Importing it rather than restating the
 // arithmetic is the point: a bound derived twice is a bound that will disagree with itself.
 import { textUnits } from './topology.js';
+// 그 낱말이 실제로 들어가는 판. 카드의 그림이 아니라 흐름 띠가 stepLabel 을 그린다.
+import { PLATE_W } from './policyFlow.js';
 
 export class RuleError extends Error {}
 
@@ -63,11 +65,13 @@ const RELATIONS = ['enables', 'contrastsWith', 'relatedTo'];
  * width - and the failure it lets through is silent: nothing on screen says a word was clipped, so
  * a label that does not fit is worse than a rule file that refuses to load.
  *
- * The budget is findingPath.js's plate: LINK_W 88px less 8px of padding a side, at the 11.09px per
- * unit that topology.js's own width tests establish. That is 6.49 units, or about six Korean
- * glyphs.
+ * The budget is the plate that DRAWS the label, which is the flow band's and not the card's:
+ * PLATE_W less 16px of padding a side, at 14px. topology.js's own width tests establish 11.09px
+ * per unit at 11px, so 14px is 14.11 and the budget is about ten Korean glyphs. Derived from
+ * policyFlow.js's constant rather than restated, because a bound written twice is a bound that
+ * will disagree with itself.
  */
-const STEP_LABEL_UNITS = (88 - 16) / (112 / 10.1);
+const STEP_LABEL_UNITS = (PLATE_W - 32) / ((112 / 10.1) * (14 / 11));
 /** The closed capability vocabulary a predicate may name. Anything else is a typo, not a category. */
 const CAPABILITIES = new Set(Object.values(CAP));
 

@@ -21,6 +21,7 @@ import { RULES, SECTION_ORDER } from './rules.js';
 const read = (name) => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8');
 const PANEL = read('components/RiskAnalysis.tsx');
 const CSS = read('styles.css');
+const BAND = read('components/PolicyFlow.tsx');
 const DETAIL = read('components/PlanDetail.tsx');
 const PAGE = read('components/PlanPage.tsx');
 
@@ -303,8 +304,16 @@ test('a card is folded shut, and the fold shows what decides whether to open it'
   // thirty-eight is exactly as folded as it was.
   assert.ok(card.includes('defaultOpen = false') && card.includes('open={defaultOpen || undefined}'),
             'the fold is not a defaulted-shut prop, so a caller could open the whole list');
+  // 목록의 카드만이다. 흐름 띠가 여는 창은 카드 한 장이고 그 프롭이 있는 이유가 바로 그것이라
+  // (구성도의 창이 먼저 그랬다), 「RiskScope 안에 defaultOpen 이 있으면 안 된다」로 잡으면 창까지
+  // 함께 막힌다. 지켜야 하는 것은 목록이므로 목록의 카드만 본다: key 를 쥔 것이 목록의 것이다.
   const page = PANEL.slice(PANEL.indexOf('function RiskScope('));
-  assert.ok(!page.includes('defaultOpen'), 'this page opens its own cards, which is what this avoids');
+  for (const [element] of page.matchAll(/<RiskFindingCard[\s\S]*?\/>/g)) {
+    if (!element.includes('key=')) continue;
+    assert.ok(!element.includes('defaultOpen'),
+              'a card in the LIST is opened by default, and thirty-eight open cards is a page '
+              + 'nobody reads to the end');
+  }
   const fold = card.slice(card.indexOf('<summary'), card.indexOf('</summary>'));
   for (const required of ['GRADE_CLASS[finding.escalationGrade]', 'finding.id', 'finding.title',
                           'finding.restrictable', 'alreadyFoundBy', 'STATUS_LABEL']) {
@@ -1764,19 +1773,50 @@ test('흐름은 그림과 말이 같은 차례를 말하고, 대비 관계를 �
   assert.ok(words.includes('.join(" → ")'), 'the columns are not joined with an arrow');
 });
 
-test('흐름의 판은 구성도가 「고른 것」에 쓰는 색을 그대로 쓰고, 꺾인 선은 칠해지지 않는다', () => {
-  // 이 카드가 서 있는 단계는 옆 판정과 갈려야 한다. 색을 새로 고르지 않고 구성도가 고른 자원에
-  // 쓰는 --accent 를 쓴다 - 화면 하나에 「지금 보고 있는 것」이 두 색이면 그것은 두 가지 뜻이 된다.
-  const self = CSS.match(/\.finding-path-self \{[^}]*\}/)?.[0] ?? '';
-  assert.ok(/stroke:\s*var\(--accent\)/.test(self), '.finding-path-self does not use --accent');
-  assert.ok(/stroke-width:\s*2/.test(self), 'the self plate has no second channel besides colour');
-  // 미확인·주장 없음보다 뒤에 와야 그 상태를 덮는다.
-  assert.ok(CSS.indexOf('.finding-path-self') > CSS.indexOf('.finding-path-unclaimed'),
-            'a self plate that is also unclaimed keeps the dashed stroke');
+test('흐름 띠의 색은 전부 토큰이고, 등급은 카드 왼쪽 테두리와 같은 토큰을 쓴다', () => {
+  const rules = CSS.split('\n').filter((line) => line.trimStart().startsWith('.flow'));
+  assert.ok(rules.length >= 12, `only ${rules.length} .flow rules`);
+  for (const rule of rules) {
+    assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(rule), `literal colour in: ${rule.trim()}`);
+    assert.ok(!/\b(rgb|hsl)a?\(/.test(rule), `literal colour in: ${rule.trim()}`);
+  }
+  // 등급 띠가 카드 왼쪽 테두리와 같은 것을 말한다. 한 화면이 같은 판정을 두 색으로 말하면 승인자는
+  // 어느 쪽을 믿을지 정해야 한다.
+  const token = (re) => CSS.match(re)?.[1] ?? null;
+  for (const grade of ['critical', 'high', 'medium', 'low']) {
+    const plate = token(new RegExp(`\\.flow-grade-${grade} \\{[^}]*fill:\\s*var\\((--[a-z-]+)\\)`));
+    const edge = token(new RegExp(`\\.finding\\.grade-${grade} \\{[^}]*border-left-color:\\s*var\\((--[a-z-]+)\\)`));
+    assert.ok(plate, `.flow-grade-${grade} has no token`);
+    assert.equal(plate, edge, `the band and the card edge disagree on ${grade}`);
+  }
+  // 이름에 grade- 를 쓰지 않는다. .grade-critical 은 배지와 카드 뿌리에 동시에 걸리는 자리이고,
+  // 그 충돌은 이미 한 번 배포된 적이 있다.
+  assert.ok(!/\.grade-(critical|high|medium|low)\b[^{\n]*\{[^}]*fill:/.test(CSS),
+            'the band paints through a class the badge and the card root also carry');
   // polyline 은 fill 이 켜져 있으면 꺾인 선이 삼각형으로 칠해진다.
-  const line = CSS.match(/\.finding-path-line \{[^}]*\}/)?.[0] ?? '';
-  assert.ok(/fill:\s*none/.test(line), '.finding-path-line does not turn fill off');
-  assert.ok(PANEL.includes('<polyline'), 'the picture still draws straight lines only');
+  const line = CSS.match(/\.flow-line \{[^}]*\}/)?.[0] ?? '';
+  assert.ok(/fill:\s*none/.test(line), '.flow-line does not turn fill off');
+  assert.ok(BAND.includes('<polyline'), 'the band draws straight lines only');
+});
+
+test('흐름 띠는 목록의 카드를 그대로 열고, 그 창의 차단 단추는 살아 있다', () => {
+  // 카드를 두 벌 그리면 언젠가 둘이 갈라진다. 창은 RiskScope 가 넘겨준 renderCard 만 부른다.
+  assert.ok(!BAND.includes('<RiskFindingCard'), 'the band draws a second copy of the card');
+  assert.ok(BAND.includes('renderCard(finding)'), 'the band does not render the panel\'s own card');
+  // 구성도의 창과 다른 점이 이것이다 - 거기서는 block 이 null 이고 죽은 단추를 내지 않는다고
+  // 적혀 있으며, 그럴 수 있는 이유는 이 창이 제한 편집기와 같은 패널 안에 서기 때문이다.
+  assert.ok(BAND.includes('onBlock(finding)'), 'the band never offers the decision');
+  assert.ok(/box\.current\?\.close\(\);\s*go\(\)/.test(BAND),
+            'the card window stays open behind the restriction editor');
+  const panel = PANEL.slice(PANEL.indexOf('<PolicyFlowBand'), PANEL.indexOf('AREAS.map'));
+  assert.ok(panel.includes('blockProps(f)?.open ?? null'),
+            'the band composes its own block instead of the one the list uses');
+  // 모델 판정은 넘기지 않는다 - enables 는 규칙 파일의 진술이라 모델 판정에는 흐름이 없고,
+  // 칩으로 세우면 근거의 종류가 다른 둘이 한 줄에 선다.
+  assert.ok(panel.includes('f.source !== "model"'), 'a model finding can reach the band');
+  // 세 가지로 닫히고 그중 둘은 클릭 핸들러를 돌리지 않으므로 onClose 가 상태를 되돌려야 한다.
+  assert.ok(BAND.includes('onClose={() => setOpen(null)}'),
+            'the window closes without putting the state back, so the same plate opens nothing next');
 });
 
 test('규칙 파일의 방향은 그림에 오르는 것만 이름을 가진다', () => {

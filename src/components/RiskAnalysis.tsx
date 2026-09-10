@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import { CATEGORY_LABEL, GRADE_CLASS, GRADE_LABEL, STATUS_LABEL } from "../grades";
 import { BlockPath } from "./BlockPath";
+import { PolicyFlowBand } from "./PolicyFlow";
 import { alreadyRestricted, containmentState } from "../../server/blockPath.js";
 import { findingPath } from "../../server/findingPath.js";
 import { findingsOfAnswer } from "../../server/analysisFindings.js";
@@ -508,22 +509,22 @@ function chainWords(chain: FindingChain): string {
   const omitted = chain.omittedSteps > 0
     ? ` 카드 폭에 담지 못한 단계 ${chain.omittedSteps}개가 더 있습니다.`
     : "";
-  return `${order} — 위 그림의 차례이고, 방향은 규칙 파일이 말한 것입니다.${omitted}`;
+  // 「위 그림」이라고 쓰지 않는다. 이 줄은 목록의 카드에도 흐름 띠가 여는 창에도 실리고, 창에서는
+  // 띠가 뒤에 가려 보이지 않는다 - 화면에 있는 것을 가리키는 말은 두 자리 중 하나에서 거짓이 된다.
+  return `${order} — 이 정책의 흐름에서의 차례이고, 방향은 규칙 파일이 말한 것입니다.${omitted}`;
 }
 
 /**
  * 발견 하나의 경로 그림.
  *
- * 뼈대는 「부여 … 자원」이고 첫 판과 끝 판은 무슨 일이 있어도 그 자리다. 가운데는 둘 중 하나다 -
- * 흐름이 없으면 「동작」 판 하나, 있으면 그 흐름의 단계마다 판 하나. 늘어나는 근거는 발화 동작의
- * 개수가 아니라 finding.chain 이고, 그것은 규칙 파일이 방향을 말한 관계 중 이 정책에서 실제로
- * 발화한 것만 담는다(server/findings.js 의 chainFor). 발화 동작 자체에는 순서를 주지 않는다 -
- * 그것은 술어여서 값마다 판을 내주면 데이터에 없는 차례를 그리게 되고, 그래서 판에는 동작 이름이
- * 들어가지 않는다.
+ * 고리는 「부여 · 동작 · 자원」 셋이고 그 셋은 카드의 뼈대이므로 발견마다 수가 변하지 않는다 -
+ * 동작이 마흔 개여도 고리는 셋이다. 발화 동작은 순서가 아니라 술어여서 값마다 고리를 하나씩
+ * 내주면 데이터에 없는 순서를 그리는 것이 되고, 그래서 고리에는 동작 이름이 들어가지 않는다.
  *
- * 화살촉은 어느 쪽에도 없다. 흐름이 없는 그림에서 이어짐은 방향이 아니라 의존이고, 흐름이 있는
- * 그림에서는 왼쪽에서 오른쪽이 이미 차례다 - 그림 안의 밑줄이 어느 쪽인지 말하며, 두 문장은 서로
- * 반대의 것을 말하므로 같은 문장을 쓸 수 없다. viewBox 안이라 화면을 찍어도 남는다.
+ * 이어짐은 방향이 아니라 의존이다 - 앞 고리가 서야 뒤 고리가 선다. 그래서 화살촉이 없다:
+ * 구성도가 방향 있는 간선에만 화살촉을 붙이는 규칙과 같고, 화살촉이 바로 이 그림을 시간으로
+ * 읽히게 만드는 것이다. 그림 안 한 줄이 같은 말을 한 번 더 하며, viewBox 안이라 화면을 찍어도
+ * 남는다.
  *
  * 좌표·낱말·문장은 전부 server/findingPath.js 가 정한다. Topology.tsx 가 server/topology.js 에
  * 대해 지키는 그 분업이고 이유도 같다.
@@ -559,27 +560,21 @@ function FindingPath({ finding, containment }: {
         <title id={`${uid}-pt`}>{`${finding.id} 경로 그림`}</title>
         <desc id={`${uid}-pd`}>{path.summary}</desc>
 
-        {/* 선을 먼저, 판을 뒤에. 판이 선의 끝을 덮어야 선이 판 안으로 들어가 보이지 않는다.
-            높이가 같은 두 판은 두 점, 다른 두 판은 네 점 - 한 곳으로 모이는 선 여럿이 같은
-            세로줄에서 만나므로 모임으로 읽힌다. */}
+        {/* 선을 먼저, 고리를 뒤에. 고리가 선의 끝을 덮어야 선이 고리 안으로 들어가 보이지 않는다. */}
         {path.lines.map((line) => (
-          <polyline
+          <line
             key={line.key}
             className={line.dim ? "finding-path-line finding-path-line-dim" : "finding-path-line"}
-            points={line.points.map(([x, y]) => `${x},${y}`).join(" ")}
+            x1={line.x1} y1={path.lineY} x2={line.x2} y2={path.lineY}
           />
         ))}
 
         {path.links.map((item) => (
           <g key={item.id} className={item.dim ? "finding-path-dim" : undefined}>
             <rect
-              className={[
-                "finding-path-plate",
-                item.state === "established" ? null : `finding-path-${item.state}`,
-                // 흐름의 판 중 이 카드가 서 있는 하나. 옆 판은 다른 카드이므로, 어느 것이 지금
-                // 읽고 있는 판정인지 그림 안에서 갈려야 한다.
-                item.self ? "finding-path-self" : null,
-              ].filter(Boolean).join(" ")}
+              className={item.state === "established"
+                ? "finding-path-plate"
+                : `finding-path-plate finding-path-${item.state}`}
               x={item.x} y={item.y} width={item.w} height={item.h} rx={4}
             >
               <title>{item.title}</title>
@@ -1337,6 +1332,26 @@ function RiskScope({
           {/* 두 영역. 합치지 않고 나란히 둔다 — 하나는 지금 있는 자원에 닿는 것이고 다른 하나는
               자원이 생기면 성립하는 것이라, 같은 규칙이 양쪽에 나와도 두 문장은 다른 것을 말한다.
               자원이 없는 계정에서는 아래쪽이 판정 전부이고, 그것이 이 분리의 이유다. */}
+          {/* 구역 위에 한 번. 흐름은 카드의 성질이 아니라 정책의 성질이고, 카드 목록의 구역을
+              거꾸로 가로지른다 - V-2(EVASION) 가 X-6(EXPOSURE) 를 성립시키므로 먼저 일어나는
+              것이 뒤 구역에 있다. 구역은 승인자가 침해와 비용을 따로 읽기 위해 있어서 순서를
+              바꿔서는 고칠 수 없으므로, 구역 밖에 서는 자리가 이것이다.
+
+              규칙 판정만 넘긴다. enables 는 규칙 파일의 진술이므로 모델 판정에는 흐름이 없고,
+              칩으로 세우면 차례 없이 함께 발화한 규칙과 같은 줄에 서게 된다 - 그 둘은 근거의
+              종류가 달라서 카드가 배지로 갈라 놓은 것이다. */}
+          {assessable.length > 0 && (
+            <PolicyFlowBand
+              findings={assessable.filter((f) => f.source !== "model")}
+              renderCard={(f) => (
+                <RiskFindingCard finding={f} block={null} blockWhy={blockWhy(f)}
+                                 containment={containmentOf(f)} resourceOf={resourceOf}
+                                 accountId={accountId} showAxis defaultOpen />
+              )}
+              onBlock={(f) => blockProps(f)?.open ?? null}
+            />
+          )}
+
           {assessable.length > 0 && AREAS.map(({ axis, label, why, empty }) => {
             const mine = assessable.filter((f) => f.axis === axis);
             const grades = (["CRITICAL", "HIGH", "MEDIUM", "LOW"] as Grade[])
