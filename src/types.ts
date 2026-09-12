@@ -424,6 +424,20 @@ export interface PlanDetail {
    */
   composed: boolean;
   /**
+   * A ps-* prefix holding the TERRAFORM artifacts — inspected before the composed change and never
+   * written over, because the composed path writes other names and the inspector holds no delete.
+   *
+   * 무엇인가   이 접두사가 도메인이 쓰는 배치가 아니라 옛 배치를 들고 있다는 사실
+   * 어디 있나  계획 상세 응답. 서버가 접두사의 객체들에서 유도한다 (sweep.js layoutOf)
+   * 누가 쓰나  서버 하나
+   * 누가 읽나  이 화면. 승인이 왜 막혔는지 말하는 데만 쓴다
+   *
+   * It is shown rather than hidden — a plan awaiting a decision when the images rolled would
+   * otherwise vanish from the list — and it cannot be approved, because the approval would have to
+   * carry change_sha256 and there is none. Re-inspecting the resource produces one.
+   */
+  legacy_layout: boolean;
+  /**
    * The digest of change.json, on a composed plan. This is what such an approval binds to.
    *
    * Null on every terraform plan, where changes_sha256 above carries the binding instead. The two

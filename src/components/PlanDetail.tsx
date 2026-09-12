@@ -1123,7 +1123,16 @@ export function PlanDetail({
         </>
       )}
 
-      {binding ? null : detail.composed ? (
+      {binding && !detail.legacy_layout ? null : detail.legacy_layout ? (
+        <div className="row-warn">
+          이 계획은 <strong>검사기가 바뀌기 전에 만들어졌습니다.</strong> 접두사에 아직
+          <code>tfplan</code>과 <code>main.tf.json</code>이 들어 있고, 지금 이 도메인이 쓰는
+          <code>change.json</code>과 <code>change.sha256</code>은 없습니다. 위에 보이는 내용은
+          그때 저장된 그대로이고 읽을 수 있지만, <strong>승인할 수는 없습니다</strong> — 승인은
+          두 상태의 다이제스트에 묶이는데 그 값이 없습니다. 자원을 다시 변경해 새 검사를 받으면
+          그때부터 승인할 수 있습니다.
+        </div>
+      ) : detail.composed ? (
         <div className="row-warn">
           이 변경에는 <code>change.sha256</code>이 없어 <strong>승인할 수 없습니다.</strong> 그
           값을 쓰지 않던 검사기가 만든 것입니다. 이 도메인에는 얼어붙은 계획 파일이 없고 — 제한이

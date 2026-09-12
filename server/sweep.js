@@ -80,6 +80,36 @@ export function composesDocument(resource) {
   return typeof resource === 'string' && resource.startsWith(COMPOSED_PREFIX);
 }
 
+/**
+ * Which SET OF NAMES a prefix actually holds, which is not always the one its domain writes.
+ *
+ * 무엇인가   이 접두사에 실제로 들어 있는 산출물 배치. 도메인이 아니라 객체가 답한다
+ * 어디 있나  계산값. 어디에도 저장되지 않는다
+ * 누가 쓰나  이 함수 하나
+ * 누가 읽나  collectPlans(행을 만들 때)와 readPlan(무엇을 읽을지 고를 때)
+ *
+ * A ps-* prefix inspected BEFORE the composed change holds tfplan and main.tf.json and none of
+ * spec.json/change.json, and it will hold them forever: the inspector has no s3:DeleteObject on
+ * this bucket, and the composed path writes different names so it never writes over them.
+ *
+ * Judging such a prefix by its domain alone made it vanish. `collectPlans` required change.json,
+ * did not find it, and reported the prefix as incomplete - so the plan had no row at all, its
+ * identity read as null, and the restriction editor closed. A plan that was awaiting a decision
+ * when the images rolled would simply have disappeared from the list.
+ *
+ * So the DOMAIN still decides what an approval binds by - a ps-* plan binds by change.sha256 and
+ * a legacy one therefore cannot be approved, which is correct and which the page already says -
+ * and the LAYOUT decides which objects to read for display. The two agree everywhere except here.
+ */
+export function layoutOf(resource, names) {
+  const has = (name) => (names instanceof Set ? names.has(name) : names?.has?.(name));
+  if (!composesDocument(resource)) return 'terraform';
+  if (has(CHANGE_ARTIFACT)) return 'composed';
+  // Only when the terraform half is really there. A prefix holding neither is an upload in
+  // progress and must stay incomplete rather than being called legacy.
+  return has(PLAN_ARTIFACT) ? 'legacy' : 'composed';
+}
+
 // Written last by the inspector, and therefore what says the prefix holds a finished plan rather
 // than an upload in progress. It also carries the request id, which stopped being part of the key
 // when plans moved to one-per-governed-resource.
@@ -733,9 +763,16 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
     // rather than from anything in the prefix, because the question has to be answerable BEFORE
     // deciding which objects to require - a prefix judged by what happens to be in it would call a
     // half-uploaded composed change a complete terraform plan.
-    const composed = composesDocument(planId.slice(planId.indexOf(':') + 1));
-    const plan = artifacts.get(composed ? CHANGE_ARTIFACT : PLAN_ARTIFACT);
-    const configObject = artifacts.get(composed ? SPEC_ARTIFACT : CONFIG_ARTIFACT);
+    const resource = planId.slice(planId.indexOf(':') + 1);
+    const composed = composesDocument(resource);
+    // And which names are actually in it, which for a prefix written before the composed change is
+    // the terraform set. See layoutOf: reading those is what keeps such a plan on the list.
+    const layout = layoutOf(resource, new Set(artifacts.keys()));
+    const reads = layout === 'composed'
+      ? { plan: CHANGE_ARTIFACT, config: SPEC_ARTIFACT }
+      : { plan: PLAN_ARTIFACT, config: CONFIG_ARTIFACT };
+    const plan = artifacts.get(reads.plan);
+    const configObject = artifacts.get(reads.config);
     const manifestObject = artifacts.get(MANIFEST_ARTIFACT);
 
     // request.json is written last, so a prefix without it is an upload in progress rather than a
@@ -788,8 +825,10 @@ async function collectPlans(s3, config, decidedRequestIds, outstandingAssessment
       // answer is the identity. The four PassRole lists below are outputs of the MIRROR ROLE plan -
       // domain 1 - and a ps-* prefix never carried them under either layout, so nothing is lost by
       // leaving them empty here rather than reaching for an artifact that would not have them.
-      identity = composed ? identityFromSpec(document) : identityFromConfig(document);
-      if (!composed) {
+      // From whichever artifact this prefix actually has. A legacy ps-* prefix has main.tf.json
+      // and the backend key in it, which is the same answer spec.json would have given.
+      identity = layout === 'composed' ? identityFromSpec(document) : identityFromConfig(document);
+      if (layout !== 'composed') {
         requesters = requestersFromConfig(document);
         unavailable = unavailableFromConfig(document);
         holders = holdersFromConfig(document);
@@ -1287,14 +1326,19 @@ export async function readPlan(s3, config, planId) {
 
   const composed = composesDocument(planId.slice(planId.indexOf(':') + 1));
   const byName = new Map(objects.map((o) => [o.key.slice(prefix.length), o]));
+  // What is in the prefix, against what its domain writes. They differ on exactly one shape: a
+  // ps-* prefix from before the composed change. Reading it by its domain produced a detail whose
+  // every field was null - see layoutOf.
+  const layout = layoutOf(planId.slice(planId.indexOf(':') + 1), new Set(byName.keys()));
+  const reading = layout === 'composed';
   // What stands in for the saved plan file. On a composed prefix there is none, and change.json is
   // what the approval binds to instead - so it is what `plan_stored` and the size and timestamp
   // below are read off, and there is no binary to digest.
-  const planObject = byName.get(composed ? CHANGE_ARTIFACT : PLAN_ARTIFACT);
+  const planObject = byName.get(reading ? CHANGE_ARTIFACT : PLAN_ARTIFACT);
   const refusalObject = byName.get(REFUSAL_ARTIFACT);
-  const textArtifact = composed ? CHANGE_TEXT_ARTIFACT : 'plan.txt';
-  const configArtifact = composed ? SPEC_ARTIFACT : CONFIG_ARTIFACT;
-  const digestArtifact = composed ? CHANGE_DIGEST_ARTIFACT : DIGEST_ARTIFACT;
+  const textArtifact = reading ? CHANGE_TEXT_ARTIFACT : 'plan.txt';
+  const configArtifact = reading ? SPEC_ARTIFACT : CONFIG_ARTIFACT;
+  const digestArtifact = reading ? CHANGE_DIGEST_ARTIFACT : DIGEST_ARTIFACT;
 
   const [planText, configJson, planJson, planBytes, digestText, manifest, outcome, withdrawals,
          refusal, mismatch] =
@@ -1307,12 +1351,12 @@ export async function readPlan(s3, config, planId) {
       : Promise.resolve(null),
     // change.json on a composed prefix, plan.json otherwise. Both are the machine-readable half of
     // what the text above says, and both are what the change list on the page is built from.
-    byName.has(composed ? CHANGE_ARTIFACT : 'plan.json')
-      ? getJson(s3, config.stateBucket, `${prefix}${composed ? CHANGE_ARTIFACT : 'plan.json'}`)
+    byName.has(reading ? CHANGE_ARTIFACT : 'plan.json')
+      ? getJson(s3, config.stateBucket, `${prefix}${reading ? CHANGE_ARTIFACT : 'plan.json'}`)
       : Promise.resolve(null),
     // No binary on a composed prefix, so nothing to read and nothing to digest. plan_file_sha256
     // stays null there and the approval binds to the change digest instead.
-    !composed && planObject
+    !reading && planObject
       ? getBytes(s3, config.stateBucket, `${prefix}${PLAN_ARTIFACT}`)
       : Promise.resolve(null),
     byName.has(digestArtifact)
@@ -1349,7 +1393,7 @@ export async function readPlan(s3, config, planId) {
   // substitution the row makes, and it has to be made here too: the account id is what the marker
   // and the state key are built from, and a null one produces a decision route that 404s on a plan
   // the list is offering.
-  const identity = composed ? identityFromSpec(configJson) : identityFromConfig(configJson);
+  const identity = reading ? identityFromSpec(configJson) : identityFromConfig(configJson);
   const requestId = typeof manifest?.request_id === 'string' ? manifest.request_id : null;
   const mine = outcomeFor(outcome, requestId);
 
@@ -1476,6 +1520,12 @@ export async function readPlan(s3, config, planId) {
     // here - see refusalFor.
     refusal: refusalFor(refusal, requestId, refusalObject),
 
+    // A prefix whose DOMAIN composes but whose CONTENTS are the terraform set - inspected before
+    // the composed change and never written over, because the composed path writes other names and
+    // the inspector holds no delete on this bucket. It is SHOWN, and it cannot be approved: an
+    // approval would have to carry change_sha256 and there is none. Re-inspecting produces one.
+    legacy_layout: layout === 'legacy',
+
     // Whether the applier composes this resource's document instead of applying a stored one, and
     // therefore which of the two digests below an approval has to carry. Sent to the page rather
     // than re-derived there, so one answer reaches the marker, the screens and the approve route -
@@ -1524,7 +1574,7 @@ export async function readPlan(s3, config, planId) {
     // The digest of change.json, on a composed prefix. COPIED out of change.sha256 and never
     // computed here, for the same reason changes_sha256 is: the dashboard is the component that is
     // not trusted, so it must not author the value that authorises its own approval.
-    change_sha256: composed && isDigest(digestText) ? digestText : null,
+    change_sha256: reading && isDigest(digestText) ? digestText : null,
 
     // The hash of the saved plan file - the file the applier runs, unchanged. This is what the
     // approval binds to. The ETag would not do: it is an MD5, and this is the one place in the
@@ -1537,8 +1587,8 @@ export async function readPlan(s3, config, planId) {
     // change names an address and an action verb, and a composed one names a part of the permission
     // set and what it moves between. One field holding either would make every reader ask which it
     // had, and `changes` is already read by the sweep row, the analysis route and the page.
-    changes: composed ? [] : changesFromPlan(planJson),
-    composed_changes: composed ? changesFromChange(planJson) : [],
+    changes: reading ? [] : changesFromPlan(planJson),
+    composed_changes: reading ? changesFromChange(planJson) : [],
     // Who asked to be able to pass this mirror role, and to which services. Requests, not grants -
     // except granted_to, which IS a grant and is the live one: the inspector's snapshot with the
     // inline writer's own record of what its runs left standing laid over it.
