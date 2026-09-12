@@ -28,8 +28,22 @@ const ADMIN_DENY_SID = 'AdminDeny';
 const PASSROLE_FENCE_SUFFIX = 'Fence';
 const FENCE_SID_STRIP = /[^0-9A-Za-z]+/g;
 
-/** The Sid an attachment's fence carries: [amp|cmp]<PolicyName>Fence. */
-export function fenceSid(identifier, source) {
+// What a name loses to the origin that already says it. mirror-cmp-* is what a permission set
+// actually references - never the cmp-* spec behind it - so both spell one policy one way.
+const TWIN_POLICY_PREFIX = 'mirror-cmp-';
+const SPEC_POLICY_PREFIX = 'cmp-';
+
+/** How much of a policy name a restriction's Sid carries. config.sid_policy_name_limit. */
+const SID_POLICY_NAME_LIMIT = 24;
+
+/**
+ * (origin, Name) for a Sid that has to say WHICH attached policy a statement belongs to.
+ *
+ * Byte-identical with restriction._policy_token, and shared by the two families that name a policy
+ * for the same reason it is there: a document holds both, and a reader should not have to learn two
+ * spellings of one policy's name.
+ */
+function policyToken(identifier, source) {
   const name = String(identifier ?? '').trim();
   const bare = name.includes('/') ? name.slice(name.lastIndexOf('/') + 1) : name;
   // source is the authority; the ARN answers when it is absent, because an AWS managed policy filed
@@ -37,13 +51,39 @@ export function fenceSid(identifier, source) {
   const known = (source === 'aws_managed' || source === 'customer_managed')
     ? source
     : (name.includes('::aws:policy/') ? 'aws_managed' : 'customer_managed');
-  const prefix = known === 'aws_managed' ? 'amp' : 'cmp';
-  // The prefix already says it: AWSLambda_FullAccess under amp, cmp-testpolicy under cmp.
-  const redundant = prefix === 'amp' ? 'aws' : 'cmp';
-  const trimmed = bare.toLowerCase().startsWith(redundant) ? bare.slice(redundant.length) : bare;
+  const origin = known === 'aws_managed' ? 'amp' : 'cmp';
+  const redundant = origin === 'amp' ? ['aws'] : [TWIN_POLICY_PREFIX, SPEC_POLICY_PREFIX];
+  let trimmed = bare;
+  for (const prefix of redundant) {
+    if (bare.toLowerCase().startsWith(prefix.toLowerCase())) {
+      trimmed = bare.slice(prefix.length);
+      break;
+    }
+  }
   let stripped = trimmed.replace(FENCE_SID_STRIP, '');
   if (/^[A-Za-z]/.test(stripped)) stripped = stripped[0].toUpperCase() + stripped.slice(1);
-  return `${prefix}${stripped || 'Unnamed'}${PASSROLE_FENCE_SUFFIX}`;
+  return [origin, stripped];
+}
+
+/** The Sid an attachment's fence carries: [amp|cmp]<PolicyName>Fence. Never cut to length. */
+export function fenceSid(identifier, source) {
+  const [origin, name] = policyToken(identifier, source);
+  return `${origin}${name || 'Unnamed'}${PASSROLE_FENCE_SUFFIX}`;
+}
+
+/**
+ * AdminDeny<Amp|Cmp><PolicyName>, the family every statement from one attached policy shares.
+ *
+ * The number that follows counts within THIS policy's group, so it does not move when another
+ * policy gains or loses a statement. What it replaces is AdminDeny<n> over the whole fold, which
+ * named no attachment at all - survivable while one inline document held everything and one writer
+ * replaced it wholesale, and not survivable once the family spans several customer managed
+ * policies and a per-document number means two documents both start at one.
+ */
+export function denySidBase(identifier, source) {
+  const [origin, name] = policyToken(identifier, source);
+  const cut = name.slice(0, SID_POLICY_NAME_LIMIT);
+  return `${ADMIN_DENY_SID}${origin[0].toUpperCase()}${origin.slice(1)}${cut || 'Unnamed'}`;
 }
 
 /**
@@ -205,11 +245,14 @@ function clause(built) {
 /**
  * Actions whose statement is otherwise byte-identical, collected into one Action list.
  *
+ * ONE POLICY'S statements. The caller groups by attached policy first and this folds inside a
+ * group, so a statement belongs to exactly one policy and `base` can name it - see denySidBase.
+ *
  * Mirrors restriction._fold, including the two details that are easy to drop and would show up as
  * different bytes: groups come out sorted by clause, and a lone action stays a string rather than
  * becoming a one-element array.
  */
-function fold(built) {
+function fold(built, base = ADMIN_DENY_SID) {
   const groups = new Map();
   for (const one of built) {
     const key = clause(one);
@@ -221,11 +264,29 @@ function fold(built) {
   return [...groups.keys()].sort().map((key, index) => {
     const names = [...groups.get(key)].sort();
     return {
-      Sid: `${ADMIN_DENY_SID}${index + 1}`,
+      Sid: `${base}${index + 1}`,
       Action: names.length === 1 ? names[0] : names,
       ...JSON.parse(key),
     };
   });
+}
+
+/**
+ * Every restriction's statements, grouped by the attached policy and folded inside each group.
+ *
+ * Mirrors restriction.statements' grouping. The order is by Sid base rather than by identifier so
+ * the document reads the way a person scans it, and two policies whose names reduce to one base
+ * are a REFUSAL in the container - the preview does not refuse, it composes what the container
+ * would and lets the container be the one that says no.
+ */
+function foldByPolicy(builtByPolicy) {
+  const bases = new Map();
+  for (const identifier of builtByPolicy.keys()) bases.set(denySidBase(identifier), identifier);
+  const out = [];
+  for (const base of [...bases.keys()].sort()) {
+    out.push(...fold(builtByPolicy.get(bases.get(base)), base));
+  }
+  return out;
 }
 
 /**
@@ -287,16 +348,17 @@ export function fenceStatements(grants, accountId) {
 export function composeInline(restrictions,
                               { accountId, fenceGrants = [], nested = () => false,
                                 createdFormats = () => [] } = {}) {
-  const built = [];
+  const built = new Map();
   for (const restriction of restrictions ?? []) {
     for (const action of restriction.actions ?? []) {
-      built.push(statement(`${ADMIN_DENY_SID}${built.length + 1}`, restriction, action, nested,
-                           createdFormats));
+      const mine = built.get(restriction.policy) ?? [];
+      mine.push(statement(ADMIN_DENY_SID, restriction, action, nested, createdFormats));
+      built.set(restriction.policy, mine);
     }
   }
   return {
     Version: '2012-10-17',
-    Statement: [...fold(built), ...fenceStatements(fenceGrants, accountId)],
+    Statement: [...foldByPolicy(built), ...fenceStatements(fenceGrants, accountId)],
   };
 }
 
@@ -340,28 +402,22 @@ export function readableStatements(statements) {
  * lie. This is not that. It composes the whole document once and then reads this policy's
  * contribution back out of it, so every Sid shown is the Sid that will be written.
  *
- * Attribution is by CLAUSE, not by action name, and the difference is not academic. Two policies
- * can restrict the SAME action on different resources - AmazonS3FullAccess on one bucket and a
- * customer managed policy on another - and that is two statements, both carrying s3:GetObject.
- * Matching on the name put both of them in both excerpts, so each policy's view showed a Deny on a
- * bucket it had nothing to do with. So this rebuilds the clause each of this policy's decisions
- * folds into, using the same statement() and clause() the fold itself uses, and matches on that.
+ * Attribution is by SID FAMILY, because that is now what ownership is. The fold runs inside one
+ * attached policy's group, so every statement carries the Sid base its policy implies and no
+ * statement has two owners. Matching on `^<base>\d+$` rather than on the base as a prefix: bases
+ * are alphanumeric and one can begin another (AdminDenyCmpWeb and AdminDenyCmpWebHosting), and the
+ * anchored digits are what keeps the shorter one from claiming the longer one's statements.
  *
- * Three more things that only fall out of doing it this way round:
+ * It used to match on the composed CLAUSE, because the fold grouped by clause across every policy
+ * and a statement could carry two policies' actions. That is gone, and with it three things this
+ * had to explain: gaps in the Sid numbering, statements listed in two excerpts at once, and a
+ * marginal cost of zero for a decision another policy had already paid for. Two policies that
+ * decide the identical thing now compose two statements, each named for its own policy.
  *
- *   the Sids have GAPS          AdminDeny1 and AdminDeny4 with nothing between them, because 2 and
- *                               3 came from another policy. The gaps are the proof that this is a
- *                               view of something bigger. Renumbering would produce a document that
- *                               does not exist.
- *   statements are SHARED       the fold groups by resource clause, not by policy, so one statement
- *                               can carry actions from two policies. Both excerpts show it, whole,
- *                               with `others` naming what came from elsewhere. Showing a trimmed
- *                               copy would be showing a statement nobody will write.
- *   the cost is MARGINAL        `share` is what the document grows by BECAUSE of this policy, not
- *                               the sum of the bytes of the statements above. A policy whose actions
- *                               all fold into a statement another policy already pays for costs
- *                               only its action names, and the sum would double-count every byte
- *                               of the resource clause they share.
+ * What does NOT change is that `share` is MARGINAL - what the document grows by because of this
+ * policy, not the sum of the bytes of the statements above. The separator that joins this policy's
+ * statements to the ones already there is part of that growth, and the subtraction gets it right
+ * where summing statement sizes does not.
  *
  * The PassRole fence is in neither figure: it is composed from the assessment's grants and is the
  * same with or without this policy's restrictions, so it cancels out of the subtraction. It is
@@ -372,55 +428,12 @@ export function policyContribution(restrictions, policy, options = {}) {
   const document = composeInline(all, options);
   const without = composeInline(all.filter((r) => r.policy !== policy), options);
 
-  // WHICH POLICIES put which action into which clause. The same two functions the fold uses, so the
-  // key is the fold's own key and a decision lands where its statement lands.
-  //
-  // Per action rather than per clause, and the set of owners rather than a boolean, because two
-  // policies can make the IDENTICAL decision - AmazonS3FullAccess and a customer managed policy
-  // both denying s3:GetObject on the same bucket is one statement that both of them produce. A
-  // per-clause set of this policy's action names could not see that: the action is in the set, so
-  // the statement reads as exclusively this policy's, `share` is 0 because removing this policy
-  // leaves the statement standing, and an approver who unticks it expects the Deny to go.
-  // Both derivations the composed clause depends on, or the attribution key misses the fold's key.
-  // createdFormats is not decorative here: an allow_only statement on a creating action carries the
-  // creation exemption in its NotResource, so a key built without it would never match that
-  // statement and the policy's own decision would drop out of its excerpt.
-  const nested = options.nested ?? (() => false);
-  const createdFormats = options.createdFormats ?? (() => []);
-  const owners = new Map();
-  for (const restriction of all) {
-    for (const action of restriction.actions ?? []) {
-      const key = clause(statement('', restriction, action, nested, createdFormats));
-      const perAction = owners.get(key) ?? new Map();
-      const held = perAction.get(action) ?? new Set();
-      held.add(restriction.policy);
-      perAction.set(action, held);
-      owners.set(key, perAction);
-    }
-  }
-
+  const mine = new RegExp(`^${denySidBase(policy)}\\d+$`);
   const statements = [];
   for (const one of document.Statement) {
-    const perAction = owners.get(clause(one));
-    if (!perAction) continue;
+    if (!mine.test(one.Sid ?? '')) continue;
     const names = Array.isArray(one.Action) ? one.Action : [one.Action];
-    const ours = names.filter((n) => perAction.get(n)?.has(policy));
-    if (ours.length === 0) continue;
-    // Every OTHER policy with a decision in this statement - by identity, so a caller counting them
-    // counts policies. `others` counts ACTIONS, and the two are different numbers.
-    const alsoBy = new Set();
-    for (const name of names) {
-      for (const owner of perAction.get(name) ?? []) if (owner !== policy) alsoBy.add(owner);
-    }
-    statements.push({
-      statement: one,
-      ours,
-      others: names.filter((n) => !perAction.get(n)?.has(policy)),
-      alsoBy: [...alsoBy].sort(),
-      // The actions this policy owns JOINTLY. Removing this policy's decision does not remove
-      // these, which is the one thing an excerpt must not let an approver believe.
-      shared: ours.filter((n) => (perAction.get(n)?.size ?? 0) > 1),
-    });
+    statements.push({ statement: one, ours: names });
   }
 
   // Falsy entries dropped, and the statement's own value checked for truthiness before the lookup.

@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { composeInline } from './inlinePreview.js';
+import { composeInline, denySidBase } from './inlinePreview.js';
 import {
   DENIED, NOT_DENIED, UNKNOWN, VirtualResourceError, evaluate, evaluateAll, virtualResource,
   wildcardMatch,
@@ -107,7 +107,8 @@ test('nothing matched and matched-but-did-not-fire are different answers', () =>
   const untagged = evaluate(document, 's3:DeleteObject',
                             virtualResource({ arn: 'arn:aws:s3:::b' }));
   assert.equal(untagged.outcome, NOT_DENIED);
-  assert.deepEqual(untagged.considered, ['AdminDeny1'], 'the statement that matched is not named');
+  assert.deepEqual(untagged.considered, [`${denySidBase('p')}1`],
+                   'the statement that matched is not named');
 
   const elsewhere = evaluate(document, 's3:GetObject', virtualResource({ arn: 'arn:aws:s3:::b' }));
   assert.deepEqual(elsewhere.considered, [], 'a statement was considered for another action');
