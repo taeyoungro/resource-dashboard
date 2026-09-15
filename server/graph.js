@@ -314,6 +314,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   /** Rows CARRIED_TYPES took off the canvas: the security group rules, which the group's own
    *  table holds. Not hidden and not dropped - a foot line says where they went. */
   let ruleRows = 0;
+  /** Security groups the layout put in a zone's gap band. See the count's own comment below. */
+  let zoneBandGroups = 0;
   for (const group of policy?.affected ?? []) {
     const type = group?.resource_type;
     if (!type) continue;
@@ -1034,6 +1036,7 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
           const cards = gapCards.get(az.id);
           if (!cards) continue;
           reserved -= tally(cards);
+          zoneBandGroups += tally(cards);
           const per = gapPerRow(az);
           for (let i = 0; i < cards.length; i += per) {
             const line = cards.slice(i, i + per);
@@ -1837,6 +1840,15 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       /** Security group rules, which no plate draws and the group's own table holds. Not in
        *  totalRows either, and for the same reason: the accounting above is about plates. */
       ruleRows,
+      /**
+       * Groups drawn in a zone's gap band rather than in the VPC band.
+       *
+       * Counted because it is the one placement in this picture a BORDER does not account for: the
+       * plate is inside a zone frame and the row is VPC-scoped, so a reader who takes every frame
+       * as recorded membership reads one thing wrong. graphSummary says so when this is non-zero,
+       * which is what a screen reader gets instead of the frames it cannot see.
+       */
+      zoneBandGroups,
     },
     kinds,
     measured,
@@ -1886,5 +1898,12 @@ export function graphSummary(scene) {
     + (kinds ? ` — ${kinds}` : '') + '. '
     + (c.implicitEdges > 0 ? `그중 ${c.implicitEdges}개는 기본 라우팅 테이블에서 도출했다. ` : '')
     + (c.omittedNodes > 0 ? `자원 ${c.omittedNodes.toLocaleString()}개는 그리지 못했다. ` : '')
-    + '테두리는 조회기가 기록한 소속이다.';
+    + '테두리는 조회기가 기록한 소속이다'
+    // The one exception, said only when there is one. A screen reader gets this sentence instead
+    // of the frames, so the qualifier has to travel with it - the caption under the picture is not
+    // read out. Silent when no group is in a gap, because then the sentence above is whole.
+    + (c.zoneBandGroups > 0
+      ? ` — 다만 보안 그룹 ${c.zoneBandGroups}개는 두 서브넷 줄 사이에 놓여 있고, 그것은 그 줄의 `
+        + '프라이빗 서브넷에만 소속원이 있다는 뜻이지 그 가용 영역에 속한다는 뜻이 아니다.'
+      : '.');
 }

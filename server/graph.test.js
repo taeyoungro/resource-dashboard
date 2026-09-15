@@ -546,6 +546,23 @@ test('an empty picture says whether EC2 was even looked at', () => {
   assert.match(graphSummary(sceneOf(ACCOUNT(), { regions: ['eu-west-1'] })), /고른 조건에 맞는/);
 });
 
+test('the spoken summary carries the gap band caveat, and only when there is one', () => {
+  // A screen reader gets this sentence INSTEAD of the frames, so the one placement a frame does
+  // not account for has to travel in it. The caption printed under the picture is not read out.
+  const scene = sceneOf(ACCOUNT(), null, true, OPEN);
+  assert.equal(scene.counts.zoneBandGroups, 1, 'the fixture no longer puts a group in a gap');
+  assert.match(graphSummary(scene), /보안 그룹 1개는 두 서브넷 줄 사이에 놓여 있고/);
+  assert.match(graphSummary(scene), /그 가용 영역에 속한다는 뜻이 아니다/);
+
+  // And silent otherwise: a caveat about something that did not happen teaches a listener to
+  // ignore the sentence it is attached to. TWO_ZONES has a band group in a zone with no private
+  // subnet, so nothing lands in a gap.
+  const plain = sceneOf(TWO_ZONES());
+  assert.equal(plain.counts.zoneBandGroups, 0);
+  assert.doesNotMatch(graphSummary(plain), /두 서브넷 줄 사이/);
+  assert.match(graphSummary(plain), /테두리는 조회기가 기록한 소속이다\./);
+});
+
 test('names and ids are cut to the plate and never silently', () => {
   assert.equal(shortId('i-0123456789abcdef0'), 'i-0123456…def0');
   assert.equal(shortId('sg-web'), 'sg-web');
