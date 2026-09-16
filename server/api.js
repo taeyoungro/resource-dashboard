@@ -49,7 +49,15 @@ const PLAN_ID = /^\d{12}:[\w+=,.@-]{1,96}$/;
 // key, but the approval marker is still named by it, so it is checked before being made into one.
 const REQUEST_ID = /^\d{12}-[0-9a-f]{16}$/;
 
-// A decision is a reviewer, a comment and a digest. Anything larger is not one.
+// The default for a POST that carries names and digests and nothing else - a passrole retry, a
+// withdrawal, a task re-run.
+//
+// NOT the decision route's cap any more, and the sentence that used to be here said it was: "a
+// decision is a reviewer, a comment and a digest". That stopped being true when the restriction
+// moved into the approval. A decision now carries the decisions themselves, each naming the
+// resources it keeps, and an ordinary one is past 16 kilobytes - so the cap refused approvals that
+// every quota downstream would have accepted. server/index.js gives that route config
+// .maxDecisionBytes instead; this stays the floor for everything that really is just a name.
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_COMMENT = 2000;
 const MAX_REVIEWER = 128;
@@ -137,7 +145,19 @@ export async function readBody(req, maxBytes = MAX_BODY_BYTES) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > maxBytes) throw new HttpError(413, `request body larger than ${maxBytes} bytes`);
+    if (size > maxBytes) {
+      // The number alone told a reader nothing about what to shorten. A decision is the body that
+      // grows, and what grows inside it is the resource list, so the sentence says which list -
+      // a person who reads "larger than 16384 bytes" goes looking for a setting, and a person who
+      // reads this goes back to the form.
+      throw new HttpError(
+        413,
+        `request body larger than ${maxBytes} bytes. An approval carrying a restriction names every `
+        + 'resource it keeps, so it grows with the resources chosen rather than with the number of '
+        + 'choices - narrow the resource list, or express the intent as a tag condition, which is '
+        + 'one statement however many resources it covers.',
+      );
+    }
     chunks.push(chunk);
   }
   if (size === 0) return {};
