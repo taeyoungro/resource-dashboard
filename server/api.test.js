@@ -1640,13 +1640,16 @@ test('a sweep that fails after the marker is written does not fail the decision'
 
 test('the restriction bound counts actions, not entries', async () => {
   // The message says "restricted actions" and one entry carries a list of them, so counting
-  // entries let 200 x N through. The only thing left bounding the request was the writer's byte
-  // check, which runs AFTER the approval - too late to say which list to shorten.
+  // entries let the bound x N through. The only thing left bounding the request was the writer's
+  // byte check, which runs AFTER the approval - too late to say which list to shorten.
+  //
+  // Three entries is far under any entry count anybody would bound on, and the action total is
+  // over, so a run that passes this is one counting the wrong thing.
   const { route, impactSha256 } = harness();
   const entries = Array.from({ length: 3 }, (_, i) => ({
     policy: 'mirror-cmp-WebHosting',
     intent: 'deny_action',
-    actions: Array.from({ length: 100 }, (_, j) => `s3:Action${i}x${j}`),
+    actions: Array.from({ length: 2100 }, (_, j) => `s3:Action${i}x${j}`),
     resources: [],
   }));
   await assert.rejects(
@@ -1654,8 +1657,32 @@ test('the restriction bound counts actions, not entries', async () => {
       params: { id: PLAN_ID },
       body: decision({ restrictions: entries, expected_impact_sha256: impactSha256 }),
     }),
-    (e) => e.status === 400 && /300/.test(e.message),
-    'three entries carrying a hundred actions each passed a bound of two hundred actions');
+    (e) => e.status === 400 && /6300/.test(e.message) && /6,144/.test(e.message),
+    'three entries carrying 2,100 actions each passed a bound on actions');
+});
+
+test('a whole service action list is a decision this accepts', async () => {
+  // ec2:* is 807 actions and 전체 선택 in the picker makes it one click, so this is what an ordinary
+  // wide restriction looks like rather than an extreme. It was refused at the web tier by a bound
+  // of 200 that cited the permission set INLINE policy quota - a quota the restriction no longer
+  // lands in. It now composes into five /opt-deny/ customer managed policies of about 6,130 bytes,
+  // five of the roughly sixteen slots available, and the applier measures that exactly.
+  const { route, impactSha256, s3 } = harness();
+  const entry = {
+    policy: 'arn:aws:iam::aws:policy/AmazonEC2FullAccess',
+    intent: 'deny_action',
+    actions: Array.from({ length: 807 }, (_, j) => `ec2:Action${j}`),
+    resources: [],
+  };
+  const result = await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({ restrictions: [entry], expected_impact_sha256: impactSha256 }),
+  });
+  assert.ok(result.written, 'the 807-action decision was not written');
+  const marker = s3.puts.find((p) => p.key.startsWith('applier/'));
+  assert.ok(marker, 'no applier marker was written for the 807-action decision');
+  assert.equal(JSON.parse(marker.body).restrictions[0].actions.length, 807,
+    'the marker did not carry every action the approver chose');
 });
 
 
