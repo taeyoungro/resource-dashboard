@@ -49,7 +49,15 @@ const PLAN_ID = /^\d{12}:[\w+=,.@-]{1,96}$/;
 // key, but the approval marker is still named by it, so it is checked before being made into one.
 const REQUEST_ID = /^\d{12}-[0-9a-f]{16}$/;
 
-// A decision is a reviewer, a comment and a digest. Anything larger is not one.
+// The default for a POST that carries names and digests and nothing else - a passrole retry, a
+// withdrawal, a task re-run.
+//
+// NOT the decision route's cap any more, and the sentence that used to be here said it was: "a
+// decision is a reviewer, a comment and a digest". That stopped being true when the restriction
+// moved into the approval. A decision now carries the decisions themselves, each naming the
+// resources it keeps, and an ordinary one is past 16 kilobytes - so the cap refused approvals that
+// every quota downstream would have accepted. server/index.js gives that route config
+// .maxDecisionBytes instead; this stays the floor for everything that really is just a name.
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_COMMENT = 2000;
 const MAX_REVIEWER = 128;
@@ -87,13 +95,27 @@ export function authorisedToAnnounce(config, headerValue) {
 }
 
 /** Which key opens a route. Everything not listed here needs the dashboard's own key. */
-// Bounded so one decision cannot post an unbounded document. The inline policy has a byte ceiling
-// of its own that the writer enforces; this is only to keep a single request sane.
-// One restriction per ACTION now, not per policy, and 전체 선택 in the picker makes a hundred of them
-// one click. This is a sanity bound, not the real limit: the real one is the permission set inline
-// policy quota of 10,240 bytes, which a hundred single-ARN statements already exceed. The page
-// estimates that and says so before submitting, and generator/restriction.py measures it exactly.
-const MAX_RESTRICTIONS = 200;
+// Bounded so one decision cannot post an unbounded document. This is a sanity bound and not the
+// real limit - the real one is measured by the applier, exactly, against the policies the decision
+// composes into.
+//
+// WHERE THE NUMBER COMES FROM. A restriction no longer lands in the permission set's inline policy
+// and its 10,240 bytes; it lands in customer managed policies under /opt-deny/, each holding 6,144
+// bytes, and a permission set references at most 20 policies of both kinds together. The baseline
+// takes one AWS managed and one customer managed, an attached policy takes one more, so the
+// restriction has roughly 16 slots - about 98,304 bytes.
+//
+// What fills those bytes is the action NAMES. Measured with the real composer over the action
+// reference: a whole service's action list packs at 160 to 200 actions per document, so a wide
+// restriction runs out of slots between 2,500 and 3,200 actions. The densest packing any real
+// action names permit - the 373 shortest names in the entire reference, which is not a restriction
+// anybody makes - is 373 per document, or 5,968 across the slots. So 6,000 is the count above which
+// NO shape composes, and below it the applier decides exactly and names the statement that did not
+// fit. The web tier refusing earlier than that would refuse decisions that are perfectly legal.
+//
+// One restriction per ACTION, not per policy, and 전체 선택 in the picker makes a whole service's
+// list one click - ec2:* alone is 807 actions, which is what this used to refuse at 200.
+const MAX_RESTRICTIONS = 6000;
 
 // The five forms, and they are not interchangeable - they produce different statements and go stale
 // in different directions. See event_pipeline code/generator/restriction.py.
@@ -137,7 +159,19 @@ export async function readBody(req, maxBytes = MAX_BODY_BYTES) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > maxBytes) throw new HttpError(413, `request body larger than ${maxBytes} bytes`);
+    if (size > maxBytes) {
+      // The number alone told a reader nothing about what to shorten. A decision is the body that
+      // grows, and what grows inside it is the resource list, so the sentence says which list -
+      // a person who reads "larger than 16384 bytes" goes looking for a setting, and a person who
+      // reads this goes back to the form.
+      throw new HttpError(
+        413,
+        `request body larger than ${maxBytes} bytes. An approval carrying a restriction names every `
+        + 'resource it keeps, so it grows with the resources chosen rather than with the number of '
+        + 'choices - narrow the resource list, or express the intent as a tag condition, which is '
+        + 'one statement however many resources it covers.',
+      );
+    }
     chunks.push(chunk);
   }
   if (size === 0) return {};
@@ -1240,9 +1274,11 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
           throw new HttpError(
             400,
             `at most ${MAX_RESTRICTIONS} restricted actions per decision, and this carries `
-            + `${restrictedActions} across ${restrictions.length} entries. The permission set inline `
-            + 'policy quota of 10,240 bytes is reached well before this, so a restriction this wide '
-            + 'wants a tag condition instead - one statement whatever it covers.',
+            + `${restrictedActions} across ${restrictions.length} entries. A restriction is written `
+            + 'into customer managed policies of 6,144 bytes each, and a permission set references '
+            + 'at most 20 policies of both kinds together - about 16 of them free for this - so no '
+            + 'action list this long fits whatever its shape. A tag condition is one statement '
+            + 'however many actions and resources it covers.',
           );
         }
 

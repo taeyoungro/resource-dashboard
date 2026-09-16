@@ -298,6 +298,33 @@ export function load() {
     // 16 kilobyte one every other POST uses.
     maxImpactBytes: integer('OPT_MAX_IMPACT_BYTES', 512 * 1024),
 
+    /**
+     * How large one approval may be.
+     *
+     * 무엇인가   승인 한 건의 요청 본문 상한. 결정자가 고른 제한 결정까지 포함한 크기다
+     * 어디 있나  이 프로세스의 설정값 하나. 환경 변수 OPT_MAX_DECISION_BYTES
+     * 누가 쓰나  아무도 쓰지 않는다 - 호스트의 환경 파일에 사람이 적는 값이다
+     * 누가 읽나  server/index.js 의 요청 처리기 하나. POST /api/plans/:id/decision 일 때만
+     *
+     * A decision used to be a reviewer, a comment and two digests, and 16 kilobytes was generous
+     * for that. It now carries the restriction decisions as well, and a decision NAMES THE
+     * RESOURCES IT KEEPS - so its size follows the enumerated set rather than the number of
+     * choices. 200 restricted actions over 50 instance ARNs is 9 kilobytes; the same decision over
+     * a few hundred resources is past 16.
+     *
+     * 256 kilobytes, from what can legally be composed OUT of a decision rather than from a round
+     * number. generator/restriction.py packs the statements into customer managed policies of 6,144
+     * bytes and generator/permission_set.py admits at most 18 of ours, so roughly 110 kilobytes of
+     * policy is the most any decision can ever produce. A body over twice that cannot be describing
+     * a permission set this pipeline would apply, and the applier would refuse it after the
+     * approval was already filed - which is the wrong place to find out.
+     *
+     * NOT removed altogether. S3 would take a 50 terabyte object and the marker has no size problem,
+     * but this process reads the whole body into memory before it parses it, and an unbounded POST
+     * on an authenticated route is still a way to take the dashboard down.
+     */
+    maxDecisionBytes: integer('OPT_MAX_DECISION_BYTES', 256 * 1024),
+
     // Where the built single page application lives. Served from this process rather than from a
     // separate web server so there is one origin, and therefore no reason to relax CORS.
     staticDir: (process.env.OPT_STATIC_DIR ?? 'dist').trim(),

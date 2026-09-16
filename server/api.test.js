@@ -1640,13 +1640,16 @@ test('a sweep that fails after the marker is written does not fail the decision'
 
 test('the restriction bound counts actions, not entries', async () => {
   // The message says "restricted actions" and one entry carries a list of them, so counting
-  // entries let 200 x N through. The only thing left bounding the request was the writer's byte
-  // check, which runs AFTER the approval - too late to say which list to shorten.
+  // entries let the bound x N through. The only thing left bounding the request was the writer's
+  // byte check, which runs AFTER the approval - too late to say which list to shorten.
+  //
+  // Three entries is far under any entry count anybody would bound on, and the action total is
+  // over, so a run that passes this is one counting the wrong thing.
   const { route, impactSha256 } = harness();
   const entries = Array.from({ length: 3 }, (_, i) => ({
     policy: 'mirror-cmp-WebHosting',
     intent: 'deny_action',
-    actions: Array.from({ length: 100 }, (_, j) => `s3:Action${i}x${j}`),
+    actions: Array.from({ length: 2100 }, (_, j) => `s3:Action${i}x${j}`),
     resources: [],
   }));
   await assert.rejects(
@@ -1654,8 +1657,32 @@ test('the restriction bound counts actions, not entries', async () => {
       params: { id: PLAN_ID },
       body: decision({ restrictions: entries, expected_impact_sha256: impactSha256 }),
     }),
-    (e) => e.status === 400 && /300/.test(e.message),
-    'three entries carrying a hundred actions each passed a bound of two hundred actions');
+    (e) => e.status === 400 && /6300/.test(e.message) && /6,144/.test(e.message),
+    'three entries carrying 2,100 actions each passed a bound on actions');
+});
+
+test('a whole service action list is a decision this accepts', async () => {
+  // ec2:* is 807 actions and 전체 선택 in the picker makes it one click, so this is what an ordinary
+  // wide restriction looks like rather than an extreme. It was refused at the web tier by a bound
+  // of 200 that cited the permission set INLINE policy quota - a quota the restriction no longer
+  // lands in. It now composes into five /opt-deny/ customer managed policies of about 6,130 bytes,
+  // five of the roughly sixteen slots available, and the applier measures that exactly.
+  const { route, impactSha256, s3 } = harness();
+  const entry = {
+    policy: 'arn:aws:iam::aws:policy/AmazonEC2FullAccess',
+    intent: 'deny_action',
+    actions: Array.from({ length: 807 }, (_, j) => `ec2:Action${j}`),
+    resources: [],
+  };
+  const result = await route['POST /api/plans/:id/decision']({
+    params: { id: PLAN_ID },
+    body: decision({ restrictions: [entry], expected_impact_sha256: impactSha256 }),
+  });
+  assert.ok(result.written, 'the 807-action decision was not written');
+  const marker = s3.puts.find((p) => p.key.startsWith('applier/'));
+  assert.ok(marker, 'no applier marker was written for the 807-action decision');
+  assert.equal(JSON.parse(marker.body).restrictions[0].actions.length, 807,
+    'the marker did not carry every action the approver chose');
 });
 
 
@@ -2607,4 +2634,85 @@ test('the page binds by the digest the domain uses, and never by the other one',
   assert.match(detail, /detail\.mismatch\.findings\.map/,
                'only some of the findings reach the page, and the three send a person to '
                + 'different places');
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// How large one approval may be.
+//
+// The restriction moved into the approval, and a restriction NAMES THE RESOURCES IT KEEPS - so the
+// decision body grows with the resources chosen rather than with the number of choices. The 16
+// kilobyte default was sized for the decision this used to be (a reviewer, a comment, two digests)
+// and it refused an approval whose composed policy was 7,137 bytes: inside every quota AWS
+// enforces, and never reaching the bucket.
+// ---------------------------------------------------------------------------------------------
+
+/** One approval carrying `entries` restriction decisions, each keeping `resources` ARNs. */
+function approvalOf(entries, actions, resources) {
+  return JSON.stringify({
+    decision: 'approve',
+    reviewer: 'junelee0617',
+    comment: '',
+    expected_changes_sha256: 'a'.repeat(64),
+    expected_impact_sha256: 'b'.repeat(64),
+    restrictions: Array.from({ length: entries }, (_, e) => ({
+      policy: 'arn:aws:iam::aws:policy/AmazonEC2FullAccess',
+      intent: 'allow_only',
+      actions: Array.from({ length: actions }, (_, a) => `ec2:TerminateInstances${a}`),
+      resources: Array.from({ length: resources }, (_, r) =>
+        `arn:aws:ec2:ap-northeast-2:718100330247:instance/i-0${(e * 1000 + r).toString(16).padStart(16, 'a')}`),
+    })),
+  });
+}
+
+test('an ordinary restriction approval is past the cap every other POST uses', () => {
+  // The measurement the new cap exists for, pinned so nobody restores the old one by reasoning
+  // that a decision is small.
+  //
+  // WHAT GROWS IS THE RESOURCE LIST, not the number of choices. `allow_only` keeping 300 instances
+  // across 10 actions is one decision an approver makes in one sitting on an account with 300
+  // instances, and the ARNs alone are past 16 kilobytes before any action is named. 200 actions
+  // over 50 resources - the picker's 전체 선택 on one policy - is only 9, which is why the old cap
+  // held for as long as it did and why the shape that broke it looked ordinary.
+  const wide = Buffer.byteLength(approvalOf(1, 10, 300), 'utf8');
+  const many = Buffer.byteLength(approvalOf(1, 200, 50), 'utf8');
+  assert.ok(wide > 16 * 1024, `300 resources is ${wide} bytes and no longer exceeds the default`);
+  assert.ok(many < 16 * 1024, `200 actions is ${many} bytes - the fixture no longer shows the axis`);
+  assert.ok(wide < withEnv(GOOD, load).maxDecisionBytes,
+            'the decision cap refuses the approval it was raised for');
+});
+
+test('the decision cap is well clear of everything that can legally be composed from one', () => {
+  // Not a round number: generator/restriction.py packs into customer managed policies of 6,144
+  // bytes and generator/permission_set.py admits at most 18 of ours, so ~110 kilobytes of policy is
+  // the most a decision can ever produce. The cap has to sit above that and stay finite.
+  const config = withEnv(GOOD, load);
+  assert.ok(config.maxDecisionBytes > 18 * 6144,
+            'a decision that composes to the maximum permitted policy would be refused');
+  assert.ok(Number.isFinite(config.maxDecisionBytes) && config.maxDecisionBytes <= 1024 * 1024,
+            'the cap is gone rather than raised - this process reads the whole body into memory');
+  // And it is the host's to change, like the other two per-route caps.
+  assert.equal(withEnv({ ...GOOD, OPT_MAX_DECISION_BYTES: '65536' }, load).maxDecisionBytes, 65536);
+});
+
+test('the decision route is the one that gets the larger cap, by pattern and not by path', () => {
+  // Structural: index.js is the process entry point and the runner does not start it. What this
+  // pins is the comparison, because a plan id sits in the middle of that path - matching the
+  // REQUEST path against a literal is a condition that never becomes true, and the route would
+  // silently keep the 16 kilobyte default with nothing failing to say so.
+  const entry = readFileSync(new URL('./index.js', import.meta.url), 'utf8');
+  assert.match(entry, /route\.spec === 'POST \/api\/plans\/:id\/decision'/,
+               'the decision cap is chosen by something other than the route pattern');
+  assert.match(entry, /config\.maxDecisionBytes/, 'the decision route does not use its own cap');
+  assert.match(entry, /return \{ handler, params, spec \}/,
+               'match() does not hand the pattern back, so the comparison above cannot work');
+});
+
+test('a body over the cap says what to shorten, not just a number', () => {
+  // "request body larger than 16384 bytes" sends a person looking for a setting. The thing they
+  // can actually act on is the resource list, and the tag condition is the way out that does not
+  // grow with it.
+  const source = readFileSync(new URL('./api.js', import.meta.url), 'utf8');
+  assert.match(source, /narrow the resource list/, 'the 413 names no remedy');
+  assert.match(source, /tag condition/, 'the 413 does not offer the intent that is a fixed size');
 });

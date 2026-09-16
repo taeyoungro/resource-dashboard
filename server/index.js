@@ -82,7 +82,10 @@ function match(routeTable, method, path) {
       if (routeParts[i].startsWith(':')) params[routeParts[i].slice(1)] = pathParts[i];
       else if (routeParts[i] !== pathParts[i]) { ok = false; break; }
     }
-    if (ok) return { handler, params };
+    // The SPEC travels back, not just the handler. The body cap is per route and one route's path
+    // carries a plan id in it, so a caller comparing the request path against a literal never
+    // matches it - see the limit below. The pattern is the thing that is comparable.
+    if (ok) return { handler, params, spec };
   }
   return null;
 }
@@ -177,14 +180,26 @@ async function main() {
     }
 
     try {
-      // An announcement carries a marker body and is allowed to be large; a decision is a
-      // name and a sentence and is not.
       // Per route, because an assessment is far larger than a marker body and both are larger than
       // any other POST. One shared cap would either refuse a legitimate assessment or let every
       // other route accept half a megabyte.
-      const limit = spec === 'POST /api/impact'
-        ? config.maxImpactBytes
-        : (INGEST_ROUTES.has(spec) ? config.maxAnnouncementBytes : undefined);
+      //
+      // A DECISION IS NOW THE THIRD OF THOSE. It used to be a reviewer, a comment and a digest -
+      // hundreds of bytes - and the 16 kilobyte default was sized for that. It now also carries the
+      // administrator's RESTRICTION DECISIONS, and one of those names every resource it keeps:
+      // `allow_only` over 50 instance ARNs is already 9 kilobytes, and the same decision over a few
+      // hundred resources is past 16 before the applier has been asked to compose anything. The
+      // approval that hit this was a restriction composing to 7,137 bytes of policy - well inside
+      // every quota AWS enforces - refused by this process before it reached the bucket.
+      //
+      // Matched on the route's PATTERN and not on the request path: a plan id sits in the middle of
+      // that path, so `spec === 'POST /api/plans/718100330247:ps-junelee0617/decision'` is a
+      // comparison that never becomes true. match() returns the pattern for this.
+      const limit = route.spec === 'POST /api/plans/:id/decision'
+        ? config.maxDecisionBytes
+        : spec === 'POST /api/impact'
+          ? config.maxImpactBytes
+          : (INGEST_ROUTES.has(spec) ? config.maxAnnouncementBytes : undefined);
       const body = req.method === 'POST' ? await readBody(req, limit) : {};
       // The query string, for the routes that scope a GET. A poll for one policy's analysis has to
       // say which policy, and it is a GET - there is no body to put it in.
