@@ -52,9 +52,10 @@ const MARKER_PREFIXES = ['inspector/', 'applier/', 'impact/', 'inline_writer/'];
  * object rather than a marker.
  *
  * Anchored on the whole key, and that is the assertion that matters most in this file. `plan/`
- * also holds tfplan, plan.json, plan.txt and changes.sha256 - the objects an approval BINDS to - and
- * a dashboard that could rewrite those could show one plan and apply another. assess.json is a
- * manifest that says "assess this plan" and binds nothing.
+ * also holds the objects an approval BINDS to - tfplan, plan.json, plan.txt and changes.sha256 on a
+ * terraform prefix, change.json and change.sha256 on a composed one - and a dashboard that could
+ * rewrite those could show one change and apply another. assess.json is a manifest that says
+ * "assess this plan" and binds nothing.
  */
 const ASSESS_KEY = /^\d{12}\/[\w+=,.@-]{1,128}\/plan\/assess\.json$/;
 

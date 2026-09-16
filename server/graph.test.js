@@ -178,8 +178,31 @@ test('every node is drawn inside the container its row names, and nowhere else',
       const vpc = by.get(`vpc:${r.vpc_id}`);
       assert.ok(vpc && inside(n, vpc), `${n.id} is not inside its VPC ${r.vpc_id}`);
       for (const c of scene.containers) {
-        if (c.kind === 'subnet' || c.kind === 'az') {
+        // A subnet frame, never. A VPC-scoped row inside one is the picture claiming a subnet
+        // that no field recorded, and there is no reading of the layout that earns it.
+        if (c.kind === 'subnet') {
           assert.ok(!inside(n, c), `${n.id} has no subnet and was drawn inside ${c.id}`);
+        }
+        // A ZONE frame, only for a security group in that zone's gap band - and only when its
+        // members put it there. The group is still VPC-scoped and the picture still owes the
+        // reader that fact (GRAPH_CAPTION says it), so what is checked here is the JUSTIFICATION
+        // rather than the exception: every member of a group drawn inside a zone must be in that
+        // zone's private subnets. A group that drifted into a frame for any other reason fails,
+        // which is the whole of what this assertion was protecting.
+        if (c.kind === 'az' && inside(n, c)) {
+          assert.equal(n.resourceType, 'ec2:security-group',
+                       `${n.id} has no zone and was drawn inside ${c.id}`);
+          const zone = c.id.slice(c.id.lastIndexOf(':') + 1);
+          const members = [...rowsById.values()]
+            .filter((m) => (m.links?.security_group ?? []).includes(n.id));
+          assert.ok(members.length > 0, `${n.id} is in ${c.id} and no row names it`);
+          for (const m of members) {
+            assert.equal(m.zone, zone,
+                         `${n.id} is in ${c.id} and its member ${idOf(m.arn)} is in ${m.zone}`);
+            const sub = scene.containers.find((s) => s.id === `subnet:${m.subnet_id}`);
+            assert.equal(sub?.tint, 'private',
+                         `${n.id} is in a zone's gap and its member ${idOf(m.arn)} is not private`);
+          }
         }
       }
     } else if (!n.id.startsWith('vol-') || !scene.edges.some((e) => e.kind === 'volume' && (e.from === n.id || e.to === n.id))) {
@@ -523,6 +546,23 @@ test('an empty picture says whether EC2 was even looked at', () => {
   assert.match(graphSummary(sceneOf(ACCOUNT(), { regions: ['eu-west-1'] })), /고른 조건에 맞는/);
 });
 
+test('the spoken summary carries the gap band caveat, and only when there is one', () => {
+  // A screen reader gets this sentence INSTEAD of the frames, so the one placement a frame does
+  // not account for has to travel in it. The caption printed under the picture is not read out.
+  const scene = sceneOf(ACCOUNT(), null, true, OPEN);
+  assert.equal(scene.counts.zoneBandGroups, 1, 'the fixture no longer puts a group in a gap');
+  assert.match(graphSummary(scene), /보안 그룹 1개는 두 서브넷 줄 사이에 놓여 있고/);
+  assert.match(graphSummary(scene), /그 가용 영역에 속한다는 뜻이 아니다/);
+
+  // And silent otherwise: a caveat about something that did not happen teaches a listener to
+  // ignore the sentence it is attached to. TWO_ZONES has a band group in a zone with no private
+  // subnet, so nothing lands in a gap.
+  const plain = sceneOf(TWO_ZONES());
+  assert.equal(plain.counts.zoneBandGroups, 0);
+  assert.doesNotMatch(graphSummary(plain), /두 서브넷 줄 사이/);
+  assert.match(graphSummary(plain), /테두리는 조회기가 기록한 소속이다\./);
+});
+
 test('names and ids are cut to the plate and never silently', () => {
   assert.equal(shortId('i-0123456789abcdef0'), 'i-0123456…def0');
   assert.equal(shortId('sg-web'), 'sg-web');
@@ -794,29 +834,62 @@ test('a band plate sits over the things it is joined to, not in the order its id
       .map((e) => mid(e.from === id ? e.to : e.from));
     return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
   };
-  // sg-db is joined to i-0bbb222 alone, which is in subnet-b1 in the RIGHT-hand zone; sg-web and
-  // sg-ssh are joined to things in the left one. Under id order sg-db came first and its line
-  // crossed the whole VPC; it is now on the side its line goes to.
+  // sg-db is joined to i-0bbb222 alone, which is in subnet-b1 - PRIVATE, in the RIGHT-hand zone -
+  // so it is no longer a band plate at all: it sits in that zone's gap, between the two subnet
+  // rows. Its line then has the height of the gap instead of the height of the VPC, and it is the
+  // same property this test is about, reached by the other of the two mechanisms.
   assert.ok(mid('i-0bbb222') > mid('i-0aaa111'), 'the fixture no longer puts the two instances apart');
-  for (const near of ['sg-web', 'sg-ssh']) {
-    assert.ok(mid(near) < mid('sg-db'),
-              `${near} is joined to the left-hand instance and sits right of sg-db`);
-  }
-  // The whole band, in reading order: every plate that HAS lines wants a place no further left
-  // than the plate before it. That is the assignment being a minimum of the total |slot - want|
-  // for the row - any pair out of that order could be swapped for a shorter total.
+  const az = scene.containers.find((c) => c.kind === 'az' && c.id.endsWith('us-east-1b'));
+  assert.ok(az, 'the fixture no longer has a second zone');
+  assert.equal(mid('sg-db'), az.x + az.w / 2, 'sg-db is not centred on the zone it belongs over');
+  assert.ok(by.get('sg-db').y > by.get(`subnet:subnet-a1`).y,
+            'sg-db is above the public row rather than in the gap under it');
+  assert.ok(mid('sg-db') > mid('sg-web'), 'sg-db no longer sits over the instance it is joined to');
+
+  // The band that is left, in reading order: every plate that HAS lines wants a place no further
+  // left than the plate before it. That is the assignment being a minimum of the total
+  // |slot - want| for the row - any pair out of that order could be swapped for a shorter total.
   // The band's first row, by the y the security groups landed on. Not "everything above the
   // zones": the internet gateway straddles the VPC's top border and is placed by its own rule,
   // and the middle column is a column rather than a row.
+  //
+  // The middle column is excluded BY TYPE and not by y, which is what it always meant to be: a
+  // route table's first card starts at the same top as the band's first row, so filtering on y
+  // alone swept the column into the row and asserted an order over a set that is not ordered
+  // together. It passed while the band happened to sort the same way and stopped the day a plate
+  // left the band.
+  const COLUMN = new Set(['ec2:route-table', 'ec2:network-acl', 'ec2:vpc-endpoint']);
   const bandY = by.get('sg-web').y;
   const band = scene.nodes
-    .filter((n) => n.y === bandY && want(n.id) !== null)
+    .filter((n) => n.y === bandY && !COLUMN.has(n.resourceType) && want(n.id) !== null)
     .sort((a, b) => a.x - b.x);
-  assert.ok(band.length >= 4, `only ${band.length} band plates carry lines`);
+  // Two, where it used to be four: sg-db left the band for the gap, and the middle column is no
+  // longer miscounted into the row. Two is one ordered PAIR, which is the smallest thing this can
+  // assert and still be asserting something - the floor is here so that a fixture change which
+  // emptied the band fails rather than passing over an empty list.
+  assert.ok(band.length >= 2, `only ${band.length} band plates carry lines`);
   for (let i = 1; i < band.length; i += 1) {
     assert.ok(want(band[i].id) >= want(band[i - 1].id) - 0.5,
               `${band[i - 1].id} then ${band[i].id}: the band is not in the order its lines ask for`);
   }
+});
+
+test('a group in the gap sits in the middle of it, not against either subnet row', () => {
+  // The gap is ROW_GAP above the plate and ROW_GAP below it. A plate resting on the public row -
+  // or hanging off the private one - reads as one of the two rows having grown rather than as a
+  // band of its own, which is the whole of what the widened gap is for.
+  const scene = sceneOf(ACCOUNT(), null, true, OPEN);
+  const by = boxes(scene);
+  const sg = by.get('sg-db');
+  const above = scene.containers
+    .filter((c) => c.kind === 'subnet' && c.y + c.h <= sg.y)
+    .reduce((best, c) => (!best || c.y + c.h > best.y + best.h ? c : best), null);
+  const below = scene.containers
+    .filter((c) => c.kind === 'subnet' && c.y >= sg.y + sg.h)
+    .reduce((best, c) => (!best || c.y < best.y ? c : best), null);
+  assert.ok(above && below, 'sg-db is not between two subnet rows');
+  assert.equal(sg.y - (above.y + above.h), below.y - (sg.y + sg.h),
+               'the group is not centred in the gap it made');
 });
 
 /** A group in the band joined to an interface in a SECOND zone, so its line has to get past that

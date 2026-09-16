@@ -761,33 +761,30 @@ test('the per-policy view says the three things that make it honest', () => {
                              IMPACT.indexOf('type Draft ='));
   // The needle is the SENTENCE, not the identifier. `block.includes('Sid')` was matched by
   // `key={statement.Sid}` and `className="sid"` - load-bearing render code no edit removes - so
-  // deleting the entire explanatory paragraph left this green. Proven by deletion: the one sentence
-  // telling an approver that AdminDeny1 followed by AdminDeny4 is a slice of a bigger document
-  // rather than a corrupt one could go, and all 45 tests passed.
+  // deleting the entire explanatory paragraph left this green.
+  //
+  // What the paragraph has to say changed with the fold. Statements no longer cross policies, so
+  // there are no gaps in the numbering and no statement with two owners - and the excerpt is
+  // honest for a different reason: the Sid NAMES its policy, and everything here is this policy's.
+  // The old sentences about gaps and co-ownership would now be false.
   assert.match(block,
-               /<code>Sid<\/code> 번호가 중간에 비어 있을 수 있다[\s\S]{0,60}비어 있는 번호는/,
-               'nothing explains why the Sid numbers have gaps');
-  assert.ok(block.includes('같은 문장'), 'a statement shared with another policy is not marked');
-  assert.ok(block.includes('다른 정책'), 'the other policy\'s actions are not distinguished');
+               /<code>Sid<\/code>가 어느 정책의 것인지 이름으로 말하고[\s\S]{0,80}이 정책의\s*것이다/,
+               'nothing tells the reader every statement here belongs to this policy alone');
+  assert.match(block, /다른 정책이 같은 결정을 했더라도 그쪽은 그쪽의 문장을 따로 갖는다/,
+               'the page does not say an identical decision elsewhere is a separate statement');
   assert.ok(block.includes('더해도'),
             'the page does not say the per-policy sizes do not add up to the document');
 
-  // The one that contradicts what the reader is about to assume. Two policies can make the
-  // IDENTICAL decision - one statement both of them produce - and then unticking it here leaves
-  // the Deny standing. Silently, and with share=0 beside a statement listed as this policy's.
-  assert.ok(block.includes('coOwned'), 'co-owned statements are not separated from shared ones');
-  assert.ok(block.includes('여기서\n                  선택을 지워도 그 문장은 남는다')
-            || /선택을 지워도 그 문장은 남는다/.test(block),
-            'the page does not say that unticking a co-owned action leaves the Deny in place');
-  assert.match(CSS, /\.statement-actions \.co-owned\b/,
-               'a co-owned action looks exactly like one this policy controls');
-
-  // alsoBy counts POLICIES; others counts ACTIONS. One policy contributing four actions was
-  // rendered as "shared with 4 policies" on a permission set that had two.
-  assert.ok(block.includes('alsoBy.length}개와 같은 문장'),
-            'the policy count is not taken from the policy identities');
-  assert.ok(!/others\.length}개와 공유/.test(block),
-            'an action count is being printed with the noun 정책');
+  // And nothing left that claims co-ownership, which cannot happen any more. A screen that still
+  // offered "shared with another policy" would be describing a document shape the writer no longer
+  // composes.
+  for (const gone of ['coOwned', 'alsoBy', '.shared', 'from-elsewhere']) {
+    assert.ok(!block.includes(gone), `${gone} outlived the shared statement it described`);
+  }
+  assert.doesNotMatch(CSS, /\.statement-actions \.co-owned\b/,
+                      'the co-owned action style outlived co-ownership');
+  assert.doesNotMatch(CSS, /\.statement-actions \.from-elsewhere\b/,
+                      "the foreign-action style outlived the foreign action");
 
   // The share is this policy's; the limit is the document's. Colouring the first by the second
   // turned every policy's dialog red the moment any of them was over.
@@ -799,8 +796,6 @@ test('the per-policy view says the three things that make it honest', () => {
   // standalone policy is a wrong answer somebody can screenshot.
   assert.ok(block.includes('readableStatements('), 'the excerpt is rendered as a whole document');
   assert.ok(!block.includes('readable('), 'the excerpt is rendered with the document renderer');
-  assert.match(CSS, /\.statement-actions \.from-elsewhere\b/,
-               "another policy's action in a shared statement looks the same as this policy's");
 });
 
 // ---- from a finding card straight to the restriction that cuts it -------------------------------

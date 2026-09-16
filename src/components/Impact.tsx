@@ -431,12 +431,6 @@ function PolicyInlinePreview({
     [restrictions, policy, accountId, fenceGrants, policyFenceServices, nested, createdFormats],
   );
 
-  // Statements this policy does not have to itself, for either reason: another policy put a
-  // DIFFERENT action in the same statement, or another policy made the SAME decision.
-  const withOthers = view.statements.filter((s) => s.alsoBy.length > 0);
-  // The ones where unticking here would not remove the Deny. Separate, because it is the only
-  // thing on this screen that contradicts what the reader is about to assume.
-  const coOwned = view.statements.filter((s) => s.shared.length > 0);
   const actions = view.statements.reduce((n, s) => n + s.ours.length, 0);
   const overLimit = view.total > INLINE_LIMIT;
   /** How many statements the WHOLE document has, so the empty state can tell its two cases apart. */
@@ -460,12 +454,11 @@ function PolicyInlinePreview({
       <span className="muted small">
         {view.statements.length === 0
           ? "이 정책이 문서에 넣는 문장이 없다"
+          // Always a real number now. A statement belongs to one policy, so removing this policy
+          // always removes its statements - the zero that used to mean "another policy is already
+          // paying for all of them" cannot happen.
           : `문장 ${view.statements.length}개 · 동작 ${actions}개 · `
-            + (view.share === 0
-              // Not "adds nothing". Every statement below exists, and another policy is already
-              // paying for all of them - which is a different sentence and the true one.
-              ? "다른 정책이 같은 것을 이미 거부하고 있다"
-              : `문서를 ${view.share.toLocaleString()}바이트 늘린다`)}
+            + `문서를 ${view.share.toLocaleString()}바이트 늘린다`}
         {view.fence.length > 0 && ` · 울타리 ${view.fence.length}개`}
       </span>
 
@@ -476,9 +469,10 @@ function PolicyInlinePreview({
             이 정책이 넣는 문장 <span className="muted">— <code>{name}</code></span>
           </h4>
           <p className="muted small">
-            권한 세트의 인라인 문서는 <strong>하나</strong>이고, 이것은 그 문서에서 이 정책이 넣는
-            부분만 떼어 본 것이다 — 따로 만들어지는 문서가 아니다. 그래서{" "}
-            <code>Sid</code> 번호가 중간에 비어 있을 수 있다. 비어 있는 번호는 다른 정책의 문장이다.
+            권한 세트의 문서는 <strong>하나</strong>이고, 이것은 그 문서에서 이 정책이 넣는 부분만
+            떼어 본 것이다 — 따로 만들어지는 문서가 아니다. 다만 문장 하나의 주인은 하나다:{" "}
+            <code>Sid</code>가 어느 정책의 것인지 이름으로 말하고, 여기 있는 문장은 전부 이 정책의
+            것이다. 다른 정책이 같은 결정을 했더라도 그쪽은 그쪽의 문장을 따로 갖는다.
           </p>
 
           {view.statements.length === 0 ? (
@@ -504,17 +498,14 @@ function PolicyInlinePreview({
                   jobs the reader has. */}
               <p className="muted small">
                 이 정책이 늘리는 크기 <strong>{view.share.toLocaleString()}바이트</strong>
-                {view.share === 0
-                  && " — 다른 정책이 같은 것을 이미 거부하고 있어, 이 정책을 빼도 문서는 그대로다"}
               </p>
-              {/* Marginal, and it has to say so. Folding pushes the sum of the per-policy figures
-                  DOWN - two policies sharing one resource clause pay for it once, and two making
-                  the same decision give 0 and 0 for a statement that costs real bytes - so the
-                  figures do not add up to the document and adding them understates it. */}
+              {/* Marginal, and it has to say so. It is no longer marginal because of FOLDING -
+                  statements do not cross policies any more - but the figures still do not add up
+                  to the document: the empty document's fixed bytes are in none of them, and the
+                  separator before a policy's first statement is in every one of them. */}
               <p className="muted small">
-                늘리는 크기는 <strong>이 정책을 뺐을 때와의 차이</strong>다. 문장이 다른 정책과 접히면
-                자원 절은 한 번만 계산되므로, 정책별 크기를 더해도 문서 크기가 되지 않는다 — 대개
-                모자란다.
+                늘리는 크기는 <strong>이 정책을 뺐을 때와의 차이</strong>다. 정책별 크기를 더해도
+                문서 크기가 되지 않는다 — 빈 문서의 고정 크기가 어느 쪽에도 들어 있지 않다.
               </p>
               <p className={overLimit ? "error" : "muted small"}>
                 문서 전체 {view.total.toLocaleString()}바이트 / 한도{" "}
@@ -527,39 +518,17 @@ function PolicyInlinePreview({
                     + "줄여야 한다. 태그 조건은 몇 개를 덮든 문장 하나다.")}
               </p>
 
-              {coOwned.length > 0 && (
-                <p className="warn-inline">
-                  {coOwned.length}개 문장은 <strong>다른 정책도 똑같이 결정한 것</strong>이다. 여기서
-                  선택을 지워도 그 문장은 남는다 — 같은 결정을 한 정책에서도 지워야 없어진다.
-                </p>
-              )}
-
-              {withOthers.length > coOwned.length && (
-                <p className="warn-inline">
-                  {withOthers.length}개 문장은 다른 정책과 <strong>같은 문장</strong>이다. 자원 절이
-                  같은 동작은 한 문장으로 접히기 때문이고, 아래에는 그 문장이 통째로 나온다 — 다른
-                  정책에서 온 동작까지 함께다.
-                </p>
-              )}
-
               <ul className="statement-list">
-                {view.statements.map(({ statement, ours, others, alsoBy, shared }) => (
+                {/* Every statement here is this policy's alone. The fold runs inside one attached
+                    policy's group, so two policies that decide the same thing get one statement
+                    each - and the Sid says which. Nothing to disclaim about co-ownership because
+                    there is none. */}
+                {view.statements.map(({ statement, ours }) => (
                   <li key={statement.Sid}>
                     <code className="sid">{statement.Sid}</code>
-                    <span className="muted small">
-                      {ours.length}개
-                      {/* alsoBy counts POLICIES. others counts ACTIONS, and one policy can
-                          contribute four of them - printing that with the noun 정책 told an
-                          approver with two attached policies that a statement was shared with
-                          four. */}
-                      {alsoBy.length > 0 && ` · 다른 정책 ${alsoBy.length}개와 같은 문장`}
-                      {shared.length > 0 && ` · ${shared.length}개는 다른 정책도 같이 결정`}
-                    </span>
+                    <span className="muted small">{ours.length}개</span>
                     <div className="statement-actions">
-                      {ours.map((a) => (
-                        <code key={a} className={shared.includes(a) ? "co-owned" : undefined}>{a}</code>
-                      ))}
-                      {others.map((a) => <code key={a} className="from-elsewhere">{a}</code>)}
+                      {ours.map((a) => <code key={a}>{a}</code>)}
                     </div>
                   </li>
                 ))}

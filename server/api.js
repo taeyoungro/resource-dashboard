@@ -213,7 +213,10 @@ function analysisCitation(claim, impactDigest) {
  */
 function describesPlan(plan, document) {
   if (!plan?.request_id || document?.request_id === plan.request_id) return true;
-  return (plan.changes ?? []).length === 0;
+  // "Changes nothing" in whichever list this domain fills. A composed plan names no terraform
+  // address, so its moves are in composed_changes - and reading only `changes` would call every
+  // composed plan unchanged and let an assessment from any earlier inspection stand.
+  return (plan.changes ?? []).length === 0 && (plan.composed_changes ?? []).length === 0;
 }
 
 /**
@@ -266,6 +269,17 @@ function decisionMarker({ config, plan, prefix, payload, now, restrictions = nul
     // never computed here: the dashboard is the component that is not trusted, so it must not be
     // the author of a value that authorises its own approval.
     changes_sha256: plan.changes_sha256,
+
+    // And the ONE value a composed plan binds by instead. There is no file: the restriction is
+    // decided after the inspection, so the applier composes the document from the declaration once
+    // the decision exists, plans what it composed, and compares that plan against the two states
+    // in change.json. This digest is what says those are the two states the approver read.
+    //
+    // Copied from change.sha256 for exactly the reason above. Both fields are always present in
+    // the marker and one of them is always null - which one is decided by the RESOURCE NAME on the
+    // applier's side, not by which field the dashboard filled in, so a marker cannot choose its
+    // own check by leaving a field out.
+    change_sha256: plan.change_sha256 ?? null,
 
     plan: {
       bucket: config.stateBucket,
@@ -1075,8 +1089,15 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // decision, not of whatever was there when the page last loaded.
       const plan = await readPlan(s3, config, id);
       if (!plan) throw new HttpError(404, `no plan stored for ${id}`);
-      if (!plan.plan_file_sha256) {
+      // What has to be in the prefix for there to be anything to approve, and the two domains
+      // store different things. A composed prefix holds no tfplan by design - the restriction is
+      // decided after the inspection, so the document cannot exist until the decision does - and
+      // what stands in its place is change.json, whose digest the approval binds to instead.
+      if (!plan.composed && !plan.plan_file_sha256) {
         throw new HttpError(409, `${id} has no tfplan; there is nothing to approve`);
+      }
+      if (plan.composed && !plan.plan_stored) {
+        throw new HttpError(409, `${id} has no change.json; there is nothing to approve`);
       }
       if (!plan.has_changes) {
         // The twin already matches the spec. The plan is stored so that it replaces the previous
@@ -1100,12 +1121,21 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // describes that file, and a prefix is five separate objects. Plans written before the
       // inspector produced this artifact land here; re-inspecting produces one that can be
       // approved.
-      if (!plan.changes_sha256) {
+      //
+      // The composed domain asks the same question of a different object. There is no file to
+      // describe, so what has to be established is that the two states shown are the two states
+      // the applier will compare its own plan against - and change.sha256 is what says so.
+      const binding = plan.composed ? plan.change_sha256 : plan.changes_sha256;
+      if (!binding) {
         throw new HttpError(
           409,
-          `${id} has no changes.sha256, so nothing would establish that the plan shown describes `
-          + 'the file that would be applied. It was planned by an inspector that did not write '
-          + 'one - change the resource again to get a fresh plan.',
+          plan.composed
+            ? `${id} has no change.sha256, so nothing would establish that the change shown is the `
+              + 'one the applier would compose against. It was inspected by an inspector that did '
+              + 'not write one - change the resource again to get a fresh change.'
+            : `${id} has no changes.sha256, so nothing would establish that the plan shown `
+              + 'describes the file that would be applied. It was planned by an inspector that did '
+              + 'not write one - change the resource again to get a fresh plan.',
         );
       }
 
@@ -1119,16 +1149,21 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       // because the marker and the bucket would agree perfectly with each other.
       //
       // The page sends back the digest it displayed. Different value, no decision.
+      //
+      // ONE FIELD for both domains, and it carries whichever digest the page was shown. A second
+      // field name would be a second way for the page to be silent about what it read, and the
+      // check is the same question either way: is the thing on the screen the thing in the bucket.
       const expected = String(body.expected_changes_sha256 ?? '').trim();
       if (!expected) {
         throw new HttpError(400, 'expected_changes_sha256 is required: a decision names the plan '
                                  + 'it was made about');
       }
-      if (expected !== plan.changes_sha256) {
+      if (expected !== binding) {
         throw new HttpError(
           409,
-          `${id} was re-planned since it was shown. The stored plan is now ${plan.changes_sha256}`
-          + `, not ${expected}. Reload and read the current plan before deciding.`,
+          `${id} was re-${plan.composed ? 'inspected' : 'planned'} since it was shown. The stored `
+          + `${plan.composed ? 'change' : 'plan'} is now ${binding}, not ${expected}. Reload and `
+          + `read the current ${plan.composed ? 'change' : 'plan'} before deciding.`,
         );
       }
 
@@ -1744,7 +1779,7 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
       log.info(
         'decision plan=%s request=%s decision=%s reviewer=%s key=s3://%s/%s bytes=%d changes=%s',
         id, requestId, marker.decision, reviewer, config.markerBucket, key, bytes,
-        plan.changes_sha256.slice(0, 16),
+        binding.slice(0, 16),
       );
 
       // The marker is now the applier's unfinished work. Refresh so the page shows that rather
@@ -1869,7 +1904,12 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // Carried because the applier's parse requires them, and true of the plan this retry is
         // about. Nothing on the retry path reads them: no plan file is downloaded and no apply is
         // run, so they are the record of which plan this was, not a binding to a file.
+        //
+        // WHICH of them is required is decided by the resource name on the applier's side, and a
+        // retry is always about a permission set - so on a composed plan the one that has to be
+        // here is change_sha256 and the other two are absent, not empty.
         changes_sha256: plan.changes_sha256,
+        change_sha256: plan.change_sha256 ?? null,
         plan: {
           bucket: config.stateBucket,
           prefix: planPrefixFromId(id),
@@ -1994,7 +2034,12 @@ export function routes({ config, s3, store, notifications, markerBodies, impacts
         // Nothing on this path reads them: no plan file is downloaded and no apply is run. Which
         // role the grant comes off is DERIVED by the applier from the account and the resource, so
         // that the statement and the mirror role tag cannot name different roles.
+        //
+        // change_sha256 for the same reason the retry above carries it: a withdrawal is always
+        // about a permission set, and the applier's parse asks the resource name which digest a
+        // marker for it has to hold.
         changes_sha256: plan.changes_sha256,
+        change_sha256: plan.change_sha256 ?? null,
         plan: {
           bucket: config.stateBucket,
           prefix: planPrefixFromId(id),

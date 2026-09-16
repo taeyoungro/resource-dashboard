@@ -65,6 +65,58 @@
    "identifier": "",
    "source": "aws_managed",
    "sid": "ampUnnamedFence"
+  },
+  {
+   "identifier": "mirror-cmp-WebHosting",
+   "source": "customer_managed",
+   "sid": "cmpWebHostingFence"
+  },
+  {
+   "identifier": "arn:aws:iam::718100330247:policy/mirror-cmp-Reporting",
+   "source": null,
+   "sid": "cmpReportingFence"
+  }
+ ],
+ "deny_sid_bases": [
+  {
+   "identifier": "arn:aws:iam::aws:policy/AWSLambda_FullAccess",
+   "base": "AdminDenyAmpLambdaFullAccess"
+  },
+  {
+   "identifier": "arn:aws:iam::aws:policy/AmazonS3FullAccess",
+   "base": "AdminDenyAmpAmazonS3FullAccess"
+  },
+  {
+   "identifier": "AWSLambda_FullAccess",
+   "base": "AdminDenyCmpAWSLambdaFullAccess"
+  },
+  {
+   "identifier": "mirror-cmp-WebHosting",
+   "base": "AdminDenyCmpWebHosting"
+  },
+  {
+   "identifier": "cmp-testpolicy",
+   "base": "AdminDenyCmpTestpolicy"
+  },
+  {
+   "identifier": "cmp-Web-Hosting",
+   "base": "AdminDenyCmpWebHosting"
+  },
+  {
+   "identifier": "cmp-WebHosting",
+   "base": "AdminDenyCmpWebHosting"
+  },
+  {
+   "identifier": "mirror-cmp-ReportingReportingReportingReportingReportingReporting",
+   "base": "AdminDenyCmpReportingReportingReport"
+  },
+  {
+   "identifier": "한글",
+   "base": "AdminDenyCmpUnnamed"
+  },
+  {
+   "identifier": "",
+   "base": "AdminDenyCmpUnnamed"
   }
  ],
  "cases": [
@@ -83,8 +135,8 @@
      ]
     }
    ],
-   "bytes": 211,
-   "serialised": "{\"Statement\":[{\"Action\":[\"lambda:GetFunction\",\"lambda:UpdateFunctionCode\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:testLambda\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 233,
+   "serialised": "{\"Statement\":[{\"Action\":[\"lambda:GetFunction\",\"lambda:UpdateFunctionCode\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:testLambda\"],\"Sid\":\"AdminDenyCmpAWSLambdaFullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "nested_actions": [],
    "created_formats": {},
    "virtual": []
@@ -113,8 +165,8 @@
      ]
     }
    ],
-   "bytes": 264,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetBucketPolicy\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep/*\",\"arn:aws:s3:::keep/*/*\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 272,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetBucketPolicy\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep\"],\"Sid\":\"AdminDenyCmpP1\"},{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::keep/*\",\"arn:aws:s3:::keep/*/*\"],\"Sid\":\"AdminDenyCmpP2\"}],\"Version\":\"2012-10-17\"}",
    "nested_actions": [
     "s3:GetObject"
    ],
@@ -156,8 +208,8 @@
      ]
     }
    ],
-   "bytes": 392,
-   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:StopInstances\",\"ec2:TerminateInstances\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:us-east-1:718100330247:instance/i-0aaa\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"lambda:UpdateFunctionCode\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:a\",\"arn:aws:lambda:us-east-1:718100330247:function:b\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 436,
+   "serialised": "{\"Statement\":[{\"Action\":\"lambda:UpdateFunctionCode\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:lambda:us-east-1:718100330247:function:a\",\"arn:aws:lambda:us-east-1:718100330247:function:b\"],\"Sid\":\"AdminDenyCmpAWSLambdaFullAccess1\"},{\"Action\":[\"ec2:StopInstances\",\"ec2:TerminateInstances\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:us-east-1:718100330247:instance/i-0aaa\"],\"Sid\":\"AdminDenyCmpAmazonEC2FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "nested_actions": [],
    "created_formats": {},
    "virtual": []
@@ -174,8 +226,8 @@
      "resources": []
     }
    ],
-   "bytes": 121,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:ListAllMyBuckets\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 125,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:ListAllMyBuckets\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpP1\"}],\"Version\":\"2012-10-17\"}",
    "nested_actions": [],
    "created_formats": {},
    "virtual": []
@@ -197,8 +249,8 @@
      ]
     }
    ],
-   "bytes": 216,
-   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:StopInstances\",\"ec2:TerminateInstances\"],\"Condition\":{\"StringEquals\":{\"aws:ResourceTag/env\":[\"prod\",\"stage\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 220,
+   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:StopInstances\",\"ec2:TerminateInstances\"],\"Condition\":{\"StringEquals\":{\"aws:ResourceTag/env\":[\"prod\",\"stage\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpP1\"}],\"Version\":\"2012-10-17\"}",
    "nested_actions": [],
    "created_formats": {},
    "virtual": []
@@ -219,8 +271,8 @@
      ]
     }
    ],
-   "bytes": 221,
-   "serialised": "{\"Statement\":[{\"Action\":[\"s3:DeleteObject\",\"s3:PutObject\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::alpha\",\"arn:aws:s3:::alpha/*\",\"arn:aws:s3:::zeta\",\"arn:aws:s3:::zeta/*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 225,
+   "serialised": "{\"Statement\":[{\"Action\":[\"s3:DeleteObject\",\"s3:PutObject\"],\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::alpha\",\"arn:aws:s3:::alpha/*\",\"arn:aws:s3:::zeta\",\"arn:aws:s3:::zeta/*\"],\"Sid\":\"AdminDenyCmpP1\"}],\"Version\":\"2012-10-17\"}",
    "nested_actions": [
     "s3:DeleteObject",
     "s3:PutObject"
@@ -273,8 +325,8 @@
    "nested_actions": [
     "s3:GetObject"
    ],
-   "bytes": 189,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 210,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDenyCmpAmazonS3FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "created_formats": {},
    "virtual": [
     {
@@ -300,10 +352,10 @@
      "action": "s3:GetObject",
      "arn": "arn:aws:s3:::opt-solution-plans",
      "outcome": "DENIED_BY",
-     "sid": "AdminDeny1",
+     "sid": "AdminDenyCmpAmazonS3FullAccess1",
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     },
     {
@@ -311,10 +363,10 @@
      "action": "s3:GetObject",
      "arn": "arn:aws:s3:::OPT-SOLUTION-MARKERS",
      "outcome": "DENIED_BY",
-     "sid": "AdminDeny1",
+     "sid": "AdminDenyCmpAmazonS3FullAccess1",
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     }
    ],
@@ -356,8 +408,8 @@
     }
    ],
    "nested_actions": [],
-   "bytes": 157,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetBucketPolicy\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 178,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetBucketPolicy\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\"],\"Sid\":\"AdminDenyCmpAmazonS3FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "created_formats": {},
    "virtual": []
   },
@@ -379,8 +431,8 @@
    "nested_actions": [
     "s3:GetObject"
    ],
-   "bytes": 308,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"s3:GetBucketPolicy\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 350,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDenyCmpAmazonS3FullAccess1\"},{\"Action\":\"s3:GetBucketPolicy\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\"],\"Sid\":\"AdminDenyCmpAmazonS3FullAccess2\"}],\"Version\":\"2012-10-17\"}",
    "created_formats": {},
    "virtual": []
   },
@@ -401,8 +453,8 @@
    "nested_actions": [
     "s3:DeleteObject"
    ],
-   "bytes": 189,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:DeleteObject\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 210,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:DeleteObject\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDenyCmpAmazonS3FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "created_formats": {},
    "virtual": []
   },
@@ -421,8 +473,8 @@
     }
    ],
    "nested_actions": [],
-   "bytes": 171,
-   "serialised": "{\"Statement\":[{\"Action\":\"ssm:GetParameter\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ssm:us-east-1:718100330247:parameter/prod\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 193,
+   "serialised": "{\"Statement\":[{\"Action\":\"ssm:GetParameter\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ssm:us-east-1:718100330247:parameter/prod\"],\"Sid\":\"AdminDenyCmpAmazonSSMFullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "created_formats": {},
    "virtual": []
   },
@@ -443,8 +495,8 @@
    "nested_actions": [
     "logs:GetLogEvents"
    ],
-   "bytes": 246,
-   "serialised": "{\"Statement\":[{\"Action\":\"logs:GetLogEvents\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:logs:us-east-1:718100330247:log-group:/aws/lambda/x\",\"arn:aws:logs:us-east-1:718100330247:log-group:/aws/lambda/x:*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 273,
+   "serialised": "{\"Statement\":[{\"Action\":\"logs:GetLogEvents\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:logs:us-east-1:718100330247:log-group:/aws/lambda/x\",\"arn:aws:logs:us-east-1:718100330247:log-group:/aws/lambda/x:*\"],\"Sid\":\"AdminDenyCmpCloudWatchLogsFullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "created_formats": {},
    "virtual": []
   },
@@ -460,8 +512,8 @@
     }
    ],
    "nested_actions": [],
-   "bytes": 123,
-   "serialised": "{\"Statement\":[{\"Action\":\"lambda:CreateFunction\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 145,
+   "serialised": "{\"Statement\":[{\"Action\":\"lambda:CreateFunction\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpAWSLambdaFullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "created_formats": {
     "lambda:CreateFunction": [
      "arn:${Partition}:lambda:*:${Account}:function:*"
@@ -483,8 +535,8 @@
    "nested_actions": [
     "s3:GetObject"
    ],
-   "bytes": 114,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 135,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpAmazonS3FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "created_formats": {},
    "virtual": []
   },
@@ -523,8 +575,8 @@
     "s3:GetObject",
     "s3:PutObject"
    ],
-   "bytes": 416,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"s3:CreateBucket\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny2\"},{\"Action\":\"s3:PutObject\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny3\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 479,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDenyCmpAmazonS3FullAccess1\"},{\"Action\":\"s3:CreateBucket\",\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpAmazonS3FullAccess2\"},{\"Action\":\"s3:PutObject\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDenyCmpAmazonS3FullAccess3\"}],\"Version\":\"2012-10-17\"}",
    "created_formats": {
     "s3:CreateBucket": [
      "arn:${Partition}:s3:::*"
@@ -552,8 +604,8 @@
     }
    ],
    "nested_actions": [],
-   "bytes": 136,
-   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:CreateVpc\",\"ec2:DescribeVpcs\"],\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 158,
+   "serialised": "{\"Statement\":[{\"Action\":[\"ec2:CreateVpc\",\"ec2:DescribeVpcs\"],\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpAmazonEC2FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "created_formats": {
     "ec2:CreateVpc": [
      "arn:${Partition}:ec2:*:${Account}:vpc/*"
@@ -582,8 +634,8 @@
      "arn:${Partition}:ec2:*:${Account}:network-interface/*"
     ]
    },
-   "bytes": 320,
-   "serialised": "{\"Statement\":[{\"Action\":\"ec2:CreateNetworkInterface\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:*:718100330247:network-interface/*\",\"arn:aws:ec2:us-east-1:718100330247:security-group/sg-0bba3f2419bc5ac3c\",\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 342,
+   "serialised": "{\"Statement\":[{\"Action\":\"ec2:CreateNetworkInterface\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:*:718100330247:network-interface/*\",\"arn:aws:ec2:us-east-1:718100330247:security-group/sg-0bba3f2419bc5ac3c\",\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDenyCmpAmazonVPCFullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": []
   },
   {
@@ -607,8 +659,8 @@
      "arn:${Partition}:ec2:*::snapshot/*"
     ]
    },
-   "bytes": 237,
-   "serialised": "{\"Statement\":[{\"Action\":\"ec2:CreateImage\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:*::image/*\",\"arn:aws:ec2:*::snapshot/*\",\"arn:aws:ec2:us-east-1:718100330247:instance/i-060d7f3f7d9798447\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 259,
+   "serialised": "{\"Statement\":[{\"Action\":\"ec2:CreateImage\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:*::image/*\",\"arn:aws:ec2:*::snapshot/*\",\"arn:aws:ec2:us-east-1:718100330247:instance/i-060d7f3f7d9798447\"],\"Sid\":\"AdminDenyCmpAmazonEC2FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": []
   },
   {
@@ -631,8 +683,8 @@
      "arn:${Partition}:ec2:*:${Account}:network-interface/*"
     ]
    },
-   "bytes": 195,
-   "serialised": "{\"Statement\":[{\"Action\":\"ec2:CreateNetworkInterface\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 217,
+   "serialised": "{\"Statement\":[{\"Action\":\"ec2:CreateNetworkInterface\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDenyCmpAmazonVPCFullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": []
   },
   {
@@ -665,8 +717,8 @@
      "arn:${Partition}:ec2:*:${Account}:network-interface/*"
     ]
    },
-   "bytes": 397,
-   "serialised": "{\"Statement\":[{\"Action\":\"ec2:CreateNetworkInterface\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:*:718100330247:network-interface/*\",\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDeny1\"},{\"Action\":\"ec2:DeleteSubnet\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDeny2\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 441,
+   "serialised": "{\"Statement\":[{\"Action\":\"ec2:CreateNetworkInterface\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:*:718100330247:network-interface/*\",\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDenyCmpAmazonVPCFullAccess1\"},{\"Action\":\"ec2:DeleteSubnet\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDenyCmpAmazonVPCFullAccess2\"}],\"Version\":\"2012-10-17\"}",
    "virtual": []
   },
   {
@@ -686,20 +738,20 @@
    ],
    "nested_actions": [],
    "created_formats": {},
-   "bytes": 207,
-   "serialised": "{\"Statement\":[{\"Action\":\"lambda:CreateFunctionUrlConfig\",\"Condition\":{\"StringNotEquals\":{\"lambda:FunctionUrlAuthType\":[\"AWS_IAM\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 229,
+   "serialised": "{\"Statement\":[{\"Action\":\"lambda:CreateFunctionUrlConfig\",\"Condition\":{\"StringNotEquals\":{\"lambda:FunctionUrlAuthType\":[\"AWS_IAM\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpAWSLambdaFullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": [
     {
      "label": "요청 문맥이 없으면 판정하지 않는다",
      "action": "lambda:CreateFunctionUrlConfig",
      "arn": "arn:aws:lambda:ap-northeast-2:718100330247:function:prod-api",
      "outcome": "UNKNOWN",
-     "sid": "AdminDeny1",
+     "sid": "AdminDenyCmpAWSLambdaFullAccess1",
      "missing_keys": [
       "lambda:FunctionUrlAuthType"
      ],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAWSLambdaFullAccess1"
      ]
     },
     {
@@ -710,10 +762,10 @@
       "lambda:FunctionUrlAuthType": "NONE"
      },
      "outcome": "DENIED_BY",
-     "sid": "AdminDeny1",
+     "sid": "AdminDenyCmpAWSLambdaFullAccess1",
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAWSLambdaFullAccess1"
      ]
     },
     {
@@ -727,7 +779,7 @@
      "sid": null,
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAWSLambdaFullAccess1"
      ]
     }
    ],
@@ -773,8 +825,8 @@
    ],
    "nested_actions": [],
    "created_formats": {},
-   "bytes": 201,
-   "serialised": "{\"Statement\":[{\"Action\":\"lambda:CreateFunctionUrlConfig\",\"Condition\":{\"StringEquals\":{\"lambda:FunctionUrlAuthType\":[\"NONE\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 223,
+   "serialised": "{\"Statement\":[{\"Action\":\"lambda:CreateFunctionUrlConfig\",\"Condition\":{\"StringEquals\":{\"lambda:FunctionUrlAuthType\":[\"NONE\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpAWSLambdaFullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": []
   },
   {
@@ -796,8 +848,8 @@
    ],
    "nested_actions": [],
    "created_formats": {},
-   "bytes": 249,
-   "serialised": "{\"Statement\":[{\"Action\":[\"lambda:CreateFunctionUrlConfig\",\"lambda:UpdateFunctionUrlConfig\"],\"Condition\":{\"StringNotEquals\":{\"lambda:FunctionUrlAuthType\":[\"AWS_IAM\",\"NONE\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 271,
+   "serialised": "{\"Statement\":[{\"Action\":[\"lambda:CreateFunctionUrlConfig\",\"lambda:UpdateFunctionUrlConfig\"],\"Condition\":{\"StringNotEquals\":{\"lambda:FunctionUrlAuthType\":[\"AWS_IAM\",\"NONE\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpAWSLambdaFullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": []
   },
   {
@@ -820,8 +872,8 @@
     "s3:DeleteObject"
    ],
    "created_formats": {},
-   "bytes": 196,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:DeleteObject\",\"Condition\":{\"StringNotEquals\":{\"aws:ResourceTag/Environment\":[\"production\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 217,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:DeleteObject\",\"Condition\":{\"StringNotEquals\":{\"aws:ResourceTag/Environment\":[\"production\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpAmazonS3FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": [
     {
      "label": "태그가 맞으면 통과",
@@ -834,7 +886,7 @@
      "sid": null,
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     },
     {
@@ -845,10 +897,10 @@
       "Environment": "dev"
      },
      "outcome": "DENIED_BY",
-     "sid": "AdminDeny1",
+     "sid": "AdminDenyCmpAmazonS3FullAccess1",
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     },
     {
@@ -856,10 +908,10 @@
      "action": "s3:DeleteObject",
      "arn": "arn:aws:s3:::opt-solution-markers",
      "outcome": "DENIED_BY",
-     "sid": "AdminDeny1",
+     "sid": "AdminDenyCmpAmazonS3FullAccess1",
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     },
     {
@@ -873,7 +925,7 @@
      "sid": null,
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     }
    ],
@@ -928,8 +980,8 @@
     "s3:DeleteObject"
    ],
    "created_formats": {},
-   "bytes": 193,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:DeleteObject\",\"Condition\":{\"StringEquals\":{\"aws:ResourceTag/Environment\":[\"production\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 214,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:DeleteObject\",\"Condition\":{\"StringEquals\":{\"aws:ResourceTag/Environment\":[\"production\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpAmazonS3FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": [
     {
      "label": "태그가 맞으면 거부",
@@ -939,10 +991,10 @@
       "Environment": "production"
      },
      "outcome": "DENIED_BY",
-     "sid": "AdminDeny1",
+     "sid": "AdminDenyCmpAmazonS3FullAccess1",
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     },
     {
@@ -953,7 +1005,7 @@
      "sid": null,
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     },
     {
@@ -967,7 +1019,7 @@
      "sid": null,
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     }
    ],
@@ -1030,18 +1082,18 @@
     "s3:Delete*"
    ],
    "created_formats": {},
-   "bytes": 184,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:Delete*\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 205,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:Delete*\",\"Effect\":\"Deny\",\"Resource\":[\"arn:aws:s3:::opt-solution-markers\",\"arn:aws:s3:::opt-solution-markers/*\"],\"Sid\":\"AdminDenyCmpAmazonS3FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": [
     {
      "label": "버킷 자체는 거부",
      "action": "s3:DeleteBucket",
      "arn": "arn:aws:s3:::opt-solution-markers",
      "outcome": "DENIED_BY",
-     "sid": "AdminDeny1",
+     "sid": "AdminDenyCmpAmazonS3FullAccess1",
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     },
     {
@@ -1049,10 +1101,10 @@
      "action": "s3:DeleteObject",
      "arn": "arn:aws:s3:::opt-solution-markers/reports/2026.csv",
      "outcome": "DENIED_BY",
-     "sid": "AdminDeny1",
+     "sid": "AdminDenyCmpAmazonS3FullAccess1",
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonS3FullAccess1"
      ]
     },
     {
@@ -1107,8 +1159,8 @@
      "arn:${Partition}:ec2:*:${Account}:volume/*"
     ]
    },
-   "bytes": 412,
-   "serialised": "{\"Statement\":[{\"Action\":\"ec2:Run*\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:*:718100330247:instance/*\",\"arn:aws:ec2:*:718100330247:network-interface/*\",\"arn:aws:ec2:*:718100330247:secondary-interface/*\",\"arn:aws:ec2:*:718100330247:spot-instances-request/*\",\"arn:aws:ec2:*:718100330247:volume/*\",\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 434,
+   "serialised": "{\"Statement\":[{\"Action\":\"ec2:Run*\",\"Effect\":\"Deny\",\"NotResource\":[\"arn:aws:ec2:*:718100330247:instance/*\",\"arn:aws:ec2:*:718100330247:network-interface/*\",\"arn:aws:ec2:*:718100330247:secondary-interface/*\",\"arn:aws:ec2:*:718100330247:spot-instances-request/*\",\"arn:aws:ec2:*:718100330247:volume/*\",\"arn:aws:ec2:us-east-1:718100330247:subnet/subnet-01ad3a906cdcdbc82\"],\"Sid\":\"AdminDenyCmpAmazonEC2FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": [
     {
      "label": "고른 서브넷은 통과",
@@ -1124,10 +1176,10 @@
      "action": "ec2:RunInstances",
      "arn": "arn:aws:ec2:us-east-1:718100330247:subnet/subnet-0other",
      "outcome": "DENIED_BY",
-     "sid": "AdminDeny1",
+     "sid": "AdminDenyCmpAmazonEC2FullAccess1",
      "missing_keys": [],
      "considered": [
-      "AdminDeny1"
+      "AdminDenyCmpAmazonEC2FullAccess1"
      ]
     },
     {
@@ -1162,8 +1214,8 @@
     "s3:DeleteObject"
    ],
    "created_formats": {},
-   "bytes": 200,
-   "serialised": "{\"Statement\":[{\"Action\":\"s3:DeleteObject\",\"Condition\":{\"StringNotEquals\":{\"aws:ResourceTag/소유\":[\"zeta\",\"데이터팀\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDeny1\"}],\"Version\":\"2012-10-17\"}",
+   "bytes": 221,
+   "serialised": "{\"Statement\":[{\"Action\":\"s3:DeleteObject\",\"Condition\":{\"StringNotEquals\":{\"aws:ResourceTag/소유\":[\"zeta\",\"데이터팀\"]}},\"Effect\":\"Deny\",\"Resource\":\"*\",\"Sid\":\"AdminDenyCmpAmazonS3FullAccess1\"}],\"Version\":\"2012-10-17\"}",
    "virtual": []
   }
  ]

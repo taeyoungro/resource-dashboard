@@ -314,6 +314,8 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
   /** Rows CARRIED_TYPES took off the canvas: the security group rules, which the group's own
    *  table holds. Not hidden and not dropped - a foot line says where they went. */
   let ruleRows = 0;
+  /** Security groups the layout put in a zone's gap band. See the count's own comment below. */
+  let zoneBandGroups = 0;
   for (const group of policy?.affected ?? []) {
     const type = group?.resource_type;
     if (!type) continue;
@@ -884,13 +886,59 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       for (const card of column) { card.place(centreX + PAD, cy); cy += card.h + NODE_VGAP; }
       bottom = Math.max(bottom, cy - NODE_VGAP);
     }
+
+    /**
+     * The zone whose PRIVATE subnets hold every drawn member of this security group, or null.
+     *
+     * A SECURITY GROUP IS VPC-SCOPED. Nothing in an assessment says a group is in a zone, and this
+     * picture may not say so either - so what is read here is not the group, it is its MEMBERS.
+     * A group every one of whose drawn members sits in the private subnets of one zone is put in
+     * that zone's column, in the gap between the two subnet rows, instead of in the band across
+     * the top of the VPC. The line from the group to each of its members then has the length of
+     * the gap rather than the height of the VPC, and it does not cross the public row to get there.
+     *
+     * It is the one position in this picture derived from a row's MEMBERS rather than from the row
+     * itself, which is why the legend says so rather than leaving a reader to infer a containment
+     * the assessment never recorded.
+     *
+     * Everything else stays in the top band, and each of the four ways that happens is a position
+     * the members would not support:
+     *
+     *   members in two zones      the group is in neither, and putting it in one would say it was
+     *   any member public         the gap is under the public row; the group reaches above it
+     *   any member with no subnet a load balancer spans several and is recorded with none
+     *   no member drawn           nothing was read that could place it
+     */
+    const privateZoneOf = (groupId) => {
+      if (nodes.get(groupId).resourceType !== 'ec2:security-group') return null;
+      const zones = new Set();
+      let members = 0;
+      for (const id of ids) {
+        const n = nodes.get(id);
+        if (!(n.links.security_group ?? []).includes(groupId)) continue;
+        members += 1;
+        const info = n.subnet ? subnetInfo.get(n.subnet) : null;
+        if (!info || info.vpc !== vpcId) return null;
+        if ((tintOf(n.subnet, vpcId)?.tint ?? null) !== 'private') return null;
+        zones.add(info.zone || '?');
+      }
+      return members > 0 && zones.size === 1 ? [...zones][0] : null;
+    };
+    const gapGroups = new Map();       // zone -> [group id]
+    const topBandIds = [];
+    for (const id of bandIds) {
+      const zone = privateZoneOf(id);
+      if (zone === null) topBandIds.push(id);
+      else push(gapGroups, zone, id);
+    }
     // The band, dealt into the halves in turn - MEASURED here and PLACED after the zones.
     //
     // Which card goes in which slot depends on where its lines end, and its lines end in the
     // subnets below, which are not laid yet. So this pass only finds the slots: every card is
     // given a place() that records where it would go and draws nothing. placeBand deals the cards
     // into those slots once the zones can be asked where they put things.
-    const bandCards = budgeted(bandIds.map((id) => cardFor(id, halves[0][1] - halves[0][0])), vpc.id);
+    const bandCards = budgeted(topBandIds.map((id) => cardFor(id, halves[0][1] - halves[0][0])),
+                               vpc.id);
     reserved += tally(bandCards);
     const slots = new Array(bandCards.length);
     let bandBottom = top;
@@ -947,13 +995,59 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
         containers.push(az);
         const here = [...subnetInfo.entries()]
           .filter(([, i]) => i.vpc === vpcId && (i.zone || '?') === zone).map(([id]) => id).sort();
-        zoneBoxes.push({ az, ranks: [0, 1, 2].map((r) => here.filter((id) => tintRank(id) === r)) });
+        zoneBoxes.push({ az, zone,
+                         ranks: [0, 1, 2].map((r) => here.filter((id) => tintRank(id) === r)) });
       });
     });
+
+    /**
+     * The gap above the private row, and the groups that sit in it. Measured across EVERY zone
+     * before any of it is placed, for the reason the subnet ranks are: the row below has to start
+     * at one y for the whole VPC, or the bands stop lining up and a reader reads a difference
+     * between the zones that is only a difference in how many plates each one happened to hold.
+     *
+     * Reserved like the top band is, because the cards are measured here and placed inside the
+     * rank loop below - and the subnets laid in between take from the same budget.
+     */
+    const gapCards = new Map();        // az id -> cards
+    const gapPerRow = (az) => Math.max(1, Math.floor((az.w - 2 * PAD + NODE_GAP)
+                                                     / (NODE_W + NODE_GAP)));
+    let gapH = 0;
+    for (const { az, zone } of zoneBoxes) {
+      const groups = gapGroups.get(zone) ?? [];
+      if (groups.length === 0) continue;
+      const cards = budgeted(groups.map((id) => cardFor(id, NODE_W)), az.id);
+      if (cards.length === 0) continue;
+      gapCards.set(az.id, cards);
+      reserved += tally(cards);
+      const rows = Math.ceil(cards.length / gapPerRow(az));
+      gapH = Math.max(gapH, rows * NODE_H + (rows - 1) * NODE_VGAP);
+    }
 
     let rankTop = zonesTop + HEAD;
     let placedSubnet = false;
     for (const rank of [0, 1, 2]) {
+      // The widened gap, and the groups centred in it. ROW_GAP above the row and ROW_GAP below,
+      // so it sits in the MIDDLE of the space it made rather than resting on the public row or
+      // hanging off the private one - which is what makes the gap read as a band of its own
+      // rather than as one of the two rows having grown.
+      if (rank === 2 && gapH > 0) {
+        for (const { az } of zoneBoxes) {
+          const cards = gapCards.get(az.id);
+          if (!cards) continue;
+          reserved -= tally(cards);
+          zoneBandGroups += tally(cards);
+          const per = gapPerRow(az);
+          for (let i = 0; i < cards.length; i += per) {
+            const line = cards.slice(i, i + per);
+            const lineW = line.length * NODE_W + (line.length - 1) * NODE_GAP;
+            const x0 = az.x + az.w / 2 - lineW / 2;
+            const ly = rankTop + Math.floor(i / per) * (NODE_H + NODE_VGAP);
+            line.forEach((card, ci) => card.place(x0 + ci * (NODE_W + NODE_GAP), ly));
+          }
+        }
+        rankTop += gapH + ROW_GAP;
+      }
       let rankBottom = rankTop;
       for (const { az, ranks } of zoneBoxes) {
         let sy = rankTop;
@@ -1746,6 +1840,15 @@ export function relationScene(policy, accountId, filter = null, enumerated = tru
       /** Security group rules, which no plate draws and the group's own table holds. Not in
        *  totalRows either, and for the same reason: the accounting above is about plates. */
       ruleRows,
+      /**
+       * Groups drawn in a zone's gap band rather than in the VPC band.
+       *
+       * Counted because it is the one placement in this picture a BORDER does not account for: the
+       * plate is inside a zone frame and the row is VPC-scoped, so a reader who takes every frame
+       * as recorded membership reads one thing wrong. graphSummary says so when this is non-zero,
+       * which is what a screen reader gets instead of the frames it cannot see.
+       */
+      zoneBandGroups,
     },
     kinds,
     measured,
@@ -1773,7 +1876,8 @@ export const KIND_LABEL = {
 
 /** Drawn INSIDE the viewBox, so a cropped screenshot keeps it. */
 export const GRAPH_CAPTION =
-  '이 그림은 조회기가 읽은 연결을 점선으로 그린 것이다. 실선 테두리는 기록된 소속이고, 촘촘한 점선은 기본 라우팅 테이블에서 도출한 연결이다.';
+  '이 그림은 조회기가 읽은 연결을 점선으로 그린 것이다. 실선 테두리는 기록된 소속이고, 촘촘한 점선은 기본 라우팅 테이블에서 도출한 연결이다. '
+  + '두 서브넷 줄 사이에 놓인 보안 그룹은 그 줄의 프라이빗 서브넷에만 소속원이 있는 것이다 — 보안 그룹 자체는 VPC 것이고 가용 영역에 속하지 않는다.';
 
 /** The <desc>: what a screen reader is told. Pure, so it is tested rather than hoped for. */
 export function graphSummary(scene) {
@@ -1794,5 +1898,12 @@ export function graphSummary(scene) {
     + (kinds ? ` — ${kinds}` : '') + '. '
     + (c.implicitEdges > 0 ? `그중 ${c.implicitEdges}개는 기본 라우팅 테이블에서 도출했다. ` : '')
     + (c.omittedNodes > 0 ? `자원 ${c.omittedNodes.toLocaleString()}개는 그리지 못했다. ` : '')
-    + '테두리는 조회기가 기록한 소속이다.';
+    + '테두리는 조회기가 기록한 소속이다'
+    // The one exception, said only when there is one. A screen reader gets this sentence instead
+    // of the frames, so the qualifier has to travel with it - the caption under the picture is not
+    // read out. Silent when no group is in a gap, because then the sentence above is whole.
+    + (c.zoneBandGroups > 0
+      ? ` — 다만 보안 그룹 ${c.zoneBandGroups}개는 두 서브넷 줄 사이에 놓여 있고, 그것은 그 줄의 `
+        + '프라이빗 서브넷에만 소속원이 있다는 뜻이지 그 가용 영역에 속한다는 뜻이 아니다.'
+      : '.');
 }

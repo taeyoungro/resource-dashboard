@@ -11,7 +11,8 @@ import { test } from 'node:test';
 
 import { makeMarkerBodies } from './markerBodies.js';
 import {
-  changesFromPlan, classify, holdersFromConfig, identityFromConfig, isDigest, passroleFromPlan,
+  changesFromChange, changesFromPlan, classify, composesDocument, holdersFromConfig,
+  identityFromConfig, identityFromSpec, isDigest, layoutOf, passroleFromPlan,
   planIdFromKey, reclassify,
   requestersFromConfig,
   nothingRestricted, permissionSetFromConfig, planPrefixFromId, readPlan, restrictionsInForce,
@@ -78,21 +79,49 @@ const MAIN_TF = {
 
 const BUCKET = 'opt-org-policy-terraform-state';
 
-/** The six artifacts the inspector writes, as a listing and a body map.
+/** The artifacts the inspector writes, as a listing and a body map.
  *
  * Keyed by <account>/<resource>/plan/, which is the whole point: two edits to one resource are one
  * prefix, not two. Every test that used to spell out plans/<request id>/ was spelling out the bug.
+ *
+ * TWO LAYOUTS, and which one a prefix holds follows from the resource name. A ps-* resource holds
+ * a composed change - spec.json, change.json, change.sha256, changes.txt - because the applier
+ * composes its document after the decision and there is nothing to plan at inspection time.
+ * Everything else holds the terraform plan it always did. See server/sweep.js composesDocument.
+ *
+ * The passrole options are only meaningful on the terraform layout, and that is not an accident of
+ * this fixture: every one of those values is an output of the MIRROR ROLE document, so a ps-*
+ * prefix never carried them under either layout.
  */
 function planFixture(account, resource,
                      { at, requestId, hasChanges = true, digest, outcome, requestedBy,
                        grantedTo, mirrorRoleName, withdrawals } = {}) {
   const prefix = `${account}/${resource}/plan/`;
-  const names = ['tfplan', 'main.tf.json', 'plan.json', 'plan.txt', 'changes.sha256',
-                 'request.json'];
+  const composed = resource.startsWith('ps-');
+  const names = composed
+    ? ['spec.json', 'change.json', 'change.sha256', 'changes.txt', 'request.json']
+    : ['tfplan', 'main.tf.json', 'plan.json', 'plan.txt', 'changes.sha256', 'request.json'];
   if (outcome) names.push('outcome.json');
   if (withdrawals) names.push('passrole.json');
   const objects = names.map((n) => ({ key: `${prefix}${n}`, lastModified: at }));
+  const composedBodies = {
+    [`${BUCKET}/${prefix}spec.json`]: {
+      kind: 'ps_role', account_id: account, spec_role_name: resource,
+      bare_name: resource.slice(3), managed_policy_arns: [], twin_policy_names: [],
+    },
+    [`${BUCKET}/${prefix}change.json`]: {
+      before: { kind: 'ps_role', name: `${account}-${resource.slice(3)}`,
+                managed_policy_arns: [], customer_managed_references: [] },
+      after: { kind: 'ps_role', name: `${account}-${resource.slice(3)}`,
+               managed_policy_arns: hasChanges
+                 ? ['arn:aws:iam::aws:policy/AWSLambda_FullAccess'] : [],
+               customer_managed_references: [] },
+    },
+    [`${BUCKET}/${prefix}change.sha256`]: `${digest ?? 'd'.repeat(64)}\n`,
+    [`${BUCKET}/${prefix}changes.txt`]: 'managed_policy_arns  CHANGES\n',
+  };
   const bodies = {
+    ...(composed ? composedBodies : {}),
     [`${BUCKET}/${prefix}main.tf.json`]: {
       terraform: { backend: { s3: { bucket: BUCKET,
                                     key: `${account}/${resource}/terraform.tfstate` } } },
@@ -864,7 +893,11 @@ test('the panel carries the refusal, read as the prefix is when it opens', async
   // And the plan is still all there. The refusal explains the plan, it does not replace it: this
   // one is real, approvable, and describes an earlier version of the resource.
   assert.equal(detail.plan_stored, true);
-  assert.ok(detail.plan_file_sha256);
+  // The binding, which on a composed prefix is the change digest and not a plan file's - there is
+  // no file. Asserted here rather than only where change.sha256 is the subject, because "the plan
+  // is still all there" has to mean the thing an approval would actually bind to.
+  assert.equal(detail.plan_file_sha256, null);
+  assert.ok(detail.change_sha256);
   assert.equal(detail.request_id, '644701781058-aaaaaaaaaaaaaaa1');
 });
 
@@ -886,7 +919,9 @@ test('a resource that never got a plan opens on the reason and nothing else', as
   // reading-failed, and it is what stops a decision form being offered for a plan that is not there.
   assert.equal(detail.plan_stored, false);
   assert.equal(detail.plan_file_sha256, null);
-  assert.equal(detail.changes_sha256, null, 'and so it could not be approved even if it were shown');
+  assert.equal(detail.changes_sha256, null);
+  assert.equal(detail.change_sha256, null,
+               'and so it could not be approved even if it were shown');
 });
 
 test('a refusal the panel cannot parse leaves the plan readable', async () => {
@@ -901,7 +936,8 @@ test('a refusal the panel cannot parse leaves the plan readable', async () => {
   const detail = await readPlan(fakeS3({ [BUCKET]: objects }, bodies), CONFIG,
                                 '644701781058:ps-Taeyoung');
   assert.equal(detail.refusal, null);
-  assert.ok(detail.plan_file_sha256);
+  assert.equal(detail.plan_stored, true);
+  assert.ok(detail.change_sha256);
 });
 
 
@@ -1788,4 +1824,282 @@ test('a closed editor says WHICH of the four reasons closed it', () => {
   // disagree about whether the editor opens.
   assert.equal(unknownInForceWhy({ ...ps, current_admin_deny: [] }, true), null);
   assert.equal(nothingRestricted({ ...ps, current_admin_deny: [] }), true);
+});
+
+
+// ---- the composed domain: a prefix with no plan file --------------------------------------------
+//
+// A ps-* prefix holds spec.json, change.json, change.sha256 and changes.txt, and no tfplan at all.
+// The restriction is decided AFTER the inspection, so a frozen plan could not contain it - the
+// applier composes the document once the decision exists, plans what it composed, and checks that
+// plan against the two states change.json carries. What the page has to get right is which digest
+// an approval binds by, because binding by the wrong one binds by nothing.
+
+test('which domain a resource is in is read off its name, and only its name', () => {
+  for (const yes of ['ps-alice', 'ps-', 'ps-DataOps-Analyst']) {
+    assert.equal(composesDocument(yes), true, yes);
+  }
+  for (const no of ['cmp-WebHosting', 'lambda-alice', 'mirror-ps-alice', 'PS-alice', '', null, 7]) {
+    assert.equal(composesDocument(no), false, String(no));
+  }
+});
+
+test('the identity of a composed prefix comes from the declaration the inspector wrote', () => {
+  assert.deepEqual(
+    identityFromSpec({ kind: 'ps_role', account_id: '644701781058', spec_role_name: 'ps-alice' }),
+    { accountId: '644701781058', resource: 'ps-alice' },
+  );
+  // And nothing is guessed from the key when the artifact cannot say. A row with nulls is the
+  // honest answer; a row built from the listing would hide a prefix holding somebody else's spec.
+  for (const bad of [null, {}, { account_id: 7, spec_role_name: 'ps-alice' },
+                     { account_id: '644701781058', spec_role_name: '   ' }]) {
+    const identity = identityFromSpec(bad);
+    assert.ok(identity.accountId === null || identity.resource === null, JSON.stringify(bad));
+  }
+});
+
+test('a composed change lists what moves and leaves what stays to the text beside it', () => {
+  const changes = changesFromChange({
+    before: { name: 'a-ps', managed_policy_arns: ['x'], customer_managed_references: [] },
+    after: { name: 'a-ps', managed_policy_arns: ['x', 'y'], customer_managed_references: [] },
+  });
+  assert.deepEqual(changes, [
+    { key: 'managed_policy_arns', before: ['x'], after: ['x', 'y'] },
+  ]);
+  // Two states that say the same thing move nothing, which is what makes has_changes meaningful.
+  assert.deepEqual(changesFromChange({ before: { a: 1 }, after: { a: 1 } }), []);
+  for (const bad of [null, {}, { before: {} }, { before: 'x', after: {} }]) {
+    assert.deepEqual(changesFromChange(bad), [], JSON.stringify(bad));
+  }
+});
+
+test('a composed prefix is a plan, and the digest it binds by is the change digest', async () => {
+  const plan = planFixture('644701781058', 'ps-alice',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa1',
+                             digest: 'a'.repeat(64) });
+  const detail = await readPlan(fakeS3({ [BUCKET]: plan.objects }, plan.bodies), CONFIG,
+                                '644701781058:ps-alice');
+  assert.equal(detail.composed, true);
+  assert.equal(detail.plan_stored, true, 'change.json is what stands in for the plan file');
+  assert.equal(detail.change_sha256, 'a'.repeat(64));
+  // The other two are null and that is the contract, not an omission. They answer a question about
+  // a file, and there is no file - a page that showed one would be describing a plan nobody made.
+  assert.equal(detail.changes_sha256, null);
+  assert.equal(detail.plan_file_sha256, null);
+  assert.equal(detail.account_id, '644701781058');
+  assert.equal(detail.resource, 'ps-alice');
+  assert.match(detail.plan_text, /managed_policy_arns/, 'changes.txt is what a person reads');
+  // Its own field, because a composed move names a part of the permission set and a terraform one
+  // names an address and a verb. Never both filled, so no reader has to ask which it holds.
+  assert.deepEqual(detail.composed_changes.map((c) => c.key), ['managed_policy_arns']);
+  assert.deepEqual(detail.changes, []);
+});
+
+test('a terraform prefix keeps binding by the plan file, so one change did not move the other', async () => {
+  const plan = planFixture('644701781058', 'cmp-WebHosting',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa2',
+                             digest: 'b'.repeat(64) });
+  const detail = await readPlan(fakeS3({ [BUCKET]: plan.objects }, plan.bodies), CONFIG,
+                                '644701781058:cmp-WebHosting');
+  assert.equal(detail.composed, false);
+  assert.equal(detail.changes_sha256, 'b'.repeat(64));
+  assert.ok(detail.plan_file_sha256);
+  assert.equal(detail.change_sha256, null);
+});
+
+test('the standing restrictions of a composed permission set come from the apply that wrote them',
+  async () => {
+    // One apply writes the document and this value, so the two cannot disagree - which is the whole
+    // reason the restriction left the inline writer. The dashboard reads the applier's copy in
+    // outcome.json because it cannot read the state: opt-stack-dashboard-host.yaml denies it.
+    const decisions = [{ policy: 'mirror-cmp-WebHosting', intent: 'deny_only',
+                         actions: ['s3:DeleteObject'], resources: ['arn:aws:s3:::keep'] }];
+    const plan = planFixture('644701781058', 'ps-alice', {
+      at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa1',
+      outcome: { outputs: { restrictions_in_force: decisions } },
+    });
+    const detail = await readPlan(fakeS3({ [BUCKET]: plan.objects }, plan.bodies), CONFIG,
+                                  '644701781058:ps-alice');
+    assert.deepEqual(detail.restrictions_in_force, decisions);
+  });
+
+test('an apply that recorded none is not an apply that could not say', async () => {
+  // [] seeds an empty form and that is correct. null closes the editor, because composing replaces
+  // the whole family - so a form opened empty on "cannot say" drops every restriction standing.
+  const empty = planFixture('644701781058', 'ps-alice', {
+    at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa1',
+    outcome: { outputs: { restrictions_in_force: [] } },
+  });
+  const cannot = planFixture('644701781058', 'ps-alice', {
+    at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa1',
+    outcome: { outputs: { restrictions_in_force: null } },
+  });
+  const never = planFixture('644701781058', 'ps-alice',
+                            { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
+
+  for (const [fixture, expected] of [[empty, []], [cannot, null], [never, null]]) {
+    const detail = await readPlan(fakeS3({ [BUCKET]: fixture.objects }, fixture.bodies), CONFIG,
+                                  '644701781058:ps-alice');
+    assert.deepEqual(detail.restrictions_in_force, expected);
+  }
+});
+
+test('a refusal at check 7 reaches the page with every finding, and outlives no inspection',
+  async () => {
+    const findings = [
+      { verdict: 'more', key: 'managed_policy_arns',
+        value: 'arn:aws:iam::aws:policy/AdministratorAccess' },
+      { verdict: 'moved', key: 'customer_managed_references',
+        value: { name: 'deny-alice-1', path: '/opt-deny/' } },
+    ];
+    const plan = planFixture('644701781058', 'ps-alice',
+                             { at: ago(600), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
+    const objects = [...plan.objects,
+                     { key: `${plan.prefix}mismatch.json`, lastModified: ago(60) }];
+    const bodies = { ...plan.bodies, [`${BUCKET}/${plan.prefix}mismatch.json`]: {
+      schema: 1, request_id: '644701781058-bbbbbbbbbbbbbbb2', account_id: '644701781058',
+      resource: 'ps-alice', change_sha256: 'c'.repeat(64), refused_at: ago(60), findings,
+    } };
+    const detail = await readPlan(fakeS3({ [BUCKET]: objects }, bodies), CONFIG,
+                                  '644701781058:ps-alice');
+    // Every finding and not the first. The three verdicts send a person to different places, and
+    // one run produces more than one kind at once.
+    assert.deepEqual(detail.mismatch.findings, findings);
+    assert.equal(detail.mismatch.change_sha256, 'c'.repeat(64));
+    // Read UNMATCHED to the request id, unlike the outcome. A refusal writes no outcome - the
+    // marker stays and the decision is not processed - so this is the only record of it, and
+    // matching would hide it exactly when somebody came looking. The ids differ here on purpose.
+    assert.notEqual(detail.mismatch.request_id, detail.request_id);
+    // And the plan is still all there: the refusal explains it, it does not replace it.
+    assert.equal(detail.plan_stored, true);
+    assert.ok(detail.change_sha256);
+  });
+
+test('a mismatch on a terraform prefix is not shown, because nothing there could have written one',
+  async () => {
+    const plan = planFixture('644701781058', 'cmp-WebHosting',
+                             { at: ago(600), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
+    const objects = [...plan.objects,
+                     { key: `${plan.prefix}mismatch.json`, lastModified: ago(60) }];
+    const bodies = { ...plan.bodies, [`${BUCKET}/${plan.prefix}mismatch.json`]: {
+      schema: 1, findings: [{ verdict: 'more', key: 'x', value: 'y' }],
+    } };
+    const detail = await readPlan(fakeS3({ [BUCKET]: objects }, bodies), CONFIG,
+                                  '644701781058:cmp-WebHosting');
+    assert.equal(detail.mismatch, null);
+  });
+
+test('a composed prefix mid-upload is incomplete, not a plan', async () => {
+  // request.json is written last, so a prefix without one is an upload in progress. The composed
+  // layout has to be judged by ITS artifacts - a rule that looked for tfplan would call every
+  // finished composed change incomplete, and every half-written one complete.
+  const plan = planFixture('644701781058', 'ps-alice',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa1' });
+  for (const missing of ['request.json', 'change.json', 'spec.json']) {
+    const objects = plan.objects.filter((o) => !o.key.endsWith(missing));
+    const state = await sweep(fakeS3({ [BUCKET]: objects, 'opt-solution-markers': [] },
+                                     plan.bodies), CONFIG);
+    assert.equal(state.plans.length, 0, missing);
+    assert.ok(state.errors.some((e) => e.includes('incomplete')), `${missing}: ${state.errors}`);
+  }
+  const whole = await sweep(fakeS3({ [BUCKET]: plan.objects, 'opt-solution-markers': [] },
+                                   plan.bodies), CONFIG);
+  assert.equal(whole.plans.length, 1);
+  assert.equal(whole.plans[0].resource, 'ps-alice');
+});
+
+
+// ---- a ps-* prefix written before the composed change -------------------------------------------
+//
+// The inspector holds no s3:DeleteObject on this bucket, and the composed path writes DIFFERENT
+// names - so a prefix inspected before the change keeps tfplan and main.tf.json forever and never
+// gains spec.json or change.json. Judging it by its domain alone made it vanish: collectPlans
+// required change.json, reported the prefix incomplete, and the plan had no row at all. A plan
+// awaiting a decision when the images rolled would have disappeared from the list.
+
+function legacyFixture(account, resource, { at, requestId, outcome } = {}) {
+  // The terraform layout under a ps-* name. Exactly what a pre-change inspection left behind.
+  const prefix = `${account}/${resource}/plan/`;
+  const names = ['tfplan', 'main.tf.json', 'plan.json', 'plan.txt', 'changes.sha256',
+                 'request.json'];
+  if (outcome) names.push('outcome.json');
+  const objects = names.map((n) => ({ key: `${prefix}${n}`, lastModified: at }));
+  const bodies = {
+    [`${BUCKET}/${prefix}main.tf.json`]: {
+      terraform: { backend: { s3: { bucket: BUCKET,
+                                    key: `${account}/${resource}/terraform.tfstate` } } },
+    },
+    [`${BUCKET}/${prefix}tfplan`]: 'binary plan',
+    [`${BUCKET}/${prefix}plan.txt`]: 'terraform will do things',
+    [`${BUCKET}/${prefix}plan.json`]: { resource_changes: [] },
+    [`${BUCKET}/${prefix}changes.sha256`]: `${'d'.repeat(64)}\n`,
+    [`${BUCKET}/${prefix}request.json`]: {
+      schema: 1, request_id: requestId, account_id: account, resource, has_changes: true,
+    },
+  };
+  if (outcome) {
+    bodies[`${BUCKET}/${prefix}outcome.json`] = {
+      schema: 1, request_id: requestId, account_id: account, resource,
+      decision: 'approve', reviewer: 'kim', applied: true, ...outcome,
+    };
+  }
+  return { objects, bodies, prefix };
+}
+
+test('which layout a prefix holds is answered by the objects, not by the domain', () => {
+  const composed = new Set(['change.json', 'spec.json', 'request.json']);
+  const terraform = new Set(['tfplan', 'main.tf.json', 'request.json']);
+  const empty = new Set(['request.json']);
+
+  assert.equal(layoutOf('ps-alice', composed), 'composed');
+  assert.equal(layoutOf('ps-alice', terraform), 'legacy');
+  assert.equal(layoutOf('cmp-WebHosting', terraform), 'terraform');
+  assert.equal(layoutOf('cmp-WebHosting', composed), 'terraform',
+               'a cmp-* prefix is never read as composed, whatever happens to be in it');
+  // A prefix with neither half is an upload in progress and must stay incomplete - calling it
+  // legacy would hand the page a plan that is not there.
+  assert.equal(layoutOf('ps-alice', empty), 'composed');
+});
+
+test('a ps-* plan from before the change keeps its row instead of vanishing', async () => {
+  const plan = legacyFixture('718100330247', 'ps-junelee0617',
+                             { at: ago(600), requestId: '718100330247-aaaaaaaaaaaaaaa1' });
+  const state = await sweep(fakeS3({ [BUCKET]: plan.objects, 'opt-solution-markers': [] },
+                                   plan.bodies), CONFIG);
+  assert.equal(state.plans.length, 1, 'the plan disappeared from the list');
+  assert.deepEqual(state.errors, [], 'a readable plan was reported as incomplete');
+  assert.equal(state.plans[0].resource, 'ps-junelee0617');
+  assert.equal(state.plans[0].account_id, '718100330247');
+});
+
+test('and it opens, with its identity, and cannot be approved', async () => {
+  const plan = legacyFixture('718100330247', 'ps-junelee0617',
+                             { at: ago(600), requestId: '718100330247-aaaaaaaaaaaaaaa1' });
+  const detail = await readPlan(fakeS3({ [BUCKET]: plan.objects }, plan.bodies), CONFIG,
+                                '718100330247:ps-junelee0617');
+  assert.equal(detail.account_id, '718100330247', 'the identity came back null');
+  assert.equal(detail.resource, 'ps-junelee0617');
+  assert.equal(detail.legacy_layout, true);
+  assert.equal(detail.plan_stored, true, 'the tfplan is really there');
+  // The DOMAIN decides the binding, and it is a ps-* one - so the approval would have to carry
+  // change_sha256. There is none, so this plan cannot be approved and the page says why.
+  assert.equal(detail.composed, true);
+  assert.equal(detail.change_sha256, null);
+  // And the old changes.sha256 is NOT offered in its place. The applier requires change_sha256 for
+  // every ps-* marker, so handing the page that digest would produce an approval it refuses.
+  assert.equal(detail.changes_sha256, null);
+  // What a person can still read: the plan text and the terraform change list that were stored.
+  assert.match(detail.plan_text, /terraform will do things/);
+  assert.equal(detail.config_json.includes('terraform.tfstate'), true);
+});
+
+test('a composed prefix is unaffected by the fallback', async () => {
+  const plan = planFixture('644701781058', 'ps-alice',
+                           { at: ago(60), requestId: '644701781058-aaaaaaaaaaaaaaa1',
+                             digest: 'a'.repeat(64) });
+  const detail = await readPlan(fakeS3({ [BUCKET]: plan.objects }, plan.bodies), CONFIG,
+                                '644701781058:ps-alice');
+  assert.equal(detail.legacy_layout, false);
+  assert.equal(detail.change_sha256, 'a'.repeat(64));
+  assert.equal(detail.plan_file_sha256, null, 'there is no plan binary to digest');
 });

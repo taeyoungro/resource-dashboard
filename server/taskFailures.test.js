@@ -55,10 +55,16 @@ test('the four objects that start a container are the four this may re-put', () 
 });
 
 test('the plan artifacts an approval binds to are refused', () => {
-  // THE assertion in this file. assess.json is a manifest that says "assess this plan"; these four
-  // are what an approval binds to, and a tier that can rewrite them can show one plan and apply
+  // THE assertion in this file. assess.json is a manifest that says "assess this plan"; these are
+  // what an approval binds to, and a tier that can rewrite them can show one change and apply
   // another. `plan/*` in the IAM statement or a loosened pattern here would hand over all of them.
+  //
+  // Both layouts, because both bind. A composed prefix holds no tfplan - the applier composes its
+  // document after the decision - and what an approval binds to there is change.json and the
+  // digest beside it, so leaving those out would leave the newer domain unasserted.
   for (const artifact of ['tfplan', 'plan.json', 'plan.txt', 'changes.sha256', 'main.tf.json',
+                          'change.json', 'change.sha256', 'changes.txt', 'spec.json',
+                          'mismatch.json',
                           'outcome.json', 'request.json', 'impact.json']) {
     assert.equal(
       target({ marker_bucket: CONFIG.stateBucket, marker_key: `${ACCOUNT}/ps-alice/plan/${artifact}` }),

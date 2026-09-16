@@ -22,8 +22,15 @@ export interface InlineDocument {
 /** The bytes the API sees and the quota counts: keys sorted, no whitespace. */
 export declare function serialise(value: unknown): string;
 
-/** The Sid an attachment's fence carries: [amp|cmp]<PolicyName>Fence. */
+/** The Sid an attachment's fence carries: [amp|cmp]<PolicyName>Fence. Never cut to length. */
 export declare function fenceSid(identifier: string, source?: string): string;
+
+/**
+ * AdminDeny<Amp|Cmp><PolicyName>, the family every statement from one attached policy shares. The
+ * number that follows counts within that policy's group. Cut to the same character the container
+ * cuts at, or the preview names a statement the writer will not write.
+ */
+export declare function denySidBase(identifier: string, source?: string): string;
 
 /** The PassRole fence as the writer will compose it, with the placeholder as the whole allowlist.
  *
@@ -80,23 +87,18 @@ export declare function readable(document: InlineDocument): string;
 /** Statements alone, no Version - an excerpt, shaped so it cannot be read as a whole document. */
 export declare function readableStatements(statements: InlineStatement[]): string;
 
-/** One statement of the shared document, and how much of it came from the policy being viewed. */
+/**
+ * One statement of the shared document that this policy put there.
+ *
+ * A statement has ONE owner. The fold runs inside an attached policy's group, so two policies that
+ * decide the identical thing compose two statements rather than sharing one - which is what lets
+ * the Sid name an owner at all. The fields that described co-ownership (others, alsoBy, shared) are
+ * gone with the thing they described.
+ */
 export interface PolicyStatement {
   statement: InlineStatement;
-  /** The actions in it this policy put there. Never empty - a statement with none is not returned. */
+  /** Every action in it. All of them are this policy's. */
   ours: string[];
-  /** The actions in the same statement that arrived from another policy. Usually empty. */
-  others: string[];
-  /**
-   * Every OTHER policy with a decision in this statement, by identity. Count THIS for a number of
-   * policies - `others` counts actions, and one policy can contribute four of them.
-   */
-  alsoBy: string[];
-  /**
-   * The subset of `ours` that another policy ALSO decided. Removing this policy's decision leaves
-   * these statements standing, which is the one thing an excerpt must not hide.
-   */
-  shared: string[];
 }
 
 export interface PolicyContribution {

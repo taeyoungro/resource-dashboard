@@ -21,8 +21,8 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
-  INLINE_LIMIT, composeInline, creationExemption, fenceSid, inlineBytes, policyContribution,
-  readable, readableStatements,
+  INLINE_LIMIT, composeInline, creationExemption, denySidBase, fenceSid, inlineBytes,
+  policyContribution, readable, readableStatements,
   serialise, subResource,
 } from './inlinePreview.js';
 
@@ -76,6 +76,22 @@ test('the fence Sid is the name the Python derived, edges included', () => {
   }
   // And every one of them is a Sid IAM will take.
   for (const row of table) assert.match(row.sid, /^[0-9A-Za-z]+$/, row.sid);
+});
+
+test('the restriction Sid base is the name the Python derived, cut at the same character', () => {
+  // Same argument as the fence above, plus one this family has and the fence does not: the base is
+  // CUT to config.sid_policy_name_limit, and a preview cutting at a different character names a
+  // statement the writer will not write. The table also carries the pair that collides after the
+  // cut - the container refuses those, and the preview has to reach the same two names for the
+  // refusal to be about anything at all.
+  const table = FIXTURES.deny_sid_bases ?? [];
+  assert.ok(table.length > 0, 'the fixture carries no restriction Sid bases - regenerate it');
+  for (const row of table) {
+    assert.equal(denySidBase(row.identifier), row.base,
+                 `${JSON.stringify(row.identifier)}: the preview and generator/restriction.py `
+                 + 'name the restriction differently');
+  }
+  for (const row of table) assert.match(row.base, /^[0-9A-Za-z]+$/, row.base);
 });
 
 test('every fixture composes to the bytes the container composed', () => {
@@ -234,10 +250,9 @@ test("a policy's excerpt carries the Sids the document will be WRITTEN under", (
 });
 
 test('the same action on different resources does not put one policy in the other', () => {
-  // Attribution is by CLAUSE, not by action name, and this is why. AmazonS3FullAccess restricting
-  // s3:GetObject on one bucket and a customer managed policy restricting s3:GetObject on another is
-  // two statements, both carrying that action name - and matching on the name put both statements
-  // in both excerpts, so each policy's view showed a Deny on a bucket it had nothing to do with.
+  // The failure this closed: matching on the ACTION NAME put both statements in both excerpts, so
+  // each policy's view showed a Deny on a bucket it had nothing to do with. Attribution moved to
+  // the clause and then to the Sid family, and the property has to survive both moves.
   const restrictions = [
     { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
     { policy: 'B', intent: 'deny_only', actions: ['s3:GetObject'], resources: [OTHER] },
@@ -249,7 +264,6 @@ test('the same action on different resources does not put one policy in the othe
     const view = policyContribution(restrictions, policy, { accountId: '1' });
     assert.equal(view.statements.length, 1, `${policy} was given the other policy's statement`);
     assert.deepEqual(view.statements[0].statement.Resource, [bucket], policy);
-    assert.deepEqual(view.statements[0].others, [], policy);
   }
 });
 
@@ -267,30 +281,46 @@ test('the clause used for attribution is the one the writer folds on', () => {
   assert.deepEqual(view.statements[0].statement.NotResource, [BUCKET, `${BUCKET}/*`]);
 });
 
-test('a statement two policies share is shown whole to both, and marked', () => {
-  // The fold groups by resource clause, not by policy. Two policies denying different actions on
-  // the same bucket produce ONE statement, and a per-policy view that trimmed the other policy's
-  // action out of it would be showing a statement nobody will write.
+test('a statement has one owner, and its Sid says which', () => {
+  // What replaced co-ownership. The fold runs inside one attached policy's group, so two policies
+  // denying different actions on the same bucket produce TWO statements rather than one carrying
+  // both - and each excerpt is exactly its own policy's, with nothing to disclaim.
   const restrictions = [
     { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
     { policy: 'B', intent: 'deny_only', actions: ['s3:PutObject'], resources: [BUCKET] },
   ];
   const whole = composeInline(restrictions, { accountId: '1' });
-  assert.equal(whole.Statement.length, 1, 'the two did not fold, so this tests nothing');
+  assert.equal(whole.Statement.length, 2, 'the two folded together, which no Sid could name');
+  assert.deepEqual(whole.Statement.map((s) => s.Sid),
+                   [`${denySidBase('A')}1`, `${denySidBase('B')}1`]);
 
-  for (const [policy, ours, theirs] of [['A', 's3:GetObject', 's3:PutObject'],
-                                        ['B', 's3:PutObject', 's3:GetObject']]) {
+  for (const [policy, ours] of [['A', 's3:GetObject'], ['B', 's3:PutObject']]) {
     const view = policyContribution(restrictions, policy, { accountId: '1' });
     assert.equal(view.statements.length, 1, policy);
     assert.deepEqual(view.statements[0].ours, [ours], policy);
-    assert.deepEqual(view.statements[0].others, [theirs], policy);
-    assert.deepEqual(view.statements[0].statement.Action, [theirs, ours].sort(), policy);
+    assert.equal(view.statements[0].statement.Action, ours, policy);
+    assert.equal(view.statements[0].statement.Sid, `${denySidBase(policy)}1`, policy);
   }
 });
 
-test('the cost is what the document GROWS by, not the sum of the statements', () => {
-  // Two policies sharing one resource clause pay for it once. Adding up per-policy statement sizes
-  // would count the ARN list twice and tell an approver the document is bigger than it is.
+test('a base that begins another base does not claim its statements', () => {
+  // Bases are alphanumeric, so one can be a prefix of another and a startsWith test would hand
+  // AdminDenyCmpWebHosting1 to the policy called Web. The anchored digits are what stop it.
+  const restrictions = [
+    { policy: 'cmp-Web', intent: 'deny_action', actions: ['s3:GetObject'] },
+    { policy: 'cmp-WebHosting', intent: 'deny_action', actions: ['s3:PutObject'] },
+  ];
+  assert.ok(denySidBase('cmp-WebHosting').startsWith(denySidBase('cmp-Web')),
+            'the two bases no longer overlap, so this tests nothing');
+  const view = policyContribution(restrictions, 'cmp-Web', { accountId: '1' });
+  assert.equal(view.statements.length, 1);
+  assert.deepEqual(view.statements[0].ours, ['s3:GetObject']);
+});
+
+test('the cost is what the document GROWS by, separator included', () => {
+  // Still a subtraction and not a sum. Each policy pays for its own resource clause now - that is
+  // what the partition costs - but the comma joining this policy's statements to the ones already
+  // there is part of the growth too, and summing statement sizes misses it.
   const restrictions = [
     { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
     { policy: 'B', intent: 'deny_only', actions: ['s3:PutObject'], resources: [BUCKET] },
@@ -300,12 +330,11 @@ test('the cost is what the document GROWS by, not the sum of the statements', ()
   assert.equal(view.without,
                inlineBytes(composeInline(restrictions.slice(0, 1), { accountId: '1' })));
   assert.equal(view.share, view.total - view.without);
-  // The action name and two bytes of JSON, not a second copy of the bucket ARN.
-  assert.ok(view.share < BUCKET.length,
-            `${view.share} bytes for one folded action - the resource clause is being counted twice`);
-  // Whereas the statement it rides in is far bigger than what the policy added.
-  assert.ok(inlineBytes({ Version: '2012-10-17', Statement: [view.statements[0].statement] })
-            > view.share);
+  // The bucket ARN is in this policy's own statement now, so the share carries it - and one byte
+  // more than the statement alone, which is the separator.
+  const alone = inlineBytes({ Version: '2012-10-17', Statement: [view.statements[0].statement] });
+  const empty = inlineBytes({ Version: '2012-10-17', Statement: [] });
+  assert.equal(view.share, alone - empty + 1, `${view.share} vs ${alone - empty} + 1`);
 });
 
 test('the fence is in neither byte figure and comes back on its own', () => {
@@ -367,49 +396,43 @@ test('an excerpt is not shaped like a document', () => {
   assert.ok(text.indexOf('"Effect"') < text.indexOf('"Action"'));
 });
 
-test('two policies that decide the SAME thing are both told the other is there', () => {
-  // The failure this replaced: attribution by clause put the statement in both excerpts, both with
-  // others=[] because the action IS each policy's, and share=0 for both because removing either
-  // leaves the statement standing. So each approver was shown a statement listed as their policy's,
-  // told it added nothing, and given nothing that reconciled the two - and unticking it would not
-  // have removed the Deny.
+test('two policies that decide the SAME thing get one statement each', () => {
+  // The failure this closes, from the other side. While the two folded into one statement, removing
+  // either left it standing - so each approver saw a statement listed as their policy's, was told
+  // it added nothing, and unticking it did not remove the Deny. Two statements now, and unticking
+  // one removes one, which is what the screen has always implied.
   const restrictions = [
     { policy: 'AmazonS3FullAccess', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
     { policy: 'DataTeamAccess', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
   ];
   const whole = composeInline(restrictions, { accountId: '1' });
-  assert.equal(whole.Statement.length, 1, 'they did not fold, so this tests nothing');
+  assert.equal(whole.Statement.length, 2, 'they folded together, which no Sid could name');
 
-  for (const [policy, other] of [['AmazonS3FullAccess', 'DataTeamAccess'],
-                                 ['DataTeamAccess', 'AmazonS3FullAccess']]) {
+  for (const policy of ['AmazonS3FullAccess', 'DataTeamAccess']) {
     const view = policyContribution(restrictions, policy, { accountId: '1' });
-    const [one] = view.statements;
-    assert.deepEqual(one.ours, ['s3:GetObject'], policy);
-    assert.deepEqual(one.shared, ['s3:GetObject'],
-                     `${policy} is not told the action is also another policy's`);
-    assert.deepEqual(one.alsoBy, [other], `${policy} is not told WHICH policy`);
-    // And the marginal cost really is zero, which is why the co-ownership has to be said: on its
-    // own the zero reads as "this policy adds nothing", and every byte of the statement is here
-    // because of these two.
-    assert.equal(view.share, 0, policy);
+    assert.equal(view.statements.length, 1, policy);
+    assert.deepEqual(view.statements[0].ours, ['s3:GetObject'], policy);
+    assert.equal(view.statements[0].statement.Sid, `${denySidBase(policy)}1`, policy);
+    // And the marginal cost is no longer zero: it is this policy's own copy of the clause, which is
+    // exactly what unticking here removes.
+    assert.ok(view.share > BUCKET.length, `${policy}: ${view.share}`);
   }
-  assert.ok(inlineBytes(whole) > inlineBytes(composeInline([], { accountId: '1' })),
-            'the statement costs nothing, so there is nothing to reconcile');
 });
 
-test('the policy count is policies and the action count is actions', () => {
-  // One policy contributing four actions to a shared statement was rendered as "shared with 4
-  // policies" on a permission set with two attached policies.
+test("a neighbour's actions never appear in this policy's excerpt", () => {
+  // What the co-ownership machinery existed to explain, and what the partition removes instead: B's
+  // four actions used to ride in the same statement as A's one, so A's view had to show them and
+  // say where they came from - and a count of them was once rendered as "shared with 4 policies" on
+  // a permission set with two. Now they are B's statement and A never sees them.
   const restrictions = [
     { policy: 'A', intent: 'deny_only', actions: ['s3:GetObject'], resources: [BUCKET] },
     { policy: 'B', intent: 'deny_only', resources: [BUCKET],
       actions: ['s3:PutObject', 's3:DeleteObject', 's3:ListBucket', 's3:RestoreObject'] },
   ];
   const view = policyContribution(restrictions, 'A', { accountId: '1' });
-  const [one] = view.statements;
-  assert.equal(one.others.length, 4, 'the four foreign actions are not all reported');
-  assert.deepEqual(one.alsoBy, ['B'], 'the policy count is being taken from the action count');
-  assert.deepEqual(one.shared, [], 'nothing here is co-owned');
+  assert.equal(view.statements.length, 1);
+  assert.deepEqual(view.statements[0].ours, ['s3:GetObject']);
+  assert.equal(view.statements[0].statement.Action, 's3:GetObject');
 });
 
 test('a falsy fence service cannot select a statement that is not a fence', () => {
